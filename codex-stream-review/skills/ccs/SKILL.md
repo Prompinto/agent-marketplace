@@ -7,10 +7,15 @@ description: Claude executes a task then runs a Claude+Codex adversarial cross-r
 
 **Usage:** `codex-stream-review:ccs <task description>` — this skill is not invocable as a bare
 `/ccs` slash command; it is invoked plugin-qualified, like every other plugin-supplied skill. Leave
-the task description empty to review the work just done in this session. Optional prefix:
+the task description empty to review the work just done in this session. Two independent, optional
+prefixes — each may appear alone, together in either order, or neither (see Phase 0 Step 0 for the
+exact parsing rule):
 `codex-stream-review:ccs --capture-evidence <task description>` — opt-in investigation-evidence
 capture for every round of this session (see `references/capture-evidence.md`, read only when this
-flag is used). Omit it and
+flag is used); `codex-stream-review:ccs --keep-evidence <task description>` — opt-in retention of a
+failed round's kept last-message output and its Codex thread, skipping automatic `--cleanup` on a
+non-CLEAN terminal outcome (see `references/keep-evidence.md`, read only when this flag is used).
+Omit both and
 `/ccs` behaves exactly as documented everywhere else in this file, with zero added fields anywhere.
 Any other free text is the TASK.
 
@@ -26,8 +31,9 @@ non-repo artifact is handled, via the `CLEAN_REPO_DIR` mechanism).
 
 `/ccs` dispatches every review round through `run-ccs-review.sh`, a resumable-thread wrapper — one
 persistent Codex thread per reviewer for the whole run, `--resume`d every round after the first
-rather than re-sent the diff each time. It **always cleans up its Codex thread on every terminal path** — never left to the
-user, unlike `stream-review`'s own caller-owns-cleanup contract.
+rather than re-sent the diff each time. It **always cleans up its Codex thread on every terminal path** (the one deliberate exception: a non-CLEAN outcome with `--keep-evidence` ON, see "Kept
+evidence on failure" below) — never left to the user by default, unlike `stream-review`'s own
+caller-owns-cleanup contract.
 
 `/ccs` also supports parallel multi-reviewer mode — N concurrent, dimension-focused reviewers
 dispatched within the same round (see Phase 1 below for the sizing/mode-selection logic and the
@@ -45,6 +51,10 @@ preflight is needed for it: `run-ccs-review.sh` has supported `--capture-eventlo
 this wrapper's first release (confirmed directly — `grep -n capture-eventlog
 scripts/run-ccs-review.sh` finds it in the argument parser and the terminal-copy step both), so
 there is no "installed plugin predates this flag" migration case for `/ccs` to guard against.
+
+`--keep-evidence` is supported — see `references/keep-evidence.md` for its full mechanics, read
+only when this flag is used. It is independent of `--capture-evidence`: either, both, or neither
+may be given for a session, in any order (see Phase 0 Step 0 for the exact parsing rule).
 
 **Parallel multi-reviewer mode is supported** (see Phase 1 below): every group — including the
 single-reviewer case, `GROUP="main"` — keeps its own persistent, resumable Codex thread for the
@@ -147,6 +157,11 @@ Two mutually exclusive top-level modes:
 - `--capture-eventlog <path>` — optional, best-effort raw event-log dump. Used by this skill only
   when `--capture-evidence` was given for this session (see `references/capture-evidence.md`)
   — omitted entirely otherwise.
+- `--keep-last-message <path>` — optional, best-effort copy of the round's own final-answer text
+  (the `-o/--output-last-message` file `codex exec` itself wrote), copied before the wrapper
+  deletes its own private copy, unconditionally regardless of whether the round succeeds or fails.
+  Used by this skill only when `--keep-evidence` was given for this session (see
+  `references/keep-evidence.md`) — omitted entirely otherwise.
 - A `--base`/`--commit` value starting with `-` is rejected (`bad_args`) as a git-option-
   injection guard; a `--resume` threadId starting with `-` is rejected the same way.
 
@@ -287,12 +302,14 @@ never accidentally clean up the very thread it just asked to `--resume`.
 might still want to `--resume` it later. `/ccs` owns a thread's entire lifecycle itself — it is
 the only thing that ever `--resume`s it — so it calls `--cleanup` on **every** terminal path
 (CLEAN, NOT CONVERGED, COULD NOT VERIFY, PARTIAL COVERAGE) automatically, with no separate opt-in
-step a human needs to remember. See "Phase 3 — Terminal path" below.
+step a human needs to remember — **except** when `--keep-evidence` was ON for this session AND the
+outcome is non-CLEAN, in which case cleanup is deliberately skipped instead (see "Kept evidence on
+failure" below and Phase 3's own keep-evidence gate). See "Phase 3 — Terminal path" below.
 
 > **Discrepancy note:** this project's `task-2-brief.md` (the brief for the task that built this
 > wrapper) referenced an `--output-schema <path>` flag on it. The actual, current
 > `run-ccs-review.sh` has no such caller-facing flag — its argument parser only accepts `--cwd`, `--uncommitted`, `--base`,
-> `--commit`, `--resume`, `--timeout`, `--capture-eventlog`, and the separate
+> `--commit`, `--resume`, `--timeout`, `--capture-eventlog`, `--keep-last-message`, and the separate
 > `--cleanup` mode (focus text arrives on stdin, not as an argv flag). The JSON output schema (`schemas/review-verdict.schema.json`) is applied
 > internally and unconditionally to every `codex exec` call the wrapper itself makes — it is not
 > a knob this skill or its caller ever sets. Trust the script: do not pass `--output-schema`.
@@ -312,6 +329,24 @@ step, Guards' retry-time eventlog handling) — proceeding without having read i
 those points undocumented for this session. If capture is OFF for this session, never read this
 file and never touch anything it describes — zero behavior change from every other place in this
 skill.
+
+---
+
+## Kept evidence on failure (opt-in via `--keep-evidence`)
+
+**Off by default.** Full mechanics live in `references/keep-evidence.md`, read only when this
+session actually uses `--keep-evidence`.
+
+**Once Phase 0 Step 0 determines `--keep-evidence` is ON for this session, your very next action —
+before doing anything else in this run (or immediately after reading
+`references/capture-evidence.md` too, if BOTH flags are ON this session — order between the two
+doesn't matter, but both must be read before Phase 1 ever dispatches) — is to Read
+`codex-stream-review/skills/ccs/references/keep-evidence.md` in full.** That file's procedure is
+required at four later points in this run (Phase 1 Step 0's `LAST_MESSAGE_KEEP_FILE` allocation,
+Step 1's `--keep-last-message` flag, Phase 2's keep-or-delete step, and Phase 3's conditional
+cleanup-skip) — proceeding without having read it first will leave those points undocumented for
+this session. If `--keep-evidence` is OFF for this session, never read this file and never touch
+anything it describes — zero behavior change from every other place in this skill.
 
 ---
 
@@ -382,21 +417,53 @@ up using `--capture-evidence` at all):**
   shared cross-session age-based sweep would risk deleting a different, still-running session's
   own tracking files; those are cleaned up via LOCAL, immediate `rm -f` calls at Phase 3 and at
   each of Phase 0's own early-exit points instead.
-- **Capture-evidence decision:** check whether the task text this skill was actually invoked with
-  (or empty, to review the work just done, per "Usage" above) starts with the literal prefix
-  `--capture-evidence `
-  (note the trailing space), or is exactly the string `--capture-evidence` with nothing after it.
-  If either is true, **capture is ON for this session** — treat the remainder after that prefix as
-  the effective task text for every rule below and everywhere else in this file. If the prefix is
-  not present, **capture is OFF for this session** — the task text is used exactly as given, and
-  everything below proceeds precisely as documented elsewhere in this file with no added behavior.
-  Either way, this is a one-time decision Claude makes now and remembers for the whole run — every
-  later place in this file that gates on "capture is on/off" means Claude already knows the answer
-  and must write the concrete literal branch (e.g. either include the `--capture-eventlog "<path>"`
-  argument as literal text on every dispatch, or omit it entirely; either include or omit the
-  `investigation_evidence` JSONL field) into each command it actually constructs — there is no
-  shell variable carrying this decision between tool calls, and no per-round re-check within one
-  `/ccs` run.
+- **Unconditional kept-evidence pruning sweep (best-effort):** a best-effort sweep for old
+  retained-evidence directories left behind by a past `--keep-evidence` session that ended
+  non-CLEAN (see "Kept evidence on failure" below and `references/keep-evidence.md` for what these
+  directories hold and why Phase 3 sometimes leaves them behind on purpose):
+  ```bash
+  find ~/.claude/plugins/data/codex-stream-review/ccs-logs -maxdepth 2 -type d -name '*-kept-evidence' -mtime +30 -exec rm -rf {} + 2>/dev/null
+  ```
+  Running this on EVERY `/ccs` invocation — `--keep-evidence` used this time or not — bounds how
+  long an old kept-evidence directory can survive on disk. Unlike the 60-minute eventlog sweep
+  above, these directories exist specifically for a HUMAN to inspect after a failure, so the
+  retention window here is deliberately much longer (30 days, not 60 minutes). This is best-effort
+  only, exactly like the eventlog sweep above — never fails the run, whether it deletes something,
+  deletes nothing, or fails outright — and is NOT a guaranteed TTL: it promises "gone by roughly 30
+  days after its `mtime`," never exact 30-day precision, and a directory a session is still
+  actively writing into (i.e. anything younger than 30 days) is never at risk from this sweep.
+- **Capture-evidence / keep-evidence decision:** two independent, optional prefixes may each be
+  present, in either order, at the front of the task text this skill was actually invoked with (or
+  empty, to review the work just done, per "Usage" above): `--capture-evidence` and
+  `--keep-evidence`. Determine both with the same loop, applied to whatever text remains after each
+  strip — this handles either flag alone, both together in either order, or neither, and stays
+  correct if a future third flag is ever added the same way, rather than hardcoding just today's two
+  fixed orderings:
+  1. Start with `TEXT` = the task text as given.
+  2. Repeat: if `TEXT` starts with the literal prefix `--capture-evidence ` (note the trailing
+     space), or `TEXT` is exactly the string `--capture-evidence` with nothing after it, record
+     **capture-evidence is ON** (if not already recorded) and set `TEXT` to whatever text follows
+     that prefix (the empty string, if `TEXT` was exactly the bare flag). Else, if `TEXT` starts
+     with the literal prefix `--keep-evidence ` (same trailing-space rule), or `TEXT` is exactly the
+     string `--keep-evidence`, record **keep-evidence is ON** (if not already recorded) and set
+     `TEXT` the same way. Otherwise — neither prefix matches — stop the loop.
+  3. The loop ends the first time neither prefix matches. Whatever `TEXT` remains at that point is
+     the effective task text for every rule below and everywhere else in this file — for a session
+     that gave both flags with nothing else after them, this is the empty string, which "Usage"
+     above already treats as "review the work just done."
+
+  A flag never detected during the loop is OFF for this session. **The two decisions are
+  independent booleans — `CAPTURE_EVIDENCE` and `KEEP_EVIDENCE` — never a single combined state:**
+  either, both, or neither may end up ON, regardless of which order the caller typed them in.
+  Whichever ends up OFF proceeds precisely as documented elsewhere in this file with no added
+  behavior for it. Either way, this is a one-time decision Claude makes now and remembers for the
+  whole run — every later place in this file that gates on "capture-evidence is on/off" or
+  "keep-evidence is on/off" means Claude already knows the answer and must write the concrete
+  literal branch (e.g. either include the `--capture-eventlog "<path>"`/`--keep-last-message
+  "<path>"` argument as literal text on every dispatch, or omit it entirely; either include or omit
+  the `investigation_evidence`/`kept_last_message_path` JSONL field) into each command it actually
+  constructs — there is no shell variable carrying either decision between tool calls, and no
+  per-round re-check within one `/ccs` run.
 
 1. **Session id:** `SESSION_ID="$(date +%Y-%m-%dT%H%M%S)-$$"` — timestamp plus the invoking
    shell's PID (the PID suffix is required: a bare-second-resolution
@@ -670,6 +737,12 @@ echo "FOCUS_FILE=$FOCUS_FILE"
 this session** (Phase 0 Step 0's decision) — see `references/capture-evidence.md` for its
 exact template and how it's consumed; omitted entirely, every round, when capture is OFF.
 
+**A further temp file, `LAST_MESSAGE_KEEP_FILE`, joins this same block only when `--keep-evidence`
+is ON for this session** (Phase 0 Step 0's decision) — see `references/keep-evidence.md` for its
+exact template and how it's consumed; omitted entirely, every round, when keep-evidence is OFF.
+Independent of `EVENTLOG_FILE` above: both, either, or neither may be allocated this round,
+according to their own separate on/off decisions.
+
 `GROUP` is baked into the `mktemp` *template* (not just the random suffix) — the
 session+round+group triple prevents cross-session/cross-group confusion; `mktemp`'s own suffix
 prevents same-round-same-group path guessing. Applies identically to fresh (round 1) and resumed
@@ -760,6 +833,13 @@ done
 # in this same dispatch call (both the fresh and the resume form below); if OFF, literally omit
 # the flag entirely. Never write this as a variable-gated bash branch for a later call to
 # evaluate -- write the actual resulting command, one way or the other, by hand, every round.
+
+# Keep-evidence is likewise a Phase 0 Step 0 decision Claude already knows (see that section and
+# references/keep-evidence.md) -- if ON for this session, literally include --keep-last-message
+# "<this group's literal LAST_MESSAGE_KEEP_FILE from Step 0>" as concrete text in this same
+# dispatch call (both the fresh and the resume form below); if OFF, literally omit the flag
+# entirely. Independent of --capture-eventlog above -- a dispatch call may carry neither, either,
+# or both flags, entirely by their own separate decisions.
 
 # Round 1 (fresh — pick the one matching scope flag actually decided in Phase 0; identical scope
 # flag for every group this round, since every group reviews the SAME diff, see "Determine review
@@ -927,12 +1007,20 @@ For each round, after Phase 1 delivers a result:
    unchanged, with `groups[]` omitted entirely. **If capture-evidence is ON for this session**,
    also run `references/capture-evidence.md`'s steps 2-4 now, per dispatched group (extract via
    `jq`, merge across groups if this was a parallel round, delete the raw eventlog) — the
-   resulting `investigation_evidence` object is one more field on this same round's line. Then
+   resulting `investigation_evidence` object is one more field on this same round's line. **If
+   `--keep-evidence` is ON for this session**, also run `references/keep-evidence.md`'s
+   keep-or-delete step now, per dispatched group — delete that group's `LAST_MESSAGE_KEEP_FILE` on
+   `ok:true`, or move it into this session's durable kept-evidence directory on `ok:false` — adding
+   the resulting `kept_last_message_path` field (when a file was actually kept) to that round's
+   line (top-level for a single-reviewer round, inside that group's own `groups[]` entry for a
+   parallel round — see that reference file for the exact nesting). Then
    append this round's line to the review history log (below), best-effort. Clean up this round's
    now-unneeded `.pid`/`-out.json`/`-err.log`/`-focus.txt` temp files for EVERY dispatched group —
    nothing needs to read any of them again once the round is logged. (The `-eventlog.jsonl` temp
    file, when one was allocated, is already gone by this point — deleted as part of the capture
-   steps just run, not part of this cleanup list.)
+   steps just run, not part of this cleanup list. Likewise the `-lastmsg.txt` temp file, when one
+   was allocated, is already gone by this point too — deleted or moved as part of the keep-evidence
+   step just run, not part of this cleanup list either.)
 
 ### Coverage is a Round-1-only property
 
@@ -1060,8 +1148,10 @@ meaning.
     - **This group has NO entry in `GROUP_THREADS` yet** (its true first-ever attempt — only
       possible on round 1, before that round's own first dispatch has ever returned a `threadId`):
       nothing exists to resume — retry the same scope flag fresh, exactly once (include
-      `--capture-eventlog` with its own fresh `EVENTLOG_FILE` when capture is ON, same as every
-      dispatch — see `references/capture-evidence.md`). **If this is round 1 and the reason
+      `--capture-eventlog` with its own fresh `EVENTLOG_FILE` when capture is ON, and
+      `--keep-last-message` with its own fresh `LAST_MESSAGE_KEEP_FILE` when keep-evidence is ON,
+      same as every dispatch — see `references/capture-evidence.md` and
+      `references/keep-evidence.md`). **If this is round 1 and the reason
       is `no_thread_started`, capture coverage from the failing attempt BEFORE dispatching that
       retry** — see the "Round 1 only — capture coverage from the failing attempt BEFORE
       retrying" note below; it applies here identically, even though `no_thread_started` never
@@ -1120,7 +1210,13 @@ meaning.
     # already-consumed one>" here too -- this retry is its own separate codex exec process with
     # its own event log, exactly like every other dispatch call in this file (see
     # references/capture-evidence.md, including its multi-attempt handling note); omit the flag entirely
-    # when capture is OFF, same rule as Step 1.
+    # when capture is OFF, same rule as Step 1. Independently, if keep-evidence is ON for this
+    # session, literally include --keep-last-message "<a freshly-mktemp'd LAST_MESSAGE_KEEP_FILE,
+    # same template as Phase 1 Step 0 -- NOT the original round's already-consumed one>" here too --
+    # this retry is its own separate codex exec process with its own final-answer output, exactly
+    # like every other dispatch call in this file (see references/keep-evidence.md, including its
+    # own multi-attempt handling note below); omit the flag entirely when keep-evidence is OFF,
+    # same rule as Step 1.
     "$INSTALL_PATH/scripts/run-ccs-review.sh" --cwd "$REPO_ROOT_OR_CLEAN_REPO_DIR" \
       --resume "<that threadId>" --timeout 300 \
       < "$FOCUS_FILE"
@@ -1139,6 +1235,22 @@ meaning.
     existing group-level one — and still closes the privacy contract (every allocated eventlog
     this session ever creates is deleted, extracted from or not), just narrows what gets reported
     into the log.
+    **Multi-attempt kept-evidence handling (general rule, only relevant with keep-evidence ON —
+    applies identically to every retry variant in this Guards section, resume or fresh, by the same
+    reasoning as the capture-evidence rule immediately above):** when ANY retry for the same
+    (round, group) ultimately succeeds, apply the normal keep-or-delete step (per
+    `references/keep-evidence.md`) to that LAST attempt's own `LAST_MESSAGE_KEEP_FILE` only — a
+    successful outcome deletes it, same as any other successful round. When a group's round instead
+    ultimately ends in `⚠️ COULD NOT VERIFY` after one or more retries, only the LAST attempt's own
+    `LAST_MESSAGE_KEEP_FILE` is a candidate for keeping — it is what actually determines that
+    group's final failure, and its content is what a human would actually want to inspect. Either
+    way, `rm -f` every EARLIER attempt's own `LAST_MESSAGE_KEEP_FILE` without moving or inspecting
+    it, once the round concludes — an earlier attempt's output describes a state that a subsequent
+    retry has already superseded, so retaining it (whether the round ends in success or in
+    `⚠️ COULD NOT VERIFY`) would leave a human sifting through, or `/tmp` accumulating, stale
+    superseded output the round's own outcome no longer depends on. This is the identical
+    simplification `references/capture-evidence.md`'s own multi-attempt rule already makes, applied
+    to kept last-message files instead of eventlogs.
     **`--timeout 300` (5 min) is required on both retry attempts, never the wrapper's 1800s
     default** — without an explicit shorter timeout, a genuinely stuck retry can silently consume
     the full default window per attempt, turning a "bounded, short backoff" retry into a
@@ -1157,7 +1269,9 @@ meaning.
     - If both resume-retries are exhausted and this was **round 1**: fall back to one fresh retry
       of the original scope flag, for that group, abandoning the now-unrecoverable thread (this
       fresh retry gets its own new `--capture-eventlog`/`EVENTLOG_FILE` too, when capture is ON,
-      same as every dispatch — see `references/capture-evidence.md`).
+      and its own new `--keep-last-message`/`LAST_MESSAGE_KEEP_FILE` too, when keep-evidence is ON,
+      same as every dispatch — see `references/capture-evidence.md` and
+      `references/keep-evidence.md`).
       **Append that abandoned `(GROUP, threadId)` pair to `LEAKED_THREAD_IDS`** — Claude remembers
       this set for the rest of the run, the same way `GROUP_THREADS`/`SESSION_ID` are remembered —
       so Phase 3's terminal path (below) can clean it up alongside the run's final threads; it is
@@ -1179,7 +1293,9 @@ meaning.
     genuine Claude/Codex disagreement or an unresolved coverage gap, not a group that never
     produced a real verdict). Never declare CLEAN off a missing review from any group. Still run
     the terminal-path cleanup (below) using whatever `threadId`s are known for every group, even
-    from a failed response.
+    from a failed response — unless `--keep-evidence` is ON for this session, in which case a
+    non-CLEAN round-level status (as this one always is, per the bullet above) means Phase 3's
+    keep-evidence gate skips that cleanup instead; see "Kept evidence on failure" below.
 - **Partial or unknown source coverage ≠ CLEAN, and is not the same failure as NOT
   CONVERGED/COULD NOT VERIFY.** If round 1's `coverage_source.status` (the N-group merged value
   for a parallel round — see "Coverage is a Round-1-only property" above) is unresolved `"partial"`
@@ -1210,10 +1326,16 @@ Claude is the sole writer/reader of this log — Codex never sees it.
 `investigation_evidence` when capture-evidence is ON for this session (see
 `references/capture-evidence.md`), plus `groups`, for a parallel round only, with one
 `ccs`-specific addition (`thread_id`). `target.scope` also gains
-one more legal value (`"resume"`) to describe what `/ccs` rounds 2+ actually do. **The common
-case — a single-reviewer round (`GROUP="main"`), capture-evidence OFF — is completely unchanged
+one more legal value (`"resume"`) to describe what `/ccs` rounds 2+ actually do. When
+`--keep-evidence` is ON for this session AND a round's group actually failed and had its last
+message kept, that round's line (or that group's own `groups[]` entry, for a parallel round) also
+gains `kept_last_message_path` — see `references/keep-evidence.md` for its exact placement and
+omission rules. **The common
+case — a single-reviewer round (`GROUP="main"`), capture-evidence and keep-evidence both OFF — is
+completely unchanged
 from before:** `target.focus`/`codex_review` stay single string/object values, `groups` is
-omitted entirely, and so is `investigation_evidence`, exactly as shown below:
+omitted entirely, and so are `investigation_evidence` and `kept_last_message_path`, exactly as
+shown below:
 
 ```json
 {
@@ -1294,6 +1416,15 @@ On **every** terminal outcome — `✅ CLEAN`, `⚠️ NOT CONVERGED`, `⚠️ C
 ever left to the user to remember; this is the deliberate difference from `stream-review`'s own
 caller-owns-cleanup contract (see "Mode 2 — cleanup" above).
 
+**Keep-evidence gate — checked once, before step 1 below.** If `--keep-evidence` is ON for this
+session AND this run's final terminal status is NOT `✅ CLEAN` (i.e. it is `⚠️ NOT CONVERGED`,
+`⚠️ COULD NOT VERIFY`, or `⚠️ PARTIAL COVERAGE`), **skip steps 1 and 2 below entirely** — leave
+every thread in `GROUP_THREADS` and `LEAKED_THREAD_IDS` alive so a human can `--resume` it later to
+keep investigating, or inspect it directly — then go straight to step 3 and the final report. When
+`--keep-evidence` is OFF, or the outcome IS `✅ CLEAN`, run steps 1 and 2 exactly as written below,
+with no change from today. See `references/keep-evidence.md` for the full reasoning and the final
+report's additional required content in this case.
+
 1. **Clean up every group's final Codex thread**, for every group slug that ever obtained a real
    `THREAD_ID` this run (i.e. every entry in `GROUP_THREADS` — one entry for the common
    `GROUP="main"` single-reviewer case, N entries for a parallel run). Phase 3 is its own
@@ -1369,7 +1500,14 @@ Structure:
   group's round-1 retry abandoned an earlier thread) was also successfully cleaned up — list every
   group's cleanup outcome with nothing omitted, and if any threadId failed to clean up, name which
   group's, which one, and why (this reflects `/ccs`'s own automatic thread cleanup at the end of
-  every run).
+  every run). **When `--keep-evidence` was ON for this session and the outcome was non-CLEAN**
+  (Phase 3's keep-evidence gate skipped cleanup): state that explicitly instead of a cleanup
+  outcome — list every thread ID left alive (per group), every kept last-message file's durable
+  path (per round/group that actually kept one, from the JSONL log), the exact manual commands to
+  inspect/clean up later (`cat <path>` to read the retained output,
+  `"$INSTALL_PATH/scripts/run-ccs-review.sh" --cleanup "<threadId>"` to delete a thread once done
+  investigating), and a one-line note that kept-evidence directories are auto-pruned after ~30 days
+  if never manually cleaned up (see `references/keep-evidence.md`).
 - **Verified / unverified / remaining risks and assumptions** — be honest; never dress up
   something written but not run/verified as "done."
 
@@ -1383,7 +1521,9 @@ Structure:
 - Always include the `⚠️ SCOPE CONSTRAINT` block in every round's `--focus`.
 - Every round appends one line to the review history log — best-effort on failure, but skipping
   the write on purpose is not allowed.
-- **Always run `--cleanup` on every terminal path, for every group** — this is not optional, not
+- **Always run `--cleanup` on every terminal path, for every group, UNLESS `--keep-evidence` is ON
+  for this session AND the outcome is non-CLEAN** (see "Kept evidence on failure" above and Phase
+  3's keep-evidence gate) — outside that one deliberate exception, this is not optional, not
   user-prompted, and not something a future round can undo by mistake (the wrapper's own
   `--cleanup`/dispatch mode split already prevents cleaning up a thread a caller is still trying
   to `--resume`).

@@ -22,6 +22,27 @@ cleanup_temp_files() {
     rm -f "$TEMP_FILE_REGISTRY"
   fi
 }
+# keep_and_remove_last_message -- best-effort copies $LAST_MESSAGE_FILE to
+# $KEEP_LAST_MESSAGE_PATH (when the caller asked for one via
+# --keep-last-message) before removing the wrapper's own private copy.
+# Called from EVERY terminal path below, including on_signal and the
+# no_thread_started early exit -- not just the four normal-result branches
+# further down -- so a caller can inspect the actual model output on any
+# failure reason, not just the ones reached after a thread has started.
+# Guards on `${LAST_MESSAGE_FILE:-}` being set at all: on_signal can fire at
+# any point after `trap on_signal INT TERM` is installed, including before
+# `mktemp_registered LAST_MESSAGE_FILE` has ever run -- referencing an
+# unset LAST_MESSAGE_FILE under `set -u` would otherwise abort the trap
+# itself instead of letting it report `interrupted` cleanly. Same
+# copy-then-delete pattern as run-ccs-review.sh's own helper.
+keep_and_remove_last_message() {
+  if [ -n "${LAST_MESSAGE_FILE:-}" ]; then
+    if [ -n "${KEEP_LAST_MESSAGE_PATH:-}" ]; then
+      cp "$LAST_MESSAGE_FILE" "$KEEP_LAST_MESSAGE_PATH" 2>/dev/null || true
+    fi
+    rm -f "$LAST_MESSAGE_FILE"
+  fi
+}
 # kill_process_group PID -> TERM, brief wait, then KILL, targeting the whole
 # process group (codex is a Node wrapper that spawns real child processes).
 kill_process_group() {
@@ -33,10 +54,18 @@ kill_process_group() {
 }
 on_signal() {
   kill_process_group "${CODEX_PID:-}"
+  # Reap the killed dispatch before touching $LAST_MESSAGE_FILE: SIGKILL only
+  # requests termination, it does not prove the child has actually stopped
+  # writing to (or holding open) its -o file yet. `wait` blocks until the
+  # kernel confirms the process is gone, so the copy/delete below can never
+  # race the writer. Guarded on CODEX_PID being set: a signal landing before
+  # dispatch (e.g. during diff collection) has no PID to wait on.
+  [ -n "${CODEX_PID:-}" ] && wait "$CODEX_PID" 2>/dev/null
   local job_pid
   for job_pid in $(jobs -p 2>/dev/null); do
     kill -KILL -"$job_pid" 2>/dev/null
   done
+  keep_and_remove_last_message
   if [ -n "${THREAD_ID:-}" ]; then
     local tid_json
     tid_json="$(printf '%s' "$THREAD_ID" | jq -Rs '.')"
@@ -80,6 +109,7 @@ fi
 CWD=""
 RESUME_THREAD_ID=""
 SCHEMA=""
+KEEP_LAST_MESSAGE_PATH=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -98,6 +128,14 @@ while [ $# -gt 0 ]; do
     --output-schema)
       [ $# -ge 2 ] || { printf '{"ok":false,"reason":"bad_args","detail":"--output-schema requires a value"}\n'; exit 1; }
       SCHEMA="$2"; shift 2 ;;
+    --keep-last-message)
+      # Public, opt-in flag (documented in SKILL.md): best-effort copies
+      # codex exec's own -o/--output-last-message file to the given path
+      # before it is otherwise deleted, regardless of whether this round
+      # succeeds or fails, so a caller can inspect the actual non-conforming
+      # model output on a failure instead of only knowing THAT it failed.
+      [ $# -ge 2 ] || { printf '{"ok":false,"reason":"bad_args","detail":"--keep-last-message requires a value"}\n'; exit 1; }
+      KEEP_LAST_MESSAGE_PATH="$2"; shift 2 ;;
     *)
       DETAIL_JSON="$(printf '%s' "$1" | jq -Rs '"unknown argument: " + .')"
       printf '{"ok":false,"reason":"bad_args","detail":%s}\n' "$DETAIL_JSON"
@@ -202,6 +240,7 @@ if [ -z "$THREAD_ID" ]; then
     kill_process_group "$CODEX_PID"
     wait "$CODEX_PID" 2>/dev/null
     CODEX_PID=""
+    keep_and_remove_last_message
     printf '{"ok":false,"reason":"no_thread_started","detail":"no thread.started event within %ss"}\n' "$THREAD_WAIT_SECS"
     exit 1
   fi
@@ -272,17 +311,17 @@ fi
 rm -f "$EVENTLOG"
 
 if [ "$TIMED_OUT" -eq 1 ]; then
-  rm -f "$LAST_MESSAGE_FILE"
+  keep_and_remove_last_message
   printf '{"ok":false,"reason":"timeout","threadId":%s,"detail":"round exceeded %ss"}\n' "$THREAD_ID_JSON" "$DEFAULT_TIMEOUT_SECS"
   exit 1
 fi
 if [ "$EXIT_CODE" -ne 0 ]; then
-  rm -f "$LAST_MESSAGE_FILE"
+  keep_and_remove_last_message
   printf '{"ok":false,"reason":"nonzero_exit","threadId":%s,"detail":"codex exec exited %s"}\n' "$THREAD_ID_JSON" "$EXIT_CODE"
   exit 1
 fi
 if [ "$TASK_COMPLETE_SEEN" -eq 0 ]; then
-  rm -f "$LAST_MESSAGE_FILE"
+  keep_and_remove_last_message
   printf '{"ok":false,"reason":"missing_task_complete","threadId":%s,"detail":"no turn.completed event found in this dispatch'"'"'s own event stream"}\n' "$THREAD_ID_JSON"
   exit 1
 fi
@@ -292,7 +331,7 @@ fi
 # since -o already contains exactly that text.
 FINAL_TEXT="$(cat "$LAST_MESSAGE_FILE" 2>/dev/null; printf 'x')"
 FINAL_TEXT="${FINAL_TEXT%x}"
-rm -f "$LAST_MESSAGE_FILE"
+keep_and_remove_last_message
 
 if [ -z "$FINAL_TEXT" ]; then
   printf '{"ok":false,"reason":"no_final_answer","threadId":%s,"detail":"codex exec exited 0 with turn.completed but -o produced no final message"}\n' "$THREAD_ID_JSON"

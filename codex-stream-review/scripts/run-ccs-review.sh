@@ -268,6 +268,7 @@ TIMEOUT_SECS="$DEFAULT_TIMEOUT_SECS"
 # regardless of which scope ran.
 SOURCE_COVERAGE_JSON=""
 CAPTURE_EVENTLOG_PATH=""
+KEEP_LAST_MESSAGE_PATH=""
 # Reset up front so cleanup_temp_files()'s "${SAFE_GIT_HOME:-}" guard always
 # sees an explicit empty string on any exit path before the real
 # `mktemp -d` assignment below runs, never an env value inherited from
@@ -333,6 +334,17 @@ while [ $# -gt 0 ]; do
       # instead of trusting a finding's "verification" text alone.
       [ $# -ge 2 ] || { printf '{"ok":false,"reason":"bad_args","detail":"--capture-eventlog requires a value"}\n'; exit 1; }
       CAPTURE_EVENTLOG_PATH="$2"; shift 2 ;;
+    --keep-last-message)
+      # Public, opt-in flag (documented in SKILL.md): best-effort copies
+      # codex exec's own -o/--output-last-message file to the given path
+      # before it is otherwise deleted -- same copy-then-delete pattern as
+      # --capture-eventlog above, just for the final-answer text instead of
+      # the raw event stream. Copied unconditionally, regardless of whether
+      # this round succeeds or fails, so a caller can inspect the actual
+      # non-conforming model output on an invalid_json/schema_mismatch
+      # failure instead of only knowing THAT it failed.
+      [ $# -ge 2 ] || { printf '{"ok":false,"reason":"bad_args","detail":"--keep-last-message requires a value"}\n'; exit 1; }
+      KEEP_LAST_MESSAGE_PATH="$2"; shift 2 ;;
     *)
       DETAIL_JSON="$(printf '%s' "$1" | jq -Rs '"unknown argument: " + .')"
       printf '{"ok":false,"reason":"bad_args","detail":%s}\n' "$DETAIL_JSON"
@@ -359,12 +371,42 @@ kill_process_group() {
   sleep 1
   kill -KILL -"$pid" 2>/dev/null
 }
+# keep_and_remove_last_message -- best-effort copies $LAST_MESSAGE_FILE to
+# $KEEP_LAST_MESSAGE_PATH (when the caller asked for one via
+# --keep-last-message) before removing the wrapper's own private copy.
+# Called from EVERY terminal path, including on_signal and the
+# no_thread_started early exit -- not just the single unified
+# success/failure branch further down -- so a caller can inspect the
+# actual model output on any failure reason, not just the ones reached
+# after a thread has started. Guards on `${LAST_MESSAGE_FILE:-}` being set
+# at all: on_signal can fire at any point after `trap on_signal INT TERM`
+# is installed, including before `mktemp_registered LAST_MESSAGE_FILE` has
+# ever run (e.g. during git diff collection) -- referencing an unset
+# LAST_MESSAGE_FILE under `set -u` would otherwise abort the trap itself
+# instead of letting it report `interrupted` cleanly. Same copy-then-delete
+# pattern as run-stream-review.sh's own identical helper.
+keep_and_remove_last_message() {
+  if [ -n "${LAST_MESSAGE_FILE:-}" ]; then
+    if [ -n "${KEEP_LAST_MESSAGE_PATH:-}" ]; then
+      cp "$LAST_MESSAGE_FILE" "$KEEP_LAST_MESSAGE_PATH" 2>/dev/null || true
+    fi
+    rm -f "$LAST_MESSAGE_FILE"
+  fi
+}
 on_signal() {
   kill_process_group "${CODEX_PID:-}"
+  # Reap the killed dispatch before touching $LAST_MESSAGE_FILE: SIGKILL only
+  # requests termination, it does not prove the child has actually stopped
+  # writing to (or holding open) its -o file yet. `wait` blocks until the
+  # kernel confirms the process is gone, so the copy/delete below can never
+  # race the writer. Guarded on CODEX_PID being set: a signal landing before
+  # dispatch (e.g. during diff collection) has no PID to wait on.
+  [ -n "${CODEX_PID:-}" ] && wait "$CODEX_PID" 2>/dev/null
   local job_pid
   for job_pid in $(jobs -p 2>/dev/null); do
     kill -KILL -"$job_pid" 2>/dev/null
   done
+  keep_and_remove_last_message
   local out_json
   if [ -n "${THREAD_ID:-}" ]; then
     local tid_json
@@ -679,6 +721,7 @@ if [ -z "$THREAD_ID" ]; then
     kill_process_group "$CODEX_PID"
     wait "$CODEX_PID" 2>/dev/null
     CODEX_PID=""
+    keep_and_remove_last_message
     emit_final_output "$(printf '{"ok":false,"reason":"no_thread_started","detail":"no thread.started event within %ss"}\n' "$THREAD_WAIT_SECS")"
     exit 1
   fi
@@ -807,7 +850,7 @@ if [ -n "$CAPTURE_EVENTLOG_PATH" ]; then
   cp "$EVENTLOG" "$CAPTURE_EVENTLOG_PATH" 2>/dev/null || true
 fi
 rm -f "$EVENTLOG"
-rm -f "$LAST_MESSAGE_FILE"
+keep_and_remove_last_message
 # Safe only now: `wait "$CODEX_PID"` above has returned, so the dispatched
 # subshell is fully done and its one read of $PROMPT_FILE (the `<
 # "$PROMPT_FILE"` stdin redirect at dispatch time) has definitely happened.

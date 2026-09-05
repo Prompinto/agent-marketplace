@@ -36,8 +36,17 @@ shared state between them.
 printf '%s' "<what to review and what to check for>" | \
 "${CLAUDE_PLUGIN_ROOT}/scripts/run-stream-review.sh" \
   --cwd "<the project directory>" \
-  [--output-schema <path to a JSON Schema file>]
+  [--output-schema <path to a JSON Schema file>] \
+  [--keep-last-message <path>]
 ```
+
+`--keep-last-message <path>` is optional and available on both the fresh and `--resume` dispatch
+forms below: best-effort copies the round's own final-answer text to `<path>` before this wrapper
+deletes its private copy, on every terminal path (success or failure alike) — useful for seeing the
+actual model output behind a failure like `invalid_json`/`schema_mismatch`. Unlike `/ccs`'s own
+`--keep-evidence`, which automates the keep-vs-delete decision based on whether a round converged,
+this wrapper always writes it when the flag is given; keeping or deleting it afterward is entirely
+this caller's own choice.
 
 A round can legitimately take up to 30 minutes, so don't assume a fast
 reply — run it in the background and wait for it rather than treating a
@@ -99,7 +108,8 @@ printf '%s' "<only the new follow-up/rebuttal question>" | \
 "${CLAUDE_PLUGIN_ROOT}/scripts/run-stream-review.sh" \
   --cwd "<the same project directory>" \
   --resume "<threadId from the prior round>" \
-  [--output-schema <path to a JSON Schema file>]
+  [--output-schema <path to a JSON Schema file>] \
+  [--keep-last-message <path>]
 ```
 
 Put only the new question on stdin — the diff and every prior finding
