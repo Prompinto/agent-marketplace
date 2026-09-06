@@ -1,12 +1,12 @@
 # codex-stream-review Improvement Roadmap — Negotiated Plan
 
-> Status: **negotiated to CLEAN with Codex** via `/ccs` non-repo-artifact review, thread
-> `01a071e1-e91e-7a23-b2d6-cc50dcc4adb3` (cleaned up after convergence), 4 rounds, 0 unresolved
-> disagreements. Not yet implemented — this document is the design input for a future
-> `superpowers:writing-plans` implementation plan, taken phase by phase. Current plugin version:
-> 0.5.7 (still pre-1.0.0 by design: the SKILL.md structure, script contracts, and supported feature
-> set are still actively changing release to release, so a 1.0.0 tag would falsely signal a frozen
-> interface).
+> Status: **Phase 1 negotiated to CLEAN and fully implemented** (6 items, PRs #55–#59,
+> `codex-stream-review` now v0.9.0). **Phase 2 negotiated to CLEAN** in a second `/ccs`
+> non-repo-artifact session (see "Phase 2 negotiation" below) — concretized, not yet implemented.
+> Phases 3–4 remain sketch-level only. This document is the design input for
+> `superpowers:writing-plans`-style implementation, taken phase by phase. Still pre-1.0.0 by
+> design: the SKILL.md structure, script contracts, and supported feature set are still actively
+> changing release to release, so a 1.0.0 tag would falsely signal a frozen interface.
 >
 > **Convergence summary (4 rounds, all findings verified by Claude, none rebutted — every finding
 > was valid):** R1 — 4 findings (rollout-tailing dependency should be replaced by the CLI's own
@@ -392,6 +392,81 @@ file against corruption/deletion between rounds — not change-detection against
 Reviewing a changed artifact/diff is an explicit non-goal for a single active review; the roadmap
 should say so plainly rather than implying auto-detection.
 
+## Phase 2 negotiation (second `/ccs` session, non-repo-artifact, post-Phase-1-implementation)
+
+> Status: **negotiated to CLEAN with Codex**, thread `01a0741d-44e6-7ea0-8a8a-ed3cd988a95d`
+> (cleaned up after convergence), 6 rounds, 0 unresolved disagreements. Conducted after Phase 1
+> shipped in full (6 items, PRs #55–#59, `codex-stream-review` now v0.9.0) — this negotiation
+> concretizes the Phase 2 headline sketch from the original round-1 negotiation above (the
+> "deterministic convergence ledger" idea) into an actual, implementable design, grounded in the
+> REAL current SKILL.md mechanics as they exist post-Phase-1 (the review-history JSONL schema,
+> the `finding_id`/`linked_finding_id`/`claude_verification[].action` fields, the "Zero progress
+> twice in a row" Guards rule, and Phase 1 item 6's `SNAPSHOT_DIGEST` mechanism), not the
+> pre-implementation sketch that originally proposed it.
+
+**Round-by-round summary:**
+- **R1** — 4 findings, all HIGH/MEDIUM: (1) the lifecycle needs a distinct verified-fix terminal
+  state, since `accepted` only means "Claude agrees the finding is valid," not "the fix was applied
+  and re-confirmed"; (2) `claim_id` cannot be a mechanical text-similarity/hash construction — claim
+  identity requires an explicit judgment call (an existing-LLM read, not a new one), with a
+  fail-closed "when in doubt, treat as a new claim" default; (3) the oscillation-comparison tuple
+  needs an episode/snapshot boundary, since raw evidence text can vary innocuously while the
+  underlying observation is unchanged, or vice versa; (4) the persistence design needs immutable,
+  append-only `claim_events` reduced on demand, not a duplicated mutable ledger object, plus
+  group-namespacing for parallel mode and an explicit legacy-session/schema-version policy.
+- **R2** — Claude proposed keeping claim identity entirely on Claude's own side (the "existing-LLM"
+  judgment already made during Phase 2's own per-round verification pass) rather than extending
+  Codex's own output schema, and asked whether Phase 1 item 6's already-shipped `SNAPSHOT_DIGEST`
+  could serve as the "episode boundary" fingerprint Codex's R1 finding called for, avoiding new
+  machinery entirely. Also asked directly whether the full design was at risk of over-engineering
+  relative to how often non-adjacent-round oscillation is actually likely to occur.
+- **R3** — Codex **substantially simplified its own R1 proposal** in response: reuse the existing,
+  already-globally-unique `finding_id` as `claim_id` directly (group-namespaced for parallel mode)
+  instead of a canonical structured key; add just two new fields to the existing
+  `claude_verification[]` array (`claim_id`, `evidence_delta: "none"|"new"`) instead of a separate
+  `claim_events` array; confirmed `SNAPSHOT_DIGEST` reuse was sound for the episode-boundary
+  question. But raised a new, sharper finding: Claude-side claim linkage can identify a *re-raised*
+  claim, but cannot on its own prove Codex *deliberately* retracted a disputed one — a claim
+  silently disappearing from a later round's findings is ambiguous (genuine agreement? Codex simply
+  overlooking it? sycophantic backing-down with no new evidence?) — and treating disappearance as
+  implicit retraction would defeat the sycophancy-resistance goal entirely. Codex's own proposed fix
+  required a new structured `claim_updates[]` field on Codex's own output schema.
+- **R4** — Claude accepted the "resolved" terminal-state idea in full (after resolving its own
+  confusion about whether the already-shipped `SNAPSHOT_DIGEST` — Claude's frozen PRIVATE COPY
+  integrity check — meant the live repository was also frozen; it does not: the real repo stays
+  live and mutable all session, and Codex independently re-reads it via its own shell access on any
+  round, `--resume` included). Countered the schema-change proposal with a schema-untouched
+  alternative: require an exact-format `DISPOSITION <claim_id>: <value> — <reason>` marker line
+  inside Codex's EXISTING `summary` string field (already free text in the current schema),
+  mechanically pattern-matched by Claude rather than semantically interpreted — asked Codex
+  directly whether this closes the same gap as a schema-validated field. Also introduced a
+  per-round "current-subject digest" to fix a related gap Codex raised about the frozen
+  `SNAPSHOT_DIGEST` being unable to distinguish a genuine regression from a sycophantic oscillation.
+- **R5** — Codex confirmed the marker approach **is** sufficient once parsed with strict
+  cardinality/anchoring/non-empty-reason validation — "not inherently weaker once its parsed result
+  is persisted." Two remaining findings: (1) a closure needs its own small immutable JSONL record
+  (`claim_closures[]`) since `claude_verification[]` only covers CURRENTLY-appearing findings, and a
+  closed claim by definition stops appearing; (2) the round-4 "current-subject digest" fix was
+  itself a **regression** — gating oscillation detection on a whole-subject digest match would let
+  an unrelated edit to a different file mask a genuine, unchanged, still-oscillating claim about an
+  entirely different file, exactly the failure mode this feature exists to catch. Claude accepted
+  both findings and dropped the whole-subject-digest idea entirely, keeping `evidence_delta` alone
+  as the (already-sufficient) gate.
+- **R6** — Codex caught one last small, concrete gap: the marker grammar only specified
+  `RESOLVED`/`STILL OPEN`, omitting `RETRACTED` even though `retracted` is a required terminal
+  state. Fixed by adding the third marker value. **CLEAN** — Codex confirmed the design is now
+  "internally consistent and complete," using "the smallest durable mechanism needed for the stated
+  convergence goals."
+
+**What changed most from the original headline sketch, concretely:** no canonical structured key,
+no evidence hashing, no separate mutable ledger object, and no wrapper/schema change — the final
+design reuses three things that already exist post-Phase-1 (`finding_id`, `claude_verification[]`,
+and the `summary` string field) plus two small additions (two new `claude_verification[]` fields,
+one new small `claim_closures[]` array) to get the same guarantee the much heavier original sketch
+was reaching for.
+
+---
+
 ## Final consolidated plan (post-negotiation, ready for implementation planning)
 
 This section is the single source of truth for what to actually build; everything above is the
@@ -431,13 +506,60 @@ negotiation record that produced it.
    changed artifact/diff is explicitly **out of scope for an active review** — that requires a new
    `/ccs` invocation (new session id, new threads), never an auto-detected mid-review pivot.
 
-### Phase 2 — Convergence-logic hardening
-Deterministic ledger: every claim gets a stable `claim_id` (location/subject/rule), a `state` enum
-(`asserted`/`rebutted`/`accepted`/`retracted`/`deferred`), and a hash of its cited evidence.
-Convergence requires every active claim to reach a mutually-recorded terminal state with no new
-claim/evidence introduced that round. A claim revisiting a previously-seen
-`(claim_id, state, evidence-hash-set)` tuple after a rebut/re-raise cycle is explicitly
-`NOT CONVERGED`. Pure local map/set comparison — no extra LLM call.
+### Phase 2 — Convergence-logic hardening (final, fully concretized — see negotiation above)
+Goal: close finding #13 (non-consecutive-round oscillation invisible to the current "zero progress
+in the last two rounds" guard) and harden against sycophantic withdrawal, using only mechanisms
+that already exist post-Phase-1 plus minimal additions — no wrapper/schema change, no new LLM call
+beyond judgments Claude's existing per-round verification pass already makes.
+
+1. **`claim_id`** = the original `finding_id` of a claim's first-ever appearance, group-namespaced
+   in parallel mode (e.g. `g1:f3`). Reuses the existing globally-unique, ever-incrementing
+   `finding_id` scheme as-is — no canonical structured key, no evidence hashing.
+2. **`claude_verification[]` gains two fields**: `claim_id` (equal to `finding_id` for a new claim;
+   equal to an existing open claim_id when Claude judges a later finding is a re-raise of it) and
+   `evidence_delta` (`"none"`|`"new"` — whether this reassertion presents any new factual basis
+   versus the claim's own prior occurrence). Both are Claude's own judgment, made during the
+   read-and-verify pass Phase 2 step 3 already requires — no new LLM call.
+3. **A new round-level `claim_closures[]` array** (present only on a round that actually closes one
+   or more claims): `{claim_id, disposition, source_round, marker_reason}`, `disposition` exactly
+   `"resolved"|"retracted"` — the one durable record of why/when a claim reached a terminal state,
+   independent of whether it still appears in that round's `codex_review.findings[]` (by
+   definition it usually won't, once closed).
+4. **Closure mechanism — no schema change to Codex's own structured output.** When a claim's
+   disposition needs confirming, that round's `--focus` text explicitly asks Codex to include,
+   verbatim, inside its EXISTING `summary` string field, exactly one anchored, full-line marker per
+   requested claim_id: `DISPOSITION <claim_id>: RESOLVED — <non-empty reason>` (Codex's own later
+   live re-read of the current code/artifact confirms a fix landed), `DISPOSITION <claim_id>:
+   RETRACTED — <non-empty reason>` (Codex explicitly withdraws the claim, typically after a
+   rebuttal), or `DISPOSITION <claim_id>: STILL OPEN — <non-empty reason>` (no closure — logged
+   informationally, not in `claim_closures[]`). Claude's parser requires exactly one marker per
+   requested claim_id, only recognizes claim_ids it actually asked about, and requires a non-empty
+   reason — absence, a duplicate, an unrecognized claim_id, or an empty reason all fail closed (the
+   claim stays open, no closure recorded, that round cannot converge on it).
+5. **Transitions are strictly one-directional and terminal**: `open -> resolved` or
+   `open -> retracted`, never reversed. A recurrence of the same underlying issue after either
+   terminal state is a brand-new claim_id, never a reopened old one.
+6. **CLEAN requires every claim_id that has ever appeared this session to have reached `resolved`
+   or `retracted`** — an `accept`-only claim with no closure entry does not satisfy CLEAN, and
+   neither does any claim left at `deferred`.
+7. **Oscillation guard (replaces "Zero progress twice in a row" entirely)**: the moment an `open`
+   claim_id is reasserted with `evidence_delta: "none"` since its own most recent prior occurrence
+   — regardless of how many OTHER rounds intervened — that round is NOT CONVERGED. Scoped per-claim,
+   not per-adjacent-round-pair, which is what actually closes finding #13's gap. `evidence_delta`
+   alone is the gate; an earlier design draft added a whole-subject-digest match condition and it
+   was rejected during negotiation (R5) as a regression — it would let an edit to an unrelated file
+   mask a genuine, still-oscillating claim about a different file.
+8. **Reducer**: a deterministic, pure local read over the existing append-only JSONL log (`jq`),
+   exactly how the skill already reconstructs continuity today — no new mutable ledger object
+   persisted anywhere.
+9. **Parallel mode**: claim_ids are group-namespaced; each group's claims/closures are independent,
+   no cross-group claim_id ever collides.
+10. **Schema versioning + legacy-session policy**: a version marker on a session's first JSONL
+    line; `--resume` of a pre-this-feature session under the new logic is refused outright (a
+    version mismatch is a hard stop requiring a fresh session) — never a mixed-mode reduce.
+11. **Fail-closed universally**: any malformed/unknown claim_id reference, any transition other
+    than the two legal ones, or any marker-parsing ambiguity — all leave the claim open / that
+    round unable to converge, never a silent pass-through to CLEAN.
 
 ### Phase 3 — Upstream-risk hardening (shrunk after negotiation)
 Gzip-awareness for `resolve_rollout` is **dropped** — superseded by Phase 1's `-o` switch, which
@@ -458,8 +580,11 @@ explicit disposition: a phase assignment, an accepted-residual-risk statement, o
 non-goal — never silent omission.
 
 ### Next step
-Take Phase 1 (the most concretely specified) through `superpowers:writing-plans` for an actual
-implementation plan; Phases 2–4 follow the same path once Phase 1 ships.
+Phase 1 shipped in full (6 items, PRs #55–#59, v0.9.0). Phase 2 is now also fully concretized (see
+"Phase 2 negotiation" above) and ready for implementation — same one-item-at-a-time
+implement → verify → `/ccs` adversarial review-to-CLEAN → commit/push/PR cycle Phase 1 used.
+Phases 3–4 remain sketch-level only; concretize each via the same non-repo-artifact `/ccs`
+negotiation once Phase 2 ships.
 
 ---
 
