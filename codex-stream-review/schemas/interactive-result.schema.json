@@ -1,0 +1,159 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "codex-stream-review interactive (/ccs) result",
+  "type": "object",
+  "properties": {
+    "session_id": { "type": "string", "minLength": 1 },
+    "target": {
+      "type": "object",
+      "properties": {
+        "repo": { "type": "string" },
+        "scope": { "type": "string", "enum": ["uncommitted", "base", "commit"] }
+      },
+      "required": ["repo", "scope"],
+      "additionalProperties": false
+    },
+    "exit_state": {
+      "type": "string",
+      "enum": [
+        "CLEAN",
+        "NOT_CONVERGED",
+        "COULD_NOT_VERIFY",
+        "PARTIAL_COVERAGE",
+        "SNAPSHOT_INTEGRITY_FAILURE",
+        "REVIEW_LOG_INTEGRITY_FAILURE",
+        "INPUT_TOO_LARGE"
+      ]
+    },
+    "round_count": { "type": "integer", "minimum": 0 },
+    "threads": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "group": { "type": "string" },
+          "thread_id": { "type": "string", "minLength": 1 },
+          "kind": { "type": "string", "enum": ["current", "leaked"] },
+          "cleanup": { "type": "string", "enum": ["deleted", "failed", "retained"] }
+        },
+        "required": ["group", "thread_id", "kind", "cleanup"],
+        "additionalProperties": false
+      }
+    },
+    "claims": {
+      "type": ["array", "null"],
+      "items": {
+        "type": "object",
+        "properties": {
+          "claim_id": { "type": "string", "minLength": 1 },
+          "file": { "type": "string" },
+          "line": { "type": ["integer", "null"], "minimum": 1 },
+          "severity": { "type": ["string", "null"], "enum": ["low", "medium", "high", null] },
+          "summary": { "type": "string" },
+          "evidence": { "type": "string" },
+          "disposition": { "type": "string", "enum": ["open", "resolved", "retracted"] },
+          "source_round": { "type": ["integer", "null"], "minimum": 1 },
+          "marker_reason": { "type": ["string", "null"] }
+        },
+        "required": ["claim_id", "file", "line", "severity", "summary", "evidence", "disposition", "source_round", "marker_reason"],
+        "additionalProperties": false
+      }
+    },
+    "coverage": {
+      "type": ["object", "null"],
+      "properties": {
+        "status": { "type": "string", "enum": ["complete", "partial", "unknown"] },
+        "reviewed_file_count": { "type": "integer", "minimum": 0 },
+        "omitted": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": { "type": "string" },
+              "reason": { "type": "string" }
+            },
+            "required": ["path", "reason"],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": ["status", "reviewed_file_count", "omitted"],
+      "additionalProperties": false
+    },
+    "input_errors": {
+      "type": ["array", "null"],
+      "items": {
+        "type": "object",
+        "properties": {
+          "group": { "type": "string" },
+          "actual_bytes": { "type": "integer", "exclusiveMinimum": 131072 },
+          "limit_bytes": { "type": "integer", "const": 131072 }
+        },
+        "required": ["group", "actual_bytes", "limit_bytes"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["session_id", "target", "exit_state", "round_count", "threads", "claims", "coverage", "input_errors"],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": { "properties": { "exit_state": { "enum": ["SNAPSHOT_INTEGRITY_FAILURE", "REVIEW_LOG_INTEGRITY_FAILURE"] } }, "required": ["exit_state"] },
+      "then": {
+        "properties": {
+          "claims": { "type": "null" },
+          "input_errors": { "type": "null" }
+        },
+        "required": ["claims", "input_errors"]
+      }
+    },
+    {
+      "if": {
+        "properties": { "exit_state": { "not": { "enum": ["SNAPSHOT_INTEGRITY_FAILURE", "REVIEW_LOG_INTEGRITY_FAILURE"] } } },
+        "required": ["exit_state"]
+      },
+      "then": {
+        "properties": {
+          "claims": { "type": "array" }
+        },
+        "required": ["claims"]
+      }
+    },
+    {
+      "if": { "properties": { "exit_state": { "const": "INPUT_TOO_LARGE" } }, "required": ["exit_state"] },
+      "then": {
+        "properties": {
+          "input_errors": { "type": "array", "minItems": 1 }
+        },
+        "required": ["input_errors"]
+      }
+    },
+    {
+      "if": { "properties": { "exit_state": { "not": { "const": "INPUT_TOO_LARGE" } } }, "required": ["exit_state"] },
+      "then": {
+        "properties": {
+          "input_errors": { "type": "null" }
+        },
+        "required": ["input_errors"]
+      }
+    },
+    {
+      "if": { "properties": { "target": { "properties": { "scope": { "const": "uncommitted" } }, "required": ["scope"] } }, "required": ["target"] },
+      "then": {
+        "properties": {
+          "coverage": { "type": "object" }
+        },
+        "required": ["coverage"]
+      }
+    },
+    {
+      "if": { "properties": { "target": { "properties": { "scope": { "enum": ["base", "commit"] } }, "required": ["scope"] } }, "required": ["target"] },
+      "then": {
+        "properties": {
+          "coverage": { "type": "null" }
+        },
+        "required": ["coverage"]
+      }
+    }
+  ]
+}

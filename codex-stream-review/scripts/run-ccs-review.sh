@@ -5,6 +5,17 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCHEMA="$SCRIPT_DIR/../schemas/review-verdict.schema.json"
 DEFAULT_TIMEOUT_SECS=1800
 THREAD_WAIT_SECS=10
+# PROMPT_SIZE_LIMIT_BYTES: a conservative OPERATIONAL POLICY threshold on the
+# fully-rendered prompt sent to `codex exec`/`codex exec resume` -- not a
+# vendor-guaranteed hard limit, revisitable once authoritative CLI/model
+# documentation supplies a real figure. This repo's own
+# docs/superpowers/plans/2026-09-03-codex-appserver-streaming-knowledge.md
+# and real ~/.codex/sessions/**/rollout-*.jsonl files from the actual
+# installed CLI contain genuine `model_context_window: 258400` (TOKENS)
+# events. 131072 BYTES here is chosen well below a rough byte-equivalent of
+# that token window, leaving headroom for the prompt template itself,
+# Codex's own multi-round investigation, and its reasoning output.
+PROMPT_SIZE_LIMIT_BYTES=131072
 
 # Provides git_safe() (and resolves GIT_BIN) -- every git invocation that
 # reads a reviewed repo's diff/show content below goes through it, never a
@@ -799,6 +810,51 @@ BOUNDARY="DIFF_$$_${RANDOM}${RANDOM}"
 
 mktemp_registered PROMPT_FILE
 build_review_prompt > "$PROMPT_FILE"
+
+# Preflight: the fully rendered prompt -- diff and/or --focus/Context text,
+# whichever combination this dispatch actually merged into one buffer, the
+# only point where both are already combined -- is measured against
+# PROMPT_SIZE_LIMIT_BYTES BEFORE dispatch, on EVERY round, fresh or resumed:
+# build_review_prompt() always renders the complete focus text on both fresh
+# and resume calls, so an oversized resumed rebuttal/follow-up text can
+# overflow context just as much as an oversized fresh diff. Fails closed
+# instead of silently risking a context-window overflow mid-review. This
+# check fires at the exact same point in the timeline as the empty-diff fast
+# path above (collection already complete, `codex exec` never yet launched),
+# so no dispatch occurs this round regardless of fresh vs. resume -- neither
+# $EVENTLOG nor $LAST_MESSAGE_FILE is ever allocated on this path, and
+# $DISPATCH_PID is never set, so build_execution_json()'s own eligibility
+# check naturally omits an `execution` splice here, exactly like
+# bad_args/git_error/incomplete_collection above.
+PROMPT_SIZE_BYTES="$(wc -c < "$PROMPT_FILE" | tr -d ' ')"
+if [ "$PROMPT_SIZE_BYTES" -gt "$PROMPT_SIZE_LIMIT_BYTES" ]; then
+  if [ -n "$RESUME_THREAD_ID" ]; then
+    # Resumed round: the diff is never resent on --resume, so whatever is
+    # oversized here is this round's own accumulated focus/rebuttal text.
+    # The underlying thread is untouched, not abandoned -- it is neither
+    # added to a leaked-thread set nor force-kept-alive; it gets the SAME
+    # normal terminal-path cleanup as any other outcome's thread (the
+    # caller's own --keep-evidence gate decides that, not this reason).
+    DETAIL_JSON="$(printf 'the rebuttal/follow-up focus text for this round produced a %s-byte prompt, exceeding the %s-byte limit -- shorten the follow-up text for this round; the existing thread remains valid for a later --resume with shorter text (if the caller used --keep-evidence)' "$PROMPT_SIZE_BYTES" "$PROMPT_SIZE_LIMIT_BYTES" | jq -Rs '.')"
+    rm -f "$PROMPT_FILE"
+    emit_final_output "$(printf '{"ok":false,"reason":"artifact_too_large","threadId":%s,"detail":%s}\n' "$THREAD_ID_JSON" "$DETAIL_JSON")"
+  elif [ -n "$DIFF_TEXT" ]; then
+    # Fresh --uncommitted/--base/--commit round: --focus is merged into the
+    # SAME rendered prompt as the diff, so a substantial focus/briefing plus
+    # even a moderate diff can combine to exceed the limit too -- never
+    # assert the diff alone is at fault.
+    DETAIL_JSON="$(printf 'the combined rendered prompt (diff plus focus/context text) is %s bytes, exceeding the %s-byte limit -- reduce whichever actually contributed: a substantial pasted focus/briefing, the selected diff scope itself (e.g. a narrower commit/range), or both; --focus is advisory and never filters/shrinks the diff even when reduced' "$PROMPT_SIZE_BYTES" "$PROMPT_SIZE_LIMIT_BYTES" | jq -Rs '.')"
+    rm -f "$PROMPT_FILE"
+    emit_final_output "$(printf '{"ok":false,"reason":"artifact_too_large","detail":%s}\n' "$DETAIL_JSON")"
+  else
+    # Fresh non-repo-artifact round (CLEAN_REPO_DIR -- empty diff, all
+    # content in --focus): the pasted artifact itself is what is oversized.
+    DETAIL_JSON="$(printf 'the pasted artifact/context text alone produced a %s-byte prompt, exceeding the %s-byte limit -- split it into smaller pieces reviewed separately' "$PROMPT_SIZE_BYTES" "$PROMPT_SIZE_LIMIT_BYTES" | jq -Rs '.')"
+    rm -f "$PROMPT_FILE"
+    emit_final_output "$(printf '{"ok":false,"reason":"artifact_too_large","detail":%s}\n' "$DETAIL_JSON")"
+  fi
+  exit 1
+fi
 
 mktemp_registered EVENTLOG
 # LAST_MESSAGE_FILE: codex exec's own `-o/--output-last-message` writes the
