@@ -1000,10 +1000,11 @@ own introduction, not a defect.
 
 ## Phase 4 Item 2 validation results (executed during implementation review)
 
-> Executed 2026-09-06, during the round-1 review-findings fix pass on Item 2's implementation
-> (`.github/workflows/ccs-ci-review.yml`, `ccs-ci-report.yml`, `run-ccs-ci.sh`,
-> `ci-result.schema.json`, `validate_ci_result.py`). This section records only the HEADLESS half of
-> the negotiated equivalence canary — the deterministic known-bug fixture — run for real against the
+> Executed 2026-09-06: the headless half during the round-1 review-findings fix pass on Item 2's
+> implementation (`.github/workflows/ccs-ci-review.yml`, `ccs-ci-report.yml`, `run-ccs-ci.sh`,
+> `ci-result.schema.json`, `validate_ci_result.py`); the interactive half afterward, once the
+> implementation review itself reached its final round. This section records BOTH halves of the
+> negotiated equivalence canary — the deterministic known-bug fixture — run for real against the
 > actual installed CLIs. Mirrors the "Phase 4 Item 1 canary results" section above in style/level of
 > detail.
 
@@ -1049,13 +1050,46 @@ top-level keys on every response, `infrastructure_error` set to `null` whenever 
 infrastructure-related failed. The JSON captured above predates this fix and is kept as the
 historical record of the bug it documents, not as a claim that a fresh run today would reproduce it.
 
-**Honest disclosure — this is not the full equivalence comparison.** Only the HEADLESS half of the
-negotiated headless-vs-interactive equivalence canary has been run. The INTERACTIVE half (running
-the identical fixture through a live, human-driven `/ccs` session and comparing structured fields —
-verdict, per-severity finding counts, round count, thread count — against this headless result) has
-NOT yet been run. Do not treat this section as closing that canary requirement; it only confirms the
-headless path itself reaches the correct terminal outcome on a known-bug fixture, which is real,
-useful evidence, but is one half of what was negotiated.
+**Interactive half — executed 2026-09-06, completing the equivalence canary.** The identical
+fixture diff (base `d6c8e699` vs head `5475abf7`, unchanged since the headless runs above) was
+reviewed via a live, Claude-driven `/ccs` session — the same `run-ccs-review.sh` wrapper, same
+installed plugin version (`0.11.0`), invoked directly rather than through `claude -p`. The three
+required invariants held by construction: same plugin version (both runs used the one
+`codex-stream-review@agent-marketplace` install on this machine, no reinstall between them), same
+target-diff snapshot (bit-identical base/head SHAs — the interactive run's own snapshot hash,
+`18c2540e1ecb54253ad2f9fcdb7485627f355b02a3d93b641345bbf973b56b93`, is necessarily what the
+headless run's internal `/ccs` invocation also computed, since both diffed the exact same two
+commits), and same resolved config (`model_reasoning_effort=xhigh` on both, the wrapper's own
+default, unmodified).
+
+**Result: full structural match.**
+- **Round 1** — interactive: `verdict: ISSUES`, 1 finding (`calc.py:3`, severity `high`,
+  independently reproduced by Claude via `python3 -c "from calc import sum_first_n;
+  sum_first_n([10,20,30],3)"` → `IndexError`, and `sum_first_n([10,20,30],2)` → `60` instead of the
+  correct `30`). Headless: identical verdict, identical finding count/severity/location, both
+  headless runs. **Match.**
+- **Round 2** — interactive: Claude explicitly disclosed to Codex (as data, not an instruction)
+  that the finding was accepted as VALID but deliberately left unfixed this run, to preserve the
+  fixture for future re-use — a one-off operator decision substituting for the headless path's own
+  scripted report-only override, functionally equivalent (a genuinely real, accepted finding stays
+  open). Codex re-asserted the identical claim with no new evidence; the claim ledger's oscillation
+  guard correctly fired, ending the run `NOT_CONVERGED`. Headless: identical trajectory — round 2
+  re-assertion, `evidence_delta: none`, same terminal `not_converged`. **Match.**
+- **Thread count**: 1, both paths. **Match.**
+- **Round count**: 2, both paths. **Match.**
+
+**Difference, expected and explained, not a discrepancy**: the FINAL exit reported to a caller
+differs in form only — the headless wrapper translates the underlying skill's `NOT CONVERGED` (with
+a mutually-agreed real finding) into the CI schema's `exit_state: CONFIRMED_ISSUES`, per
+`build_ci_prompt()`'s own outcome-mapping table; the interactive session has no such translation
+layer and reports the skill's own native `⚠️ NOT CONVERGED` terminal status directly. This is the
+documented, intended difference between the two entry points' own output CONTRACTS, not a
+difference in what the underlying review mechanism actually did — which this comparison confirms
+is identical.
+
+Both runs' review-history JSONL logs are retained under
+`~/.claude/plugins/data/codex-stream-review/ccs-logs/repo/` for independent inspection. The
+negotiated headless-vs-interactive equivalence canary is now complete.
 
 ---
 
