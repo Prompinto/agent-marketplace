@@ -14,8 +14,9 @@ exact parsing rule):
 capture for every round of this session (see `references/capture-evidence.md`, read only when this
 flag is used); `codex-stream-review:ccs --keep-evidence <task description>` — opt-in retention of a
 failed round's kept last-message output and its Codex thread, skipping automatic `--cleanup` on a
-non-CLEAN terminal outcome (see `references/keep-evidence.md`, read only when this flag is used).
-Omit both and
+non-CLEAN terminal outcome other than `🛑 SNAPSHOT INTEGRITY FAILURE`, which always cleans up
+regardless (see `references/keep-evidence.md`, read only when this flag is used, and "Snapshot
+integrity" below, which applies unconditionally). Omit both and
 `/ccs` behaves exactly as documented everywhere else in this file, with zero added fields anywhere.
 Any other free text is the TASK.
 
@@ -32,8 +33,9 @@ non-repo artifact is handled, via the `CLEAN_REPO_DIR` mechanism).
 `/ccs` dispatches every review round through `run-ccs-review.sh`, a resumable-thread wrapper — one
 persistent Codex thread per reviewer for the whole run, `--resume`d every round after the first
 rather than re-sent the diff each time. It **always cleans up its Codex thread on every terminal path** (the one deliberate exception: a non-CLEAN outcome with `--keep-evidence` ON, see "Kept
-evidence on failure" below) — never left to the user by default, unlike `stream-review`'s own
-caller-owns-cleanup contract.
+evidence on failure" below — itself unconditionally overridden back to always-cleanup for a
+`🛑 SNAPSHOT INTEGRITY FAILURE` specifically, see "Snapshot integrity" below) — never left to the
+user by default, unlike `stream-review`'s own caller-owns-cleanup contract.
 
 `/ccs` also supports parallel multi-reviewer mode — N concurrent, dimension-focused reviewers
 dispatched within the same round (see Phase 1 below for the sizing/mode-selection logic and the
@@ -55,6 +57,11 @@ there is no "installed plugin predates this flag" migration case for `/ccs` to g
 `--keep-evidence` is supported — see `references/keep-evidence.md` for its full mechanics, read
 only when this flag is used. It is independent of `--capture-evidence`: either, both, or neither
 may be given for a session, in any order (see Phase 0 Step 0 for the exact parsing rule).
+
+**Snapshot integrity is always on, no opt-in** — see `references/snapshot-integrity.md` for its
+full mechanics. Every session hashes its own private copy of the reviewed subject once, at round 1,
+and revalidates it before every later round's dispatch; a corrupted or deleted local copy is a hard
+stop (`🛑 SNAPSHOT INTEGRITY FAILURE`), never a silently-continued review.
 
 **Parallel multi-reviewer mode is supported** (see Phase 1 below): every group — including the
 single-reviewer case, `GROUP="main"` — keeps its own persistent, resumable Codex thread for the
@@ -301,10 +308,13 @@ never accidentally clean up the very thread it just asked to `--resume`.
 `run-stream-review.sh` leaves a thread's cleanup entirely to the caller because a generic caller
 might still want to `--resume` it later. `/ccs` owns a thread's entire lifecycle itself — it is
 the only thing that ever `--resume`s it — so it calls `--cleanup` on **every** terminal path
-(CLEAN, NOT CONVERGED, COULD NOT VERIFY, PARTIAL COVERAGE) automatically, with no separate opt-in
-step a human needs to remember — **except** when `--keep-evidence` was ON for this session AND the
-outcome is non-CLEAN, in which case cleanup is deliberately skipped instead (see "Kept evidence on
-failure" below and Phase 3's own keep-evidence gate). See "Phase 3 — Terminal path" below.
+(CLEAN, NOT CONVERGED, COULD NOT VERIFY, PARTIAL COVERAGE, SNAPSHOT INTEGRITY FAILURE)
+automatically, with no separate opt-in step a human needs to remember — **except** when
+`--keep-evidence` was ON for this session AND the outcome is non-CLEAN, in which case cleanup is
+deliberately skipped instead (see "Kept evidence on failure" below and Phase 3's own keep-evidence
+gate) — **with one further exception to THAT exception**: a SNAPSHOT INTEGRITY FAILURE always
+cleans up regardless of `--keep-evidence` (see "Snapshot integrity" below and Phase 3's own
+keep-evidence gate for why). See "Phase 3 — Terminal path" below.
 
 > **Discrepancy note:** this project's `task-2-brief.md` (the brief for the task that built this
 > wrapper) referenced an `--output-schema <path>` flag on it. The actual, current
@@ -347,6 +357,24 @@ Step 1's `--keep-last-message` flag, Phase 2's keep-or-delete step, and Phase 3'
 cleanup-skip) — proceeding without having read it first will leave those points undocumented for
 this session. If `--keep-evidence` is OFF for this session, never read this file and never touch
 anything it describes — zero behavior change from every other place in this skill.
+
+---
+
+## Snapshot integrity (always on, no opt-in)
+
+**Unlike `--capture-evidence`/`--keep-evidence`, this is not a flag — it applies to every
+`codex-stream-review:ccs` invocation that gets past Phase 0's early-exit checks.** Full mechanics
+live in `references/snapshot-integrity.md`.
+
+**Your very next action after Phase 0 step 4 determines the ARTIFACT — before Phase 1's "Determine
+review mode" ever runs, and regardless of `--capture-evidence`/`--keep-evidence` — is to Read
+`codex-stream-review/skills/ccs/references/snapshot-integrity.md` in full.** That file's procedure
+is required at two later points in this run: allocating `SNAPSHOT_FILE`/`SNAPSHOT_DIGEST` (right
+after Phase 1's "Determine review mode" sizing step for a repo-diff round, or right after Phase 0
+step 4 itself for a non-repo-artifact round) and the pre-dispatch revalidation check every round
+2+ runs in Phase 1 Step 1, before that round's `--resume` call. Proceeding without having read it
+first will leave both points undocumented for this session. This applies to every review this
+skill ever runs — there is no OFF state to skip it for.
 
 ---
 
@@ -566,6 +594,19 @@ up using `--capture-evidence` at all):**
      before creating anything or dispatching any round — is to Read
      `codex-stream-review/skills/ccs/references/non-repo-artifact.md` in full.**
 
+5. **Snapshot & hash the canonical review subject (always on, no opt-in — see "Snapshot integrity"
+   above; full mechanics in `references/snapshot-integrity.md`, already read per that section's own
+   mandatory-read instruction).** For a **non-repo-artifact round**, do this now, right here, once
+   the pasted artifact text is finalized — before Phase 1 ever composes round 1's own `FOCUS_FILE`
+   around it: write that exact artifact text into a fresh `mktemp`'d `SNAPSHOT_FILE` and hash it
+   with `shasum -a 256`, remembering both `SNAPSHOT_FILE` and `SNAPSHOT_DIGEST` as literal facts
+   for the rest of the run, the same way `SESSION_ID`/`REPO_ROOT` already are. For a **repo-diff
+   round**, this step is deferred — it happens immediately after Phase 1's own "Determine review
+   mode" sizing step instead (that step already runs the exact right sanitized git invocation for
+   the selected scope; the snapshot reuses it rather than issuing a second, separately-audited git
+   call) — see that section below for where it actually runs. Either way, this happens exactly
+   once, before round 1 ever dispatches, and is never re-collected afterward.
+
 ---
 
 ## Phase 1 — Round dispatch
@@ -707,6 +748,98 @@ Sizing must reflect whatever scope was actually selected, using the wrapper's ow
 logic for that scope — never silently default to counting the uncommitted working-tree diff (or
 any other approximation) for a review that was never scoped to it.
 
+**Immediately after sizing concludes, for a repo-diff round — snapshot & hash the canonical review
+subject (always on, no opt-in; already read per the "Snapshot integrity" section's mandatory-read
+instruction — full mechanics in `references/snapshot-integrity.md`).** This is its own
+separately-dispatched call — like every other git-touching step in this file, it re-establishes
+its OWN sanitization from scratch (`GIT_BIN`, `SANITIZE_HOME`, the `unset` loop) rather than
+assuming the sizing step's shell state survived, since "each later Bash/Monitor call gets a fresh
+shell" (Phase 0's own opening note). Mirror the wrapper's exact per-scope command **and check every
+command's own exit status before ever recording a digest** — a failed collection must never be
+allowed to produce a "successfully" hashed empty/partial file that would silently pass every later
+revalidation:
+```bash
+REPO_ROOT_FILE="<literal from Phase 0>"; REPO_ROOT="$(cat "$REPO_ROOT_FILE")"; REPO_ROOT="${REPO_ROOT%x}"
+for _v in $(git rev-parse --local-env-vars 2>/dev/null || printf '%s\n' GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CONFIG GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT GIT_OBJECT_DIRECTORY GIT_DIR GIT_WORK_TREE GIT_IMPLICIT_WORK_TREE GIT_GRAFT_FILE GIT_INDEX_FILE GIT_NO_REPLACE_OBJECTS GIT_REPLACE_REF_BASE GIT_PREFIX GIT_SHALLOW_FILE GIT_COMMON_DIR) GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_TEMPLATE_DIR; do
+  unset "$_v"
+done
+GIT_BIN="$(command -v git)"
+SANITIZE_HOME=$(mktemp -d)
+SNAPSHOT_FILE=$(mktemp "/tmp/ccs-${SESSION_ID}-snapshot.bin.XXXXXX")
+SNAPSHOT_OK=1
+
+# --uncommitted (re-derive DIFF_BASE in THIS call too -- it does not persist from the sizing
+# step's own separate shell; same unborn-HEAD guard as Phase 0 step 4's own fallback and the
+# sizing step above):
+if env -i "PATH=/usr/bin:/bin" "HOME=$SANITIZE_HOME" "GIT_CONFIG_NOSYSTEM=1" \
+  "$GIT_BIN" -C "$REPO_ROOT" -c core.fsmonitor= rev-parse --verify -q HEAD >/dev/null 2>&1; then
+  DIFF_BASE="HEAD"
+else
+  DIFF_BASE="$(env -i "PATH=/usr/bin:/bin" "HOME=$SANITIZE_HOME" "GIT_CONFIG_NOSYSTEM=1" \
+    "$GIT_BIN" -C "$REPO_ROOT" -c core.fsmonitor= hash-object -t tree /dev/null)"
+fi
+if env -i "PATH=/usr/bin:/bin" "HOME=$SANITIZE_HOME" "GIT_CONFIG_NOSYSTEM=1" \
+  "$GIT_BIN" -C "$REPO_ROOT" -c core.fsmonitor= diff --no-ext-diff --no-textconv "$DIFF_BASE" > "$SNAPSHOT_FILE"; then
+  env -i "PATH=/usr/bin:/bin" "HOME=$SANITIZE_HOME" "GIT_CONFIG_NOSYSTEM=1" \
+    "$GIT_BIN" -C "$REPO_ROOT" -c core.fsmonitor= ls-files --others --exclude-standard >> "$SNAPSHOT_FILE" || SNAPSHOT_OK=0
+else
+  SNAPSHOT_OK=0
+fi
+
+# --base <ref> (use INSTEAD of the --uncommitted block above — never both; no untracked-name append,
+# --base never includes untracked files, same as sizing):
+# env -i "PATH=/usr/bin:/bin" "HOME=$SANITIZE_HOME" "GIT_CONFIG_NOSYSTEM=1" \
+#   "$GIT_BIN" -C "$REPO_ROOT" -c core.fsmonitor= diff --no-ext-diff --no-textconv "<ref>...HEAD" > "$SNAPSHOT_FILE" || SNAPSHOT_OK=0
+
+# --commit <sha> (use INSTEAD of the --uncommitted block above — never both; mirror the wrapper's
+# own merge-vs-non-merge branch exactly, same PARENT_COUNT pattern as sizing; no untracked-name
+# append, --commit never includes untracked files):
+# PARENT_COUNT="$(env -i "PATH=/usr/bin:/bin" "HOME=$SANITIZE_HOME" "GIT_CONFIG_NOSYSTEM=1" \
+#   "$GIT_BIN" -C "$REPO_ROOT" -c core.fsmonitor= show -s --format=%P --no-ext-diff --no-textconv "<sha>" 2>/dev/null | wc -w | tr -d ' ')"
+# if [ "$PARENT_COUNT" -ge 2 ]; then
+#   env -i "PATH=/usr/bin:/bin" "HOME=$SANITIZE_HOME" "GIT_CONFIG_NOSYSTEM=1" \
+#     "$GIT_BIN" -C "$REPO_ROOT" -c core.fsmonitor= diff --no-ext-diff --no-textconv "<sha>^1" "<sha>" > "$SNAPSHOT_FILE" || SNAPSHOT_OK=0
+# else
+#   env -i "PATH=/usr/bin:/bin" "HOME=$SANITIZE_HOME" "GIT_CONFIG_NOSYSTEM=1" \
+#     "$GIT_BIN" -C "$REPO_ROOT" -c core.fsmonitor= show --no-ext-diff --no-textconv "<sha>" > "$SNAPSHOT_FILE" || SNAPSHOT_OK=0
+# fi
+
+rm -rf "$SANITIZE_HOME"
+INSTALL_PATH_FILE="<literal from Phase 0>"
+if [ "$SNAPSHOT_OK" -eq 1 ]; then
+  SNAPSHOT_DIGEST="$(shasum -a 256 "$SNAPSHOT_FILE" | awk '{print $1}')"
+  # A pipe's own exit status reflects its LAST command (awk), never shasum's -- shasum failing to
+  # read SNAPSHOT_FILE (permissions, TOCTOU deletion between mktemp and here) exits the pipe 0 with
+  # an empty $SNAPSHOT_DIGEST, not a nonzero status this `if` could catch. Validate the VALUE
+  # itself instead: a real sha256 digest is always exactly 64 lowercase hex characters.
+  printf '%s' "$SNAPSHOT_DIGEST" | grep -qE '^[0-9a-f]{64}$' || SNAPSHOT_OK=0
+fi
+if [ "$SNAPSHOT_OK" -ne 1 ]; then
+  echo "snapshot collection or hashing failed -- stop here, do not dispatch round 1" >&2
+  rm -f "$SNAPSHOT_FILE" "$REPO_ROOT_FILE" "$INSTALL_PATH_FILE"
+  exit 1
+fi
+echo "SNAPSHOT_FILE=$SNAPSHOT_FILE"
+echo "SNAPSHOT_DIGEST=$SNAPSHOT_DIGEST"
+```
+Use exactly ONE of the three scope blocks above, matching whatever scope Phase 0 actually
+selected — never more than one, and never a block for a scope that wasn't chosen. Untracked-name
+capture applies ONLY inside the `--uncommitted` block, exactly mirroring "Determine review mode"'s
+own sizing commands and the wrapper's actual `--uncommitted`-only untracked-file handling
+(`scripts/collect_untracked_files.py`) — `--base`/`--commit` never touch `ls-files --others`, since
+neither scope ever includes untracked files (see the sizing section's own note on this, just above).
+A nonzero exit from any collection command, OR a `SNAPSHOT_DIGEST` that fails the 64-hex-character
+validation (catching a `shasum` that silently failed to read `SNAPSHOT_FILE` — a pipe's own exit
+status reflects its last command, `awk`, never `shasum`'s own — which would otherwise leave
+`SNAPSHOT_DIGEST` empty without tripping any exit-code check), is a hard stop for this whole review,
+before round 1 ever dispatches — never a partial/empty snapshot silently hashed and carried
+forward. On that hard stop, **also remove `SNAPSHOT_FILE`, `REPO_ROOT_FILE`, and
+`INSTALL_PATH_FILE`** before exiting — this failure path never reaches Phase 3's own cleanup, so
+skipping this would leave those session-scoped temp files stranded under `/tmp` indefinitely.
+Remember both `SNAPSHOT_FILE` and `SNAPSHOT_DIGEST` as literal facts for the rest of the run, the
+same way `REPO_ROOT`/`SESSION_ID` already are — never re-collected after this point (see
+`references/snapshot-integrity.md` for why this is a deliberate non-goal, not an oversight).
+
 Full mechanics — what parallel mode actually is, the scope-sizing table, when to use
 multiple reviewers, and how convergence works across groups — live in `references/parallel-mode.md`.
 
@@ -797,6 +930,26 @@ idiom section above for why `FOCUS_FILE` is the one exception) — into that gro
     focus text" section (already read per the parallel-mode decision above).
 
 ### Step 1 — dispatch (primary channel)
+
+**Round 2+ only — snapshot revalidation, once per round, before ANY group's dispatch below is
+issued** (already read per the "Snapshot integrity" section's mandatory-read instruction — full
+mechanics in `references/snapshot-integrity.md`). Run as its own small check-and-branch call,
+distinct from the dispatch call that follows:
+```bash
+SNAPSHOT_FILE="<literal from allocation, Phase 0 step 5 / Phase 1's post-sizing step>"
+SNAPSHOT_DIGEST="<literal from that same allocation>"
+if [ ! -f "$SNAPSHOT_FILE" ] || [ "$(shasum -a 256 "$SNAPSHOT_FILE" | awk '{print $1}')" != "$SNAPSHOT_DIGEST" ]; then
+  echo "SNAPSHOT_INTEGRITY_FAILURE"
+else
+  echo "SNAPSHOT_INTEGRITY_OK"
+fi
+```
+On `SNAPSHOT_INTEGRITY_FAILURE`: do **not** dispatch any group's `--resume` call this round — skip
+directly to Phase 3, report the new terminal status `🛑 SNAPSHOT INTEGRITY FAILURE` (see Guards
+below and `references/snapshot-integrity.md` for the exact required handling, including why this
+runs Phase 3's cleanup unconditionally even under `--keep-evidence`). On `SNAPSHOT_INTEGRITY_OK`,
+proceed to dispatch normally, below. Round 1 never runs this check — there is nothing yet to
+revalidate against.
 
 For each group dispatched this round (one, for the common `GROUP="main"` single-reviewer case; N
 concurrent backgrounded dispatches for a parallel round — one per group, each with its own temp
@@ -1113,6 +1266,15 @@ wave of N concurrent calls (or 1, in single-reviewer mode); the 20-round cap is 
 meaning.
 
 ### Guards
+- **🛑 SNAPSHOT INTEGRITY FAILURE is not a convergence outcome — it short-circuits the loop
+  entirely.** Detected at the top of Step 1 on any round 2+ (see that section above and
+  `references/snapshot-integrity.md`), never inside Phase 2's own convergence check. On detection:
+  no group dispatches this round, the round counter never advances, and the run goes straight to
+  Phase 3 — cleanup runs unconditionally (every `GROUP_THREADS`/`LEAKED_THREAD_IDS` thread, even
+  under `--keep-evidence`, since the threads' own history can no longer be vouched for as
+  describing the subject Claude's local record says it does), `$SNAPSHOT_FILE` itself is removed,
+  and the final report tells the user plainly that a fresh `codex-stream-review:ccs` invocation is
+  needed — never silently restarted on the user's behalf.
 - **Never fake-clean.** A genuine, evidence-unresolved disagreement is not convergence.
 - **Cap:** R = 20 without convergence → stop, report **⚠️ NOT CONVERGED**, listing every open
   disagreement (finding, Codex's position, Claude's evidence-based counter, why unresolved).
@@ -1411,10 +1573,10 @@ this JSONL audit log, which persists as a durable record.
 
 ## Phase 3 — Terminal path
 
-On **every** terminal outcome — `✅ CLEAN`, `⚠️ NOT CONVERGED`, `⚠️ COULD NOT VERIFY`, or
-`⚠️ PARTIAL COVERAGE` — do all of the following before reporting to the user. None of these is
-ever left to the user to remember; this is the deliberate difference from `stream-review`'s own
-caller-owns-cleanup contract (see "Mode 2 — cleanup" above).
+On **every** terminal outcome — `✅ CLEAN`, `⚠️ NOT CONVERGED`, `⚠️ COULD NOT VERIFY`,
+`⚠️ PARTIAL COVERAGE`, or `🛑 SNAPSHOT INTEGRITY FAILURE` — do all of the following before
+reporting to the user. None of these is ever left to the user to remember; this is the deliberate
+difference from `stream-review`'s own caller-owns-cleanup contract (see "Mode 2 — cleanup" above).
 
 **Keep-evidence gate — checked once, before step 1 below.** If `--keep-evidence` is ON for this
 session AND this run's final terminal status is NOT `✅ CLEAN` (i.e. it is `⚠️ NOT CONVERGED`,
@@ -1423,7 +1585,12 @@ every thread in `GROUP_THREADS` and `LEAKED_THREAD_IDS` alive so a human can `--
 keep investigating, or inspect it directly — then go straight to step 3 and the final report. When
 `--keep-evidence` is OFF, or the outcome IS `✅ CLEAN`, run steps 1 and 2 exactly as written below,
 with no change from today. See `references/keep-evidence.md` for the full reasoning and the final
-report's additional required content in this case.
+report's additional required content in this case. **`🛑 SNAPSHOT INTEGRITY FAILURE` is the one
+outcome that is NEVER subject to this gate, even with `--keep-evidence` ON** — always run steps 1
+and 2 unconditionally for it (see `references/snapshot-integrity.md` for why: the threads' own
+history can no longer be vouched for as describing the subject Claude's local record says it does,
+so keeping them alive would build on an already-unreliable foundation rather than preserve a
+trustworthy one).
 
 1. **Clean up every group's final Codex thread**, for every group slug that ever obtained a real
    `THREAD_ID` this run (i.e. every entry in `GROUP_THREADS` — one entry for the common
@@ -1462,14 +1629,16 @@ report's additional required content in this case.
 
 3. **Clean up session-level temp files:**
    ```bash
-   rm -f "<literal REPO_ROOT_FILE>" "<literal INSTALL_PATH_FILE>"
+   rm -f "<literal REPO_ROOT_FILE>" "<literal INSTALL_PATH_FILE>" "<literal SNAPSHOT_FILE>"
    # only if this session ever actually allocated them (most sessions never do — see Phase 0 step 4):
    rm -rf "<the exact literal CLEAN_REPO_DIR path, if one was allocated this session>"
    rm -rf "<the exact literal FAKE_GIT_HOME path, if one was allocated this session>"
    ```
    `FAKE_GIT_HOME` is allocated in the same lazy, one-time-per-session way as `CLEAN_REPO_DIR` (see
    Phase 0 step 4) and cleaned up alongside it here — never left behind once `CLEAN_REPO_DIR` no
-   longer needs it.
+   longer needs it. `SNAPSHOT_FILE` (see "Snapshot integrity" above) is allocated for every session
+   that ever reaches round 1's dispatch — unlike `CLEAN_REPO_DIR`/`FAKE_GIT_HOME`, it is never
+   conditional on session type, so this `rm -f` needs no guard.
 
 ### Final report (deliver this in Korean to the user — the only Korean output)
 
@@ -1490,8 +1659,12 @@ Structure:
   (dimension) found what.
 - **Consensus status** — exactly one of: `✅ CLEAN (N rounds)` / `⚠️ NOT CONVERGED (hit the
   20-round cap, K unresolved)` / `⚠️ COULD NOT VERIFY (Codex review unavailable)` /
-  `⚠️ PARTIAL COVERAGE (source coverage unresolved)`. If `COULD NOT VERIFY` in parallel mode, name
-  which group.
+  `⚠️ PARTIAL COVERAGE (source coverage unresolved)` / `🛑 SNAPSHOT INTEGRITY FAILURE (Claude's
+  own local record of the reviewed subject could not be re-verified)`. If `COULD NOT VERIFY` in
+  parallel mode, name which group. **For `🛑 SNAPSHOT INTEGRITY FAILURE` specifically**, state
+  plainly that a fresh `codex-stream-review:ccs` invocation is required to review the target's
+  current state — this run cannot simply be resumed or retried as-is (see
+  `references/snapshot-integrity.md`).
 - **Source coverage** — if round 1 was `--uncommitted` and its `coverage_source.status` (the
   N-group merged value in parallel mode) was ever `"partial"`/`"unknown"`, mention it regardless
   of the final outcome — which files were omitted, why, and whether it was resolved afterward.
@@ -1500,14 +1673,17 @@ Structure:
   group's round-1 retry abandoned an earlier thread) was also successfully cleaned up — list every
   group's cleanup outcome with nothing omitted, and if any threadId failed to clean up, name which
   group's, which one, and why (this reflects `/ccs`'s own automatic thread cleanup at the end of
-  every run). **When `--keep-evidence` was ON for this session and the outcome was non-CLEAN**
-  (Phase 3's keep-evidence gate skipped cleanup): state that explicitly instead of a cleanup
-  outcome — list every thread ID left alive (per group), every kept last-message file's durable
-  path (per round/group that actually kept one, from the JSONL log), the exact manual commands to
-  inspect/clean up later (`cat <path>` to read the retained output,
-  `"$INSTALL_PATH/scripts/run-ccs-review.sh" --cleanup "<threadId>"` to delete a thread once done
-  investigating), and a one-line note that kept-evidence directories are auto-pruned after ~30 days
-  if never manually cleaned up (see `references/keep-evidence.md`).
+  every run). **When `--keep-evidence` was ON for this session and the outcome was non-CLEAN, AND
+  that outcome is NOT `🛑 SNAPSHOT INTEGRITY FAILURE`** (Phase 3's keep-evidence gate skipped
+  cleanup): state that explicitly instead of a cleanup outcome — list every thread ID left alive
+  (per group), every kept last-message file's durable path (per round/group that actually kept one,
+  from the JSONL log), the exact manual commands to inspect/clean up later (`cat <path>` to read
+  the retained output, `"$INSTALL_PATH/scripts/run-ccs-review.sh" --cleanup "<threadId>"` to delete
+  a thread once done investigating), and a one-line note that kept-evidence directories are
+  auto-pruned after ~30 days if never manually cleaned up (see `references/keep-evidence.md`). **For
+  `🛑 SNAPSHOT INTEGRITY FAILURE` specifically — regardless of `--keep-evidence`** — report a normal
+  cleanup outcome instead (cleanup always ran unconditionally for this status; see "Snapshot
+  integrity" above), plus the required content from that section (a fresh invocation is needed).
 - **Verified / unverified / remaining risks and assumptions** — be honest; never dress up
   something written but not run/verified as "done."
 
@@ -1526,8 +1702,15 @@ Structure:
   3's keep-evidence gate) — outside that one deliberate exception, this is not optional, not
   user-prompted, and not something a future round can undo by mistake (the wrapper's own
   `--cleanup`/dispatch mode split already prevents cleaning up a thread a caller is still trying
-  to `--resume`).
+  to `--resume`). **`🛑 SNAPSHOT INTEGRITY FAILURE` is a further, unconditional exception to THAT
+  exception** — always run `--cleanup` for it regardless of `--keep-evidence` (see "Snapshot
+  integrity" below and Phase 3's own keep-evidence gate for why: the threads' own history can no
+  longer be vouched for as describing the subject Claude's local record says it does).
 - Do not report to the user until Phase 3.
+- **Snapshot integrity is always on, no opt-in** (see "Snapshot integrity" above and
+  `references/snapshot-integrity.md`) — every round 2+ revalidates `SNAPSHOT_FILE` against
+  `SNAPSHOT_DIGEST` before dispatching any group, and a mismatch or missing file is a hard stop
+  (`🛑 SNAPSHOT INTEGRITY FAILURE`, never silently ignored or treated as an ordinary retry case).
 - A non-repo-artifact review is in scope (see Phase 0 step 4's `CLEAN_REPO_DIR` mechanism) — it is
   always single-group `main`, never parallel (see "Determine review mode" in Phase 1 above).
 - **Parallel multi-reviewer mode is native to `/ccs`** (see "Determine review mode" in Phase 1
