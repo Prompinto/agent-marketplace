@@ -1,0 +1,293 @@
+name: ccs-ci-review
+
+# Phase 4 Item 2 (headless CI entry point) -- see
+# docs/2026-09-05-codex-stream-review-improvement-roadmap-design.md, "Final
+# consolidated plan" -> "Phase 4" -> Item 2. This job is the untrusted half of
+# a two-job split: it runs the full /ccs adversarial review loop headlessly
+# over a PR's own diff and writes a result artifact, but never itself posts
+# anything back to the PR and never carries any write-scoped credential.
+# Reporting (posting the PR comment) is a SEPARATE workflow
+# (ccs-ci-report.yml), triggered by this workflow's own completion, which is
+# the only place elevated permissions exist.
+#
+# Deliberately `pull_request`, NEVER `pull_request_target`: a `_target`
+# trigger runs with the BASE repo's own workflow file and permissions even
+# for a forked PR, which is exactly the privilege-escalation shape ("pwn
+# request") this design closes by construction -- a forked PR's own content
+# must never run in a context that also holds elevated GitHub permissions.
+#
+# TWO-CHECKOUT TRUST SPLIT (fixes a real gate-defeat found during
+# implementation review, not part of the original 8-round negotiation): a
+# single checkout of the PR's own head commit, with the review tooling
+# (run-ccs-ci.sh / SKILL.md / the schema) then INSTALLED FROM AND RUN OUT OF
+# that same checkout, is trivially defeatable -- the PR author fully controls
+# that checkout, so they can simply edit run-ccs-ci.sh (or the skill file the
+# `claude plugin marketplace add` step below installs) to emit a forged,
+# schema-valid CLEAN result directly, skipping the real review entirely --
+# the reporting job's own provenance check only proves "this result came from
+# the workflow run associated with this PR," never "the TRUSTED review
+# implementation actually produced it." A PR that edits its own reviewer is
+# not a hypothetical: it is exactly the input this job is designed to handle
+# safely.
+#
+# The fix: two SEPARATE checkout directories, each with a distinct trust
+# level, kept apart for the entire job:
+#   - `trusted-tooling/` -- checked out at the PR's BASE ref
+#     (github.event.pull_request.base.sha), never the head. The PR author
+#     cannot rewrite this commit: it is the base branch's own immutable
+#     history, unaffected by anything the PR itself contains. This is the
+#     ONLY place run-ccs-ci.sh, the skill, and the result schema are
+#     installed from and executed out of.
+#   - `target-repo/` -- checked out at the PR's own HEAD (unchanged in spirit
+#     from before this fix), full history. This is the REVIEW TARGET only:
+#     it is diffed against its own base commit by the trusted tooling, and
+#     nothing inside it is ever installed as a plugin, sourced, or executed
+#     as code. A malicious edit to any file in this checkout -- including
+#     run-ccs-ci.sh's own path, SKILL.md, or the schema -- has no effect,
+#     because the trusted checkout's copies of those files are what actually
+#     run.
+# The plugin is therefore installed from `./trusted-tooling` (never `.`), and
+# with `--scope user` rather than `--scope project`: run-ccs-ci.sh does
+# `cd "$REPO_ROOT"` (target-repo/) before invoking `claude -p`, so a
+# project-scoped install tied to trusted-tooling/'s own directory would not
+# be visible from inside target-repo/ at all -- confirmed via `claude plugin
+# install --help` / `claude plugin marketplace add --help` on the actual
+# installed CLI (both flags exist, both accept `user`, and `user` is in fact
+# each command's own documented default, so this fix removes the two
+# `project`-scope overrides rather than adding new behavior). A user-scoped
+# install writes to `~/.claude/settings.json`, which is visible regardless of
+# process cwd. This is judged safe specifically because a GitHub Actions
+# runner is an ephemeral, single-job VM with no other tenant or session ever
+# sharing that `$HOME` -- a `--scope user` install here has none of the
+# cross-project leakage implications it would have on a real persistent
+# workstation. NOT independently verified end-to-end (that would require
+# actually running these install commands and inspecting
+# `~/.claude/settings.json` afterward, which was not done here to avoid
+# mutating this machine's own real, persistent Claude Code configuration --
+# flagged as medium-high confidence from documented CLI behavior, not a
+# live-reproduced fact, for the maintainer's own independent verification).
+#
+# RESIDUAL LIMITATION, EXPLICITLY ACCEPTED (found during round 2 of
+# implementation review, then CORRECTED during round 3 after two independent
+# reviewers identified a materially wrong first draft of this exact comment --
+# see git history / the design doc's own round-3 record for that correction):
+# the two-checkout split above stops a PR from tampering with the review
+# TOOLING it runs (run-ccs-ci.sh, SKILL.md, the schema), but it cannot stop a
+# PR from tampering with THIS WORKFLOW FILE ITSELF. For an `on: pull_request`
+# trigger, GitHub always executes the workflow YAML as it exists on the PR's
+# own ref, never the base branch's version -- and this is true for a PR from
+# a FORK exactly as much as a same-repository PR. Forging this gate's result
+# requires no repository secret at all: `github.event.pull_request.head.sha`
+# and `.number` are ordinary, non-secret event-payload fields available to
+# any workflow run (fork or not), and `actions/upload-artifact` needs only
+# the default, unprivileged `GITHUB_TOKEN` every run already has. A PR author
+# -- from a fork, or from within this repository, no distinction -- can
+# therefore replace this file's own review/upload steps with a fabricated
+# `.ccs-ci-result.json` carrying valid, GitHub-provided provenance values,
+# and the trusted reporting job (ccs-ci-report.yml) has no way to detect that
+# the real review never ran: its own provenance check only confirms the
+# artifact's claimed head_sha/pr_number match this run, never that this run's
+# own steps went unmodified. (An earlier draft of this comment incorrectly
+# claimed fork PRs were structurally protected because they receive no
+# repository secrets -- that reasoning conflates two unrelated things:
+# withholding secrets prevents secret THEFT, not fabrication of a
+# schema-valid result, which needs no secret whatsoever.)
+# This is a structural property of `pull_request`-triggered GitHub Actions
+# workflows, not a bug specific to this design, and it is EXPLICITLY NOT
+# fixed here, by deliberate maintainer decision: doing so would require
+# either (a) running the actual review logic from a workflow definition that
+# is ALWAYS resolved from the trusted default branch regardless of what any
+# PR contains (e.g. a `workflow_run`-triggered redesign) -- a real fix, but a
+# materially larger restructuring that itself requires careful new sandboxing
+# since /ccs's own review mechanism EXECUTES reviewed code as part of
+# verification (see e.g. the fixture validation runs in the roadmap doc,
+# where Claude ran the reviewed function directly) -- or (b) an org-level
+# policy control (e.g. restricting who may open any PR against this
+# repository at all) entirely outside this repository's own files. Neither
+# is implemented here. Accordingly: this CI result is ADVISORY for EVERY PR,
+# fork or same-repo alike -- a real, useful signal when nobody bothers to
+# forge it, but not a tamper-proof gate against a PR author motivated enough
+# to edit this workflow file. A human reviewing the PR should treat a
+# reported CLEAN as one input, not a substitute for looking at the diff.
+on:
+  pull_request:
+
+# Explicit, minimal, and read-only at the workflow level -- no step in this
+# job may escalate this. No write/deploy-scoped permission exists anywhere
+# in this job.
+permissions:
+  contents: read
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout TRUSTED tooling (base ref -- the PR author cannot rewrite this)
+        uses: actions/checkout@v4
+        with:
+          path: trusted-tooling
+          # The PR's base commit, NOT its head: this is what run-ccs-ci.sh,
+          # SKILL.md, and the result schema are installed from and run out
+          # of. A forked/malicious PR's own content never reaches this
+          # checkout, by construction -- it is a real ancestor commit in the
+          # base branch's own history, unrelated to whatever the PR head
+          # commit contains.
+          ref: ${{ github.event.pull_request.base.sha }}
+          # Only the tooling files at this one commit are needed -- no diff,
+          # no history traversal happens against this checkout.
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Checkout PR head commit (full history) -- review TARGET only, never executed
+        uses: actions/checkout@v4
+        with:
+          path: target-repo
+          # The PR's real head commit, not the ephemeral auto-merge commit
+          # `pull_request` checks out by default -- this is the exact SHA
+          # embedded in the result artifact's own head_sha field, and the
+          # only identity the reporting job can independently re-verify
+          # later. This checkout is diffed by the trusted tooling above; none
+          # of its files are ever installed as a plugin, sourced, or run as
+          # code.
+          ref: ${{ github.event.pull_request.head.sha }}
+          # Full history, not the default shallow clone: run-ccs-ci.sh's
+          # --base-ref is the PR's base commit SHA, which must actually be
+          # resolvable locally for `git diff <base>...HEAD` (run inside the
+          # existing, unmodified run-ccs-review.sh) to work at all -- the
+          # base commit is a real ancestor in THIS SAME repository's history
+          # regardless of whether the PR itself comes from a fork, so a full
+          # clone of target-repo/ contains it. This sidesteps internal gap
+          # #15 (shallow-clone diff sources) for THIS workflow's own checkout
+          # only -- it does not fix that general, already-accepted-residual-
+          # risk limitation anywhere else /ccs is used.
+          fetch-depth: 0
+          persist-credentials: false
+
+      # JUDGMENT CALL (flagged, not verified against a live install in this
+      # sandbox -- no network access here): package names/versions for the
+      # two CLIs this job depends on. `codex-cli` is pinned to 0.153.0 to
+      # match the exact version every Phase 1-3 negotiated design in the
+      # roadmap doc was empirically verified against (rollout format,
+      # -o/--output-last-message, usage-event shape); `claude-code` is left
+      # unpinned since this job is meant to dogfood whatever version is
+      # currently released, the same way an interactive user would. Confirm
+      # both package names/registries before relying on this in production.
+      - name: Install claude and codex CLIs
+        run: |
+          npm install -g @anthropic-ai/claude-code
+          npm install -g @openai/codex@0.153.0
+          claude --version
+          codex --version
+
+      # Verified locally (not guessed) against the real installed CLI: `claude
+      # plugin marketplace add <path>` followed by `claude plugin install
+      # <name>@<marketplace> -y --scope user` installs and enables a plugin
+      # from a local directory marketplace with no network access and no
+      # interactive prompt, writing its state into the user-scoped
+      # `~/.claude/settings.json` (see the trust-split comment above the
+      # `on:` key for why `user` scope, not `project`, is required here).
+      # Both the marketplace and the plugin are installed from
+      # `./trusted-tooling` -- never from `.` / `./target-repo` -- so nothing
+      # the PR's own head commit contains can ever become the skill/scripts
+      # this step enables.
+      - name: Enable the codex-stream-review plugin from the TRUSTED checkout
+        run: |
+          claude plugin marketplace add ./trusted-tooling --scope user
+          claude plugin install codex-stream-review@agent-marketplace -y --scope user
+
+      # SECURITY NOTE (flagged for the maintainer's explicit decision, not
+      # silently resolved): this step's own environment carries
+      # ANTHROPIC_API_KEY/OPENAI_API_KEY, and the headless `claude -p`
+      # session launched by run-ccs-ci.sh runs with
+      # --dangerously-skip-permissions (required for it to drive the
+      # existing interactive skill non-interactively at all) over a forked
+      # PR's own diff content, staged in target-repo/. The non-regression/
+      # trust-boundary design negotiated in the roadmap doc addresses
+      # GitHub-scoped write/deploy credentials explicitly (see the
+      # `permissions:` blocks in this file), but this separate credential
+      # class (the LLM API keys themselves) has TWO distinct exposure paths,
+      # not one:
+      #   1. A sufficiently adversarial diff -- or, equivalently, a malicious
+      #      CLAUDE.md planted in target-repo/ (confirmed directly: `claude -p
+      #      --setting-sources user` blocks target-repo/'s own
+      #      `.claude/settings.json` hooks -- real arbitrary code execution --
+      #      but does NOT disable CLAUDE.md auto-discovery; only `--bare`
+      #      does, and `--bare` was independently confirmed, via a live
+      #      `claude -p --bare` test, to also make the codex-stream-review:ccs
+      #      skill itself unavailable, so it cannot be used here) -- could in
+      #      principle attempt to induce the headless session into
+      #      exfiltrating these keys over the network via prompt injection.
+      #      This requires successfully tricking the LLM in either case; a
+      #      malicious CLAUDE.md is text-level influence, not the arbitrary
+      #      shell-command execution a hook would have been, which is why
+      #      `--setting-sources user` closing the hook path is still a real,
+      #      meaningful reduction even though it does not close this one too.
+      #   2. For a SAME-REPOSITORY (non-fork) PR specifically, GitHub's own
+      #      documented `pull_request` semantics supply these same repository
+      #      secrets to the job regardless of this design's own mitigations
+      #      -- an internal contributor opening a same-repo PR branch could
+      #      exfiltrate ANTHROPIC_API_KEY/OPENAI_API_KEY directly, by simply
+      #      editing the checked-out code (e.g. target-repo/'s own files, or
+      #      any other step in this job) to transmit them, with no LLM or
+      #      prompt-injection trickery required at all. The `pull_request`
+      #      (vs `pull_request_target`) choice above protects GitHub-scoped
+      #      permissions/write credentials from a FORKED PR; it does nothing
+      #      to shield these specific secrets from a trusted, same-repo
+      #      contributor, since same-repo PRs always run with real repository
+      #      secrets under either trigger type.
+      # Mitigating either path fully (e.g. an egress allowlist restricting
+      # this job to only the Anthropic/OpenAI API hosts, or withholding these
+      # secrets from same-repo PRs) was not part of the negotiated scope and
+      # is NOT implemented here -- both remain an explicit accepted-residual-
+      # risk pending the maintainer's own disposition, never silently
+      # omitted.
+      - name: Run the /ccs adversarial review headlessly
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          bash ./trusted-tooling/codex-stream-review/scripts/run-ccs-ci.sh \
+            --cwd "$GITHUB_WORKSPACE/target-repo" \
+            --base-ref "${{ github.event.pull_request.base.sha }}" \
+            --workflow-run-id "${{ github.run_id }}" \
+            --head-sha "${{ github.event.pull_request.head.sha }}" \
+            --pr-number "${{ github.event.pull_request.number }}"
+        # The SCRIPT itself comes from trusted-tooling/ (so its own logic
+        # cannot be tampered with by the PR); `--cwd` points at target-repo/
+        # purely as the diff/review target. `--base-ref` is unchanged from
+        # before this fix and stays the PR's base SHA: it is coincidentally
+        # also trusted-tooling/'s own checkout ref, but its functional role
+        # here is unrelated to that -- it is consumed by the unmodified
+        # run-ccs-review.sh's own `--base <ref>` flag and resolved against
+        # target-repo/'s git history specifically (via the existing
+        # `cd "$REPO_ROOT"` inside run-ccs-ci.sh), which is why target-repo/'s
+        # own `fetch-depth: 0` full-history checkout above matters -- the
+        # base commit must actually exist as a real, resolvable ancestor in
+        # THAT checkout's object database, not trusted-tooling/'s.
+        #
+        # Deliberately NOT `continue-on-error` and no `|| true` anywhere
+        # above: run-ccs-ci.sh's own exit code (0-5, matching the result
+        # schema's exit_code 1:1) is meant to fail this job for every
+        # non-CLEAN outcome -- CONFIRMED_ISSUES, NOT_CONVERGED,
+        # COULD_NOT_VERIFY, PARTIAL_COVERAGE, and INFRASTRUCTURE_FAILURE all
+        # correctly block the PR when the real review genuinely ran. See the
+        # "RESIDUAL LIMITATION" comment above `on:` for why this is an
+        # advisory signal, not a tamper-proof gate, against a PR author (fork
+        # or same-repo alike) motivated enough to edit this workflow file
+        # instead of letting the real review run.
+
+      - name: Upload CI result artifact
+        # Uploaded even when the run above failed the job -- the reporting
+        # workflow needs this artifact regardless of exit_state to post any
+        # comment at all, success or failure alike. Written by run-ccs-ci.sh
+        # into target-repo/ (its own --cwd), which is where it is read from
+        # here.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ccs-ci-result
+          path: target-repo/.ccs-ci-result.json
+          if-no-files-found: error
+          retention-days: 14
