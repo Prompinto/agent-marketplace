@@ -40,7 +40,7 @@ push/pull/PR work in this repo now targets `Prompinto/agent-marketplace`, not `y
 | **Phase 1** — stability/correctness/security (6 items: README fix, `-o`/`--output-last-message` replacing rollout-tailing, `--focus` stdin transport, `--keep-evidence`, untrusted-data framing for Codex's own output, snapshot-integrity revalidation) | ✅ Done — negotiated (4 rounds), implemented, merged | v0.6.0 → v0.9.0 (PRs #55–#59) |
 | **Phase 2** — convergence-logic hardening (claim ledger: `claim_id`/`evidence_delta`, `DISPOSITION` marker closure mechanism, per-claim oscillation guard, `REVIEW LOG INTEGRITY FAILURE`) | ✅ Done — negotiated (6 rounds), implemented (5 rounds), merged | v0.10.0 (PR #60) |
 | **Phase 3** — upstream-risk hardening (execution telemetry: `execution: {elapsed_seconds, usage?}` on the wrapper's JSON response, reasoning-effort-only reporting, `round_wall_seconds`) | ✅ Done — negotiated (4 rounds), implemented + reviewed to CLEAN (7 rounds), merged | v0.11.0 (PR #61) |
-| **Phase 4** — structural/strategic expansion (`codex exec fork` canary evaluation, headless/CI entry point) | ✅ Negotiated to CLEAN (8 rounds) — ✅ **Item 1 executed: fork is SAFE but NOT BENEFICIAL, not adopted (documented, no PR needed)** — ✅ **Item 2 implemented, reviewed to near-CLEAN (6 rounds; g1 CLEAN, g2's sole open item is the still-unrun interactive canary, not a defect)** — batch commit/PR in progress | — (Item 1 closed via evaluation; Item 2 implementation pending PR/merge) |
+| **Phase 4** — structural/strategic expansion (`codex exec fork` canary evaluation, headless/CI entry point) | ✅ Negotiated to CLEAN (8 rounds) — ✅ **Item 1 executed: fork is SAFE but NOT BENEFICIAL, not adopted (documented, no PR needed)** — ✅ **Item 2 implemented, reviewed (6 rounds), merged (PR #2), and fully validated (both halves of the equivalence canary now complete, full structural match)** | — (Item 1 closed via evaluation; Item 2 merged to `main`) |
 
 **Established per-item workflow** (used for every Phase 1 item and Phase 2): negotiate design via
 `/ccs` non-repo-artifact review (isolated `CLEAN_REPO_DIR`) → implement → verify locally
@@ -210,21 +210,27 @@ push → manual PR URL (`gh` is unauthenticated in this environment) → wait fo
   used 2.14x the tokens of independent dispatch, not less) — recommendation is DO NOT adopt fork
   for parallel mode. This is a complete, documented, non-blocking outcome per the negotiated
   design — no code change to `run-ccs-review.sh`/`SKILL.md` is needed or was made.
-- **Phase 4 Item 2 (headless CI entry point) is implemented and reviewed to near-CLEAN.** Two
-  workflows (`ccs-ci-review.yml`, `ccs-ci-report.yml`), the wrapper (`run-ccs-ci.sh`), the schema
-  (`ci-result.schema.json`), and the validator (`validate_ci_result.py`) are all written. A parallel
-  2-group `/ccs` code-diff review ran 6 rounds: the security group (g1) reached full **CLEAN**; the
-  correctness group (g2) has exactly ONE item still open by design, not by defect — see "Key
-  decisions from Phase 4 Item 2's implementation-review cycle" below for the full list of what was
-  found and fixed, including two real bugs Claude found on its own (not from Codex) during
-  independent re-verification.
-  - **Still open, tracked, not a code defect**: the negotiated headless-vs-interactive equivalence
-    canary's INTERACTIVE half has never been run (only the headless half has, twice, against the
-    known-bug fixture at `/private/tmp/phase4-item2-fixture/repo`). This remains a follow-up task,
-    deliberately not blocking this commit per the user's explicit decision to proceed now.
-  - User explicitly said: do the PR/merge for ALL of Phase 4's code work (docs + Item 2
-    implementation) together, in one batch, at the end — not a separate PR per phase step like
-    Phases 1-3 used. This batch commit+push+PR is that one final step for Phase 4.
+- **Phase 4 Item 2 (headless CI entry point) is implemented, reviewed, merged, and fully
+  validated.** Two workflows (`ccs-ci-review.yml`, `ccs-ci-report.yml`), the wrapper
+  (`run-ccs-ci.sh`), the schema (`ci-result.schema.json`), and the validator
+  (`validate_ci_result.py`) are all written and on `main` (PR #2, squash-merged
+  2026-09-06, commit `1db4bf5`). A parallel 2-group `/ccs` code-diff review ran 6 rounds: the
+  security group (g1) reached full **CLEAN**; the correctness group (g2)'s only remaining item
+  was the not-yet-run interactive canary half — see "Key decisions from Phase 4 Item 2's
+  implementation-review cycle" below for the full list of what was found and fixed, including two
+  real bugs Claude found on its own (not from Codex) during independent re-verification.
+  - **Interactive canary — now also complete (2026-09-06, after the PR merged).** Ran a live,
+    Claude-driven `/ccs` session against the identical fixture diff used by the two headless runs.
+    Full structural match on every negotiated field: round 1 (identical finding, same file/line/
+    severity), round 2 (identical claim reasserted, `evidence_delta: none`, oscillation guard
+    fires), thread count (1, both), round count (2, both), terminal outcome (`NOT_CONVERGED` both
+    — the headless wrapper's own `CONFIRMED_ISSUES` schema mapping is a documented output-contract
+    difference, not a mechanism difference). Full comparison in the design doc's "Phase 4 Item 2
+    validation results" section. **This closes the last open item from Phase 4 Item 2 — nothing
+    remains outstanding for Phase 4.** This validation result itself (a design-doc addition, no
+    code change) is NOT YET committed as of this handoff — ask the user how they want to land it
+    (direct small commit to `main`, or a new branch+PR following the established convention)
+    before committing.
 
 ## Relevant files
 - `docs/2026-09-05-codex-stream-review-improvement-roadmap-design.md` — the full roadmap: original
