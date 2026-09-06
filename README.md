@@ -1,4 +1,4 @@
-# youzooyou/plugins
+# Prompinto/agent-marketplace
 
 Personal Claude Code plugins.
 
@@ -13,7 +13,7 @@ Backs up durable memory and in-progress session state before `/clear` wipes cont
 #### Install
 
 ```
-/plugin marketplace add youzooyou/plugins
+/plugin marketplace add Prompinto/agent-marketplace
 /plugin install clear-prep
 ```
 
@@ -49,7 +49,7 @@ you automatically (see below).
 #### Install
 
 ```
-/plugin marketplace add youzooyou/plugins
+/plugin marketplace add Prompinto/agent-marketplace
 /plugin install codex-stream-review
 ```
 

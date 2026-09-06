@@ -1,10 +1,10 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
-  "name": "youzooyou-plugins",
+  "name": "agent-marketplace",
   "description": "Personal Claude Code plugins.",
   "owner": {
-    "name": "youzooyou",
-    "url": "https://github.com/youzooyou"
+    "name": "Prompinto",
+    "url": "https://github.com/Prompinto"
   },
   "plugins": [
     {
