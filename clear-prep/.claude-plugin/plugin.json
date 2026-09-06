@@ -3,7 +3,7 @@
   "version": "1.0.5",
   "description": "Run /clear-prep before /clear to back up durable memory and in-progress session state; a bundled hook then auto-restores the handoff note right after.",
   "author": {
-    "name": "youzooyou",
-    "url": "https://github.com/youzooyou"
+    "name": "Prompinto",
+    "url": "https://github.com/Prompinto"
   }
 }

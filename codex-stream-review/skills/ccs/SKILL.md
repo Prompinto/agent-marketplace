@@ -561,13 +561,13 @@ up using `--capture-evidence` at all):**
    timestamp collides across two invocations started in the same second). Qualifies every
    temp-file path and the review-history log path for the rest of the run.
 
-2. **Resolve this plugin's own install path**, keyed `codex-stream-review@youzooyou-plugins`:
+2. **Resolve this plugin's own install path**, keyed `codex-stream-review@agent-marketplace`:
    ```bash
    INSTALL_PATH_FILE=$(mktemp "/tmp/ccs-${SESSION_ID}-install-path.txt.XXXXXX")
-   { jq -j '.plugins["codex-stream-review@youzooyou-plugins"][] | select(.scope=="user") | .installPath' ~/.claude/plugins/installed_plugins.json; printf 'x'; } > "$INSTALL_PATH_FILE"
+   { jq -j '.plugins["codex-stream-review@agent-marketplace"][] | select(.scope=="user") | .installPath' ~/.claude/plugins/installed_plugins.json; printf 'x'; } > "$INSTALL_PATH_FILE"
    INSTALL_PATH="$(cat "$INSTALL_PATH_FILE")"; INSTALL_PATH="${INSTALL_PATH%x}"
    if [ -z "$INSTALL_PATH" ] || [ ! -x "$INSTALL_PATH/scripts/run-ccs-review.sh" ]; then
-     echo "codex-stream-review@youzooyou-plugins is not installed, or is missing run-ccs-review.sh (a stale/incomplete install) — run /plugin install codex-stream-review@youzooyou-plugins (or update it)" >&2
+     echo "codex-stream-review@agent-marketplace is not installed, or is missing run-ccs-review.sh (a stale/incomplete install) — run /plugin install codex-stream-review@agent-marketplace (or update it)" >&2
      rm -f "$INSTALL_PATH_FILE"
      exit 1
    fi

@@ -1,34 +1,21 @@
 # Handoff — plugins (2026-09-06)
 
-## ⚠️ PENDING: git remote migration (do this once the current Phase 3 PR is merged)
-User has created a new, formal repository to manage this plugin/skill going forward:
-**`github.com/Prompinto/agent-marketplace`**. Agreed sequence:
-1. Finish the current Phase 3 (execution telemetry) `/ccs` review-to-CLEAN cycle, commit, push,
-   PR, and get it merged into the EXISTING remote (`origin` = `youzooyou/plugins`) first — do not
-   redirect mid-review.
-2. Once that PR is confirmed merged (user says "병합 완료"), run
-   `git remote set-url origin https://github.com/Prompinto/agent-marketplace.git` (replacing the
-   `origin` URL directly, per the user's own explicit choice — not adding a second remote).
-3. After the swap, verify with `git remote -v` and a `git fetch origin` that it resolves correctly
-   before any further push.
-**If a future session reads this before that swap has happened, do it now** (assuming the Phase 3
-PR is confirmed merged) rather than re-asking — the decision is already made, only the timing was
-pending.
+## ✅ DONE: git remote migration
+`origin` was replaced (not added-as-second-remote) with the user's new, formal repository:
+**`github.com/Prompinto/agent-marketplace`**, after Phase 3's PR (#61) was confirmed merged into
+the old `origin` (`youzooyou/plugins`)'s `main` first, per the user's own agreed sequencing. The
+new repo was empty at swap time — `main` (with full history through Phase 3) was pushed to it, and
+stale local remote-tracking refs from the old origin were pruned (`git remote prune origin`; local
+branches themselves were untouched, only their `origin/...` tracking refs). **All future
+push/pull/PR work in this repo now targets `Prompinto/agent-marketplace`, not `youzooyou/plugins`.**
 
 ## In progress
 - Phase 3 (execution telemetry: `execution: {elapsed_seconds, usage?}`, `round_wall_seconds`) is
-  **implemented AND reviewed to CLEAN** (7-round real `/ccs` adversarial code-diff review — see
-  "Key decisions from Phase 3's implementation-review cycle" below for what each round found).
-  Locally verified clean: `bash -n`, `shellcheck --severity=warning`, and the full 125-assertion
-  fixture suite all pass. `codex-stream-review` bumped to **v0.11.0** locally (uncommitted). The
-  Codex review thread and all round temp files have been cleaned up.
-  **Next action: ask the user for explicit commit/push/PR permission** (per this project's standing
-  "never commit without explicit request" rule) — do NOT commit without it, even though CLEAN was
-  reached. Once given: feature branch → commit → push → manual PR URL (`gh` is unauthenticated
-  here) → wait for "병합 완료" → `git fetch`/`git log` to confirm → `git checkout main && git pull
-  && git branch -d <branch>`.
-  Phases 1 and 2 are the only ones actually shipped/merged so far (v0.9.0, v0.10.0); Phase 3 is
-  ready to ship pending that permission.
+  **fully shipped**: implemented, reviewed to CLEAN (7-round real `/ccs` adversarial code-diff
+  review — see "Key decisions from Phase 3's implementation-review cycle" below for what each round
+  found), merged via PR #61 into `main`, and now also pushed to the new `origin`
+  (`Prompinto/agent-marketplace`) above. `codex-stream-review` is at **v0.11.0**.
+  Phases 1, 2, and 3 are all shipped/merged so far (v0.9.0, v0.10.0, v0.11.0).
 - User asked to keep this handoff updated periodically as roadmap phases progress, not just at
   `/clear` time — update this file after each phase (or major item) ships or reaches a milestone
   (e.g. negotiation-CLEAN), not only when winding the session down.
@@ -39,7 +26,7 @@ pending.
 |---|---|---|
 | **Phase 1** — stability/correctness/security (6 items: README fix, `-o`/`--output-last-message` replacing rollout-tailing, `--focus` stdin transport, `--keep-evidence`, untrusted-data framing for Codex's own output, snapshot-integrity revalidation) | ✅ Done — negotiated (4 rounds), implemented, merged | v0.6.0 → v0.9.0 (PRs #55–#59) |
 | **Phase 2** — convergence-logic hardening (claim ledger: `claim_id`/`evidence_delta`, `DISPOSITION` marker closure mechanism, per-claim oscillation guard, `REVIEW LOG INTEGRITY FAILURE`) | ✅ Done — negotiated (6 rounds), implemented (5 rounds), merged | v0.10.0 (PR #60) |
-| **Phase 3** — upstream-risk hardening (execution telemetry: `execution: {elapsed_seconds, usage?}` on the wrapper's JSON response, reasoning-effort-only reporting, `round_wall_seconds`) | ✅ Negotiated to CLEAN (4 rounds) — ✅ **implemented + reviewed to CLEAN (7 rounds)** — ⏳ **not yet committed/pushed** | v0.11.0 (uncommitted; awaiting explicit commit/push permission) |
+| **Phase 3** — upstream-risk hardening (execution telemetry: `execution: {elapsed_seconds, usage?}` on the wrapper's JSON response, reasoning-effort-only reporting, `round_wall_seconds`) | ✅ Done — negotiated (4 rounds), implemented + reviewed to CLEAN (7 rounds), merged | v0.11.0 (PR #61) |
 | **Phase 4** — structural/strategic expansion (`codex exec fork` evaluation, headless/CI entry point) | ⏳ Sketch-level only, not yet negotiated | — |
 
 **Established per-item workflow** (used for every Phase 1 item and Phase 2): negotiate design via
