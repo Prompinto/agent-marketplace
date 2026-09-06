@@ -10,12 +10,25 @@ branches themselves were untouched, only their `origin/...` tracking refs). **Al
 push/pull/PR work in this repo now targets `Prompinto/agent-marketplace`, not `youzooyou/plugins`.**
 
 ## In progress
-- Phase 3 (execution telemetry: `execution: {elapsed_seconds, usage?}`, `round_wall_seconds`) is
-  **fully shipped**: implemented, reviewed to CLEAN (7-round real `/ccs` adversarial code-diff
-  review — see "Key decisions from Phase 3's implementation-review cycle" below for what each round
-  found), merged via PR #61 into `main`, and now also pushed to the new `origin`
-  (`Prompinto/agent-marketplace`) above. `codex-stream-review` is at **v0.11.0**.
-  Phases 1, 2, and 3 are all shipped/merged so far (v0.9.0, v0.10.0, v0.11.0).
+- Phase 3 is fully shipped (PR #61, `codex-stream-review` v0.11.0).
+- **Phase 4 has just been negotiated to CLEAN** (8-round non-repo-artifact `/ccs` session, thread
+  cleaned up, 6/6 claims closed — see "Key decisions from Phase 4's negotiation" below). The final
+  consolidated design (Item 1: an executable `codex exec fork` canary protocol with a real
+  cost/benefit threshold; Item 2: a headless CI entry point wrapping the UNCHANGED interactive
+  skill, Design A only) is written into
+  `docs/2026-09-05-codex-stream-review-improvement-roadmap-design.md`'s "Phase 4 negotiation"
+  section and its "Final consolidated plan" Phase 4 subsection — **this doc update is NOT YET
+  COMMITTED** as of this handoff (ask the user before committing, per this project's standing
+  rule).
+  **The user added a binding non-regression requirement mid-negotiation**: nothing in Phase 4 may
+  degrade the performance of, or introduce unintended bugs/side effects/edge cases into, the
+  existing shipped Phases 1-3 functionality — this shaped every fix Codex and Claude negotiated and
+  is now a first-class part of the design doc itself, not just a one-off instruction.
+  Phases 1, 2, and 3 are shipped/merged (v0.9.0, v0.10.0, v0.11.0); Phase 4 is negotiated but NOT
+  implemented — Item 1 is evaluation-only (a throwaway canary script, may never need a PR at all
+  unless its own results justify a follow-up adoption proposal); Item 2 needs a real implementation
+  pass (GitHub Actions workflow files, the headless wrapper, the JSON Schema) before it can go
+  through the same implement -> verify -> `/ccs` review-to-CLEAN -> PR cycle every prior phase used.
 - User asked to keep this handoff updated periodically as roadmap phases progress, not just at
   `/clear` time — update this file after each phase (or major item) ships or reaches a milestone
   (e.g. negotiation-CLEAN), not only when winding the session down.
@@ -27,7 +40,7 @@ push/pull/PR work in this repo now targets `Prompinto/agent-marketplace`, not `y
 | **Phase 1** — stability/correctness/security (6 items: README fix, `-o`/`--output-last-message` replacing rollout-tailing, `--focus` stdin transport, `--keep-evidence`, untrusted-data framing for Codex's own output, snapshot-integrity revalidation) | ✅ Done — negotiated (4 rounds), implemented, merged | v0.6.0 → v0.9.0 (PRs #55–#59) |
 | **Phase 2** — convergence-logic hardening (claim ledger: `claim_id`/`evidence_delta`, `DISPOSITION` marker closure mechanism, per-claim oscillation guard, `REVIEW LOG INTEGRITY FAILURE`) | ✅ Done — negotiated (6 rounds), implemented (5 rounds), merged | v0.10.0 (PR #60) |
 | **Phase 3** — upstream-risk hardening (execution telemetry: `execution: {elapsed_seconds, usage?}` on the wrapper's JSON response, reasoning-effort-only reporting, `round_wall_seconds`) | ✅ Done — negotiated (4 rounds), implemented + reviewed to CLEAN (7 rounds), merged | v0.11.0 (PR #61) |
-| **Phase 4** — structural/strategic expansion (`codex exec fork` evaluation, headless/CI entry point) | ⏳ Sketch-level only, not yet negotiated | — |
+| **Phase 4** — structural/strategic expansion (`codex exec fork` canary evaluation, headless/CI entry point) | ✅ **Negotiated to CLEAN (8 rounds)** — ⏳ not yet implemented | — (design only, doc updated, uncommitted as of this handoff) |
 
 **Established per-item workflow** (used for every Phase 1 item and Phase 2): negotiate design via
 `/ccs` non-repo-artifact review (isolated `CLEAN_REPO_DIR`) → implement → verify locally
@@ -119,18 +132,43 @@ push → manual PR URL (`gh` is unauthenticated in this environment) → wait fo
   not merely an audit trail, since a silently-dropped line could hide an open/oscillating claim and
   produce a false CLEAN.
 
+## Key decisions from Phase 4's negotiation (things a future session should know)
+- The human maintainer's mid-negotiation non-regression requirement ("nothing may degrade
+  performance of, or introduce bugs/side effects/edge cases into, existing Phases 1-3 functionality")
+  is now a first-class, named constraint in the design doc itself, not a one-off instruction that
+  only applied to this conversation — treat it as binding for Phase 4 implementation too.
+- Item 1's canary needed a 4th property (comparative cost measurement, with a concrete 30% token
+  threshold) beyond the original 3 safety properties — testing safety alone can never answer
+  whether fork is actually worth adopting, only whether it's safe to.
+- Item 2's original "two candidate designs, no recommendation" framing was itself a finding — Codex
+  correctly identified that leaving it open meant neither candidate satisfied the item's own stated
+  goal. Design A (headless wrapper around the UNCHANGED interactive skill) is the resolved
+  deliverable; Design B (a weaker single-pass script) was removed from Phase 4's scope entirely.
+- The CI trust-boundary discussion surfaced a real, well-known risk class (GitHub Actions' "pwn
+  request" pattern) that the first draft missed entirely — an untrusted PR-triggered job must never
+  carry write/deploy credentials anywhere in its process tree (including the outer orchestrating
+  process, not just the innermost sandboxed dispatch), and posting a result comment needs a
+  SEPARATE, elevated-permission `workflow_run` job that never executes PR content and validates the
+  artifact's provenance (workflow_run_id/head_sha/pr_number) before trusting it.
+  A JSON Schema `if`/`then` branch's `properties` alone does NOT require a field — only that
+  branch's own `required` array does. This tripped up 2 rounds of the negotiation's own schema
+  design and is worth remembering for any future schema work in this project.
+
 ## Next steps
-- Phase 3 is fully implemented and reviewed to CLEAN (v0.11.0 locally). **Ask the user for explicit
-  commit/push/PR permission before doing any git write** — do not commit just because CLEAN was
-  reached; that authorizes implementation, not git operations, per this project's standing rule.
-- Once given: feature branch → commit (version already bumped) → push → manual PR URL (`gh` is
-  unauthenticated here) → wait for the user's "병합 완료" → `git fetch`/`git log` to confirm →
-  `git checkout main && git pull && git branch -d <branch>`.
-- **Then, and only then** (per the user's own confirmed sequencing — see the ⚠️ PENDING section at
-  the top of this file): perform the git remote migration to
-  `github.com/Prompinto/agent-marketplace`.
-- Phase 4 still needs its own `/ccs` non-repo-artifact negotiation (like Phase 2 and 3 got) before
-  it can be implemented — it's currently only a one-paragraph sketch.
+- Phases 1–3 are all shipped and merged; the git remote migration to
+  `github.com/Prompinto/agent-marketplace` and the identity rebrand (marketplace name, plugin
+  authors, README, SKILL.md's install-path lookup key) are both done and merged (PR #1 on the new
+  origin). Both plugins (`clear-prep@agent-marketplace`, `codex-stream-review@agent-marketplace`)
+  are reinstalled and active under the new marketplace name.
+- **Phase 4 is negotiated to CLEAN but not yet committed or implemented.** Next actions, in order:
+  1. Ask the user for explicit commit/push/PR permission for the roadmap-doc update itself (the
+     negotiation record + Final consolidated plan Phase 4 subsection) — do not commit without it.
+  2. Once that's in, decide with the user whether to execute Item 1's canary now (a throwaway
+     script, evaluation-only, may not need its own PR unless the results justify a follow-up
+     adoption proposal) and/or start Item 2's real implementation (GitHub Actions workflow files,
+     headless wrapper, the versioned JSON Schema) — same implement -> verify -> `/ccs`
+     review-to-CLEAN -> PR cycle every prior phase used, with the non-regression requirement as a
+     hard gate throughout.
 
 ## Relevant files
 - `docs/2026-09-05-codex-stream-review-improvement-roadmap-design.md` — the full roadmap: original
