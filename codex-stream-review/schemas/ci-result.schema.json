@@ -1,0 +1,166 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "codex-stream-review CI result",
+  "type": "object",
+  "properties": {
+    "exit_state": {
+      "type": "string",
+      "enum": ["CLEAN", "CONFIRMED_ISSUES", "NOT_CONVERGED", "COULD_NOT_VERIFY", "PARTIAL_COVERAGE", "INFRASTRUCTURE_FAILURE"]
+    },
+    "exit_code": {
+      "type": "integer",
+      "enum": [0, 1, 2, 3, 4, 5]
+    },
+    "verdict": {
+      "type": "string",
+      "enum": ["CLEAN", "ISSUES", "UNAVAILABLE"]
+    },
+    "findings": {
+      "type": ["array", "null"],
+      "items": {
+        "type": "object",
+        "properties": {
+          "file": { "type": "string" },
+          "line": { "type": ["integer", "null"], "minimum": 1 },
+          "severity": { "type": ["string", "null"], "enum": ["low", "medium", "high", null] },
+          "summary": { "type": "string" },
+          "evidence": { "type": "string" },
+          "verification": { "type": "string" },
+          "disposition": { "type": "string", "enum": ["open", "resolved", "retracted"] }
+        },
+        "required": ["file", "line", "severity", "summary", "evidence", "verification", "disposition"],
+        "additionalProperties": false
+      }
+    },
+    "coverage": {
+      "type": ["object", "null"],
+      "properties": {
+        "status": { "type": "string", "enum": ["complete", "partial", "unknown"] },
+        "reviewed_file_count": { "type": "integer", "minimum": 0 },
+        "omitted": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": { "type": "string" },
+              "reason": { "type": "string" }
+            },
+            "required": ["path", "reason"],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": ["status", "reviewed_file_count", "omitted"],
+      "additionalProperties": false
+    },
+    "infrastructure_error": {
+      "type": ["object", "null"],
+      "properties": {
+        "message": { "type": "string" },
+        "detail": { "type": ["string", "null"] }
+      },
+      "required": ["message", "detail"],
+      "additionalProperties": false
+    },
+    "workflow_run_id": { "type": "string", "minLength": 1 },
+    "head_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "pr_number": { "type": "integer", "minimum": 1 }
+  },
+  "required": [
+    "exit_state", "exit_code", "verdict",
+    "workflow_run_id", "head_sha", "pr_number"
+  ],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": { "properties": { "exit_state": { "const": "CLEAN" } }, "required": ["exit_state"] },
+      "then": {
+        "properties": {
+          "exit_code": { "const": 0 },
+          "verdict": { "const": "CLEAN" },
+          "findings": { "type": "array", "maxItems": 0 },
+          "coverage": {
+            "type": "object",
+            "properties": {
+              "status": { "const": "complete" },
+              "omitted": { "type": "array", "maxItems": 0 }
+            },
+            "required": ["status", "omitted"]
+          },
+          "infrastructure_error": { "type": "null" }
+        },
+        "required": ["exit_code", "verdict", "findings", "coverage", "infrastructure_error"]
+      }
+    },
+    {
+      "if": { "properties": { "exit_state": { "const": "CONFIRMED_ISSUES" } }, "required": ["exit_state"] },
+      "then": {
+        "properties": {
+          "exit_code": { "const": 1 },
+          "verdict": { "const": "ISSUES" },
+          "findings": { "type": "array", "minItems": 1 },
+          "coverage": { "type": "object" },
+          "infrastructure_error": { "type": "null" }
+        },
+        "required": ["exit_code", "verdict", "findings", "coverage", "infrastructure_error"]
+      }
+    },
+    {
+      "if": { "properties": { "exit_state": { "const": "NOT_CONVERGED" } }, "required": ["exit_state"] },
+      "then": {
+        "properties": {
+          "exit_code": { "const": 2 },
+          "verdict": { "const": "ISSUES" },
+          "findings": { "type": "array", "minItems": 1 },
+          "coverage": { "type": "object" },
+          "infrastructure_error": { "type": "null" }
+        },
+        "required": ["exit_code", "verdict", "findings", "coverage", "infrastructure_error"]
+      }
+    },
+    {
+      "if": { "properties": { "exit_state": { "const": "COULD_NOT_VERIFY" } }, "required": ["exit_state"] },
+      "then": {
+        "properties": {
+          "exit_code": { "const": 3 },
+          "verdict": { "const": "UNAVAILABLE" },
+          "findings": { "type": "null" },
+          "infrastructure_error": { "type": "null" }
+        },
+        "required": ["exit_code", "verdict", "findings", "coverage", "infrastructure_error"]
+      }
+    },
+    {
+      "if": { "properties": { "exit_state": { "const": "PARTIAL_COVERAGE" } }, "required": ["exit_state"] },
+      "then": {
+        "properties": {
+          "exit_code": { "const": 4 },
+          "verdict": { "const": "ISSUES" },
+          "findings": { "type": "array", "maxItems": 0 },
+          "coverage": {
+            "type": "object",
+            "properties": {
+              "status": { "enum": ["partial", "unknown"] }
+            },
+            "required": ["status"]
+          },
+          "infrastructure_error": { "type": "null" }
+        },
+        "required": ["exit_code", "verdict", "findings", "coverage", "infrastructure_error"]
+      }
+    },
+    {
+      "if": { "properties": { "exit_state": { "const": "INFRASTRUCTURE_FAILURE" } }, "required": ["exit_state"] },
+      "then": {
+        "properties": {
+          "exit_code": { "const": 5 },
+          "verdict": { "const": "UNAVAILABLE" },
+          "findings": { "type": "null" },
+          "coverage": { "type": "null" },
+          "infrastructure_error": { "type": "object" }
+        },
+        "required": ["exit_code", "verdict", "findings", "coverage", "infrastructure_error"]
+      }
+    }
+  ]
+}

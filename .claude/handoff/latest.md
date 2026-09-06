@@ -40,7 +40,7 @@ push/pull/PR work in this repo now targets `Prompinto/agent-marketplace`, not `y
 | **Phase 1** — stability/correctness/security (6 items: README fix, `-o`/`--output-last-message` replacing rollout-tailing, `--focus` stdin transport, `--keep-evidence`, untrusted-data framing for Codex's own output, snapshot-integrity revalidation) | ✅ Done — negotiated (4 rounds), implemented, merged | v0.6.0 → v0.9.0 (PRs #55–#59) |
 | **Phase 2** — convergence-logic hardening (claim ledger: `claim_id`/`evidence_delta`, `DISPOSITION` marker closure mechanism, per-claim oscillation guard, `REVIEW LOG INTEGRITY FAILURE`) | ✅ Done — negotiated (6 rounds), implemented (5 rounds), merged | v0.10.0 (PR #60) |
 | **Phase 3** — upstream-risk hardening (execution telemetry: `execution: {elapsed_seconds, usage?}` on the wrapper's JSON response, reasoning-effort-only reporting, `round_wall_seconds`) | ✅ Done — negotiated (4 rounds), implemented + reviewed to CLEAN (7 rounds), merged | v0.11.0 (PR #61) |
-| **Phase 4** — structural/strategic expansion (`codex exec fork` canary evaluation, headless/CI entry point) | ✅ **Negotiated to CLEAN (8 rounds)** — ⏳ not yet implemented | — (design only, doc updated, uncommitted as of this handoff) |
+| **Phase 4** — structural/strategic expansion (`codex exec fork` canary evaluation, headless/CI entry point) | ✅ Negotiated to CLEAN (8 rounds) — ✅ **Item 1 executed: fork is SAFE but NOT BENEFICIAL, not adopted (documented, no PR needed)** — ✅ **Item 2 implemented, reviewed to near-CLEAN (6 rounds; g1 CLEAN, g2's sole open item is the still-unrun interactive canary, not a defect)** — batch commit/PR in progress | — (Item 1 closed via evaluation; Item 2 implementation pending PR/merge) |
 
 **Established per-item workflow** (used for every Phase 1 item and Phase 2): negotiate design via
 `/ccs` non-repo-artifact review (isolated `CLEAN_REPO_DIR`) → implement → verify locally
@@ -154,21 +154,77 @@ push → manual PR URL (`gh` is unauthenticated in this environment) → wait fo
   branch's own `required` array does. This tripped up 2 rounds of the negotiation's own schema
   design and is worth remembering for any future schema work in this project.
 
+## Key decisions from Phase 4 Item 2's implementation-review cycle (things a future session should know)
+- **Round 1 (parallel g1/g2)**: the first implementation checked out and RAN the reviewed tooling
+  from the PR's own head checkout — a PR could edit `run-ccs-ci.sh`/`SKILL.md` to forge a CLEAN
+  result. Fixed with a two-checkout split (`trusted-tooling/` at the PR's BASE ref, `target-repo/`
+  at the PR's HEAD, tooling installed/run ONLY from the former). Also fixed: `ccs-ci-report.yml` had
+  no checkout at all (couldn't find its own validator/schema), both hand-written schema validators
+  had real gaps vs. the canonical schema, pip install was unpinned, and the fixture/canary results
+  existed but were never written into the repo.
+- **Round 2**: Claude independently found (not Codex) that both real headless test runs' raw model
+  output OMITTED the `infrastructure_error` key entirely rather than setting it null — invisible
+  under round-1's looser validator, but would have been silently misreported as
+  `INFRASTRUCTURE_FAILURE` once the validator got tightened. Fixed by explicitly instructing the
+  model in `build_ci_prompt()` to always include all 9 top-level keys. Also found: the target
+  checkout runs as Claude Code's own project directory, so a malicious `.claude/settings.json` hook
+  planted in a PR could execute arbitrary code with this job's API-key-bearing credentials.
+- **Round 3 — a real self-correction, not just a finding**: Claude's first fix for the hook risk
+  (`--setting-sources user`) was applied, but Claude's OWN disclosure text claiming "fork PRs are
+  structurally protected since they get no repository secrets" was WRONG, and BOTH review groups
+  independently caught it in the same round. The actual fact: forging this gate's reported result
+  needs NO secret at all (GitHub event-payload fields like `head_sha`/PR number are public, and
+  `actions/upload-artifact` needs only the default unprivileged token) — so ANY PR author, fork or
+  same-repo, can forge a fake CLEAN by editing the `pull_request`-triggered workflow file itself,
+  which GitHub always runs from the PR's own ref regardless of fork/same-repo origin. **Lesson: "no
+  secrets reach this PR" and "this PR cannot forge the reported outcome" are unrelated claims — do
+  not conflate them again in this project.** Also confirmed empirically (`claude -p --bare` really
+  does make the codex-stream-review:ccs skill unavailable) that `--bare` was correctly rejected as an
+  alternative fix, and that `--setting-sources user` genuinely closes the hook-code-execution vector
+  even though it leaves CLAUDE.md-as-text open (folded into the pre-existing prompt-injection
+  disclosure instead of treated as a new separate gap).
+- **Round 4**: g1 reached CLEAN once the corrected, honest "advisory for every PR" disclosure
+  landed in both the workflow comment and the design doc. g2 caught that the "Final consolidated
+  plan" section's older text still said the CI trust boundary was "addressed in full" — now
+  corrected to explicitly say it is not, with a pointer to the known-limitation section.
+- **Rounds 5–6**: g2 found one more real bug Claude had introduced-by-omission, again on its own —
+  `build_ci_prompt()` listed "PARTIAL COVERAGE" as one of six possible skill terminal outcomes but
+  never mapped the DIRECT case (the skill can report `⚠️ PARTIAL COVERAGE` in place of CLEAN, not
+  merely as metadata on CLEAN/NOT_CONVERGED/COULD_NOT_VERIFY) to an exit_state — fixed with an
+  explicit clause. g2's only remaining open item after that fix is the interactive-canary task
+  above, not a code defect.
+- **Meta-lesson repeated three times this cycle**: don't trust a disclosure/comment's own confident
+  claim about what is or isn't protected — verify the actual GitHub Actions/CLI mechanics directly
+  (an empirical `--bare` test, tracing what data `pull_request` actually exposes) before writing it
+  down, and expect Codex to independently re-derive the same mechanics and catch a wrong claim.
+
 ## Next steps
 - Phases 1–3 are all shipped and merged; the git remote migration to
   `github.com/Prompinto/agent-marketplace` and the identity rebrand (marketplace name, plugin
   authors, README, SKILL.md's install-path lookup key) are both done and merged (PR #1 on the new
   origin). Both plugins (`clear-prep@agent-marketplace`, `codex-stream-review@agent-marketplace`)
   are reinstalled and active under the new marketplace name.
-- **Phase 4 is negotiated to CLEAN but not yet committed or implemented.** Next actions, in order:
-  1. Ask the user for explicit commit/push/PR permission for the roadmap-doc update itself (the
-     negotiation record + Final consolidated plan Phase 4 subsection) — do not commit without it.
-  2. Once that's in, decide with the user whether to execute Item 1's canary now (a throwaway
-     script, evaluation-only, may not need its own PR unless the results justify a follow-up
-     adoption proposal) and/or start Item 2's real implementation (GitHub Actions workflow files,
-     headless wrapper, the versioned JSON Schema) — same implement -> verify -> `/ccs`
-     review-to-CLEAN -> PR cycle every prior phase used, with the non-regression requirement as a
-     hard gate throughout.
+- **Phase 4 Item 1 is fully done.** The fork canary was executed for real against the installed
+  `codex-cli 0.153.0` (see the design doc's own "Phase 4 Item 1 canary results" section for full
+  evidence): all 3 safety properties PASSED, but the cost-benefit property FAILED decisively (fork
+  used 2.14x the tokens of independent dispatch, not less) — recommendation is DO NOT adopt fork
+  for parallel mode. This is a complete, documented, non-blocking outcome per the negotiated
+  design — no code change to `run-ccs-review.sh`/`SKILL.md` is needed or was made.
+- **Phase 4 Item 2 (headless CI entry point) is implemented and reviewed to near-CLEAN.** Two
+  workflows (`ccs-ci-review.yml`, `ccs-ci-report.yml`), the wrapper (`run-ccs-ci.sh`), the schema
+  (`ci-result.schema.json`), and the validator (`validate_ci_result.py`) are all written. A parallel
+  2-group `/ccs` code-diff review ran 6 rounds: the security group (g1) reached full **CLEAN**; the
+  correctness group (g2) has exactly ONE item still open by design, not by defect — see "Key
+  decisions from Phase 4 Item 2's implementation-review cycle" below for the full list of what was
+  found and fixed, including two real bugs Claude found on its own (not from Codex) during
+  independent re-verification.
+  - **Still open, tracked, not a code defect**: the negotiated headless-vs-interactive equivalence
+    canary's INTERACTIVE half has never been run (only the headless half has, twice, against the
+    known-bug fixture at `/private/tmp/phase4-item2-fixture/repo`). This remains a follow-up task,
+    deliberately not blocking this commit per the user's explicit decision to proceed now.
+  - User explicitly said: do the PR/merge for ALL of Phase 4's code work (docs + Item 2
+    implementation) together, in one batch, at the end — not a separate PR per phase step like
+    Phases 1-3 used. This batch commit+push+PR is that one final step for Phase 4.
 
 ## Relevant files
 - `docs/2026-09-05-codex-stream-review-improvement-roadmap-design.md` — the full roadmap: original

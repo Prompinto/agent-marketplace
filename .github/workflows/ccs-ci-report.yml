@@ -1,0 +1,175 @@
+name: ccs-ci-report
+
+# The trusted half of Phase 4 Item 2's two-job split (see ccs-ci-review.yml's
+# own header comment for the full rationale). This job NEVER checks out or
+# executes the PR's own code/content -- it only downloads the artifact the
+# untrusted review job already produced, verifies where that artifact
+# actually came from, schema-validates it, and posts a comment. This is what
+# is allowed to hold `pull-requests: write`.
+#
+# It DOES check out this repository's own scripts/schema below (see the
+# "Checkout trusted validator/schema" step) -- but only at a fixed, trusted
+# ref (the repository's own default branch), and only because
+# validate_ci_result.py and ci-result.schema.json have to come from
+# SOMEWHERE for this job to run them at all. This is the same trust
+# distinction ccs-ci-review.yml's own trusted-tooling/ checkout makes: a
+# fixed ref the PR author cannot rewrite, never the PR/artifact's own head or
+# content.
+on:
+  workflow_run:
+    workflows: ["ccs-ci-review"]
+    types: [completed]
+
+permissions:
+  # Needed for actions/download-artifact@v4 to pull an artifact from a
+  # DIFFERENT workflow run (the triggering one) rather than the current run.
+  actions: read
+  # Needed to post the PR comment. No other write scope exists anywhere in
+  # this job -- in particular, no `contents: write`.
+  pull-requests: write
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      pull-requests: write
+    steps:
+      # Checked out at the repository's OWN default branch -- an explicit,
+      # trusted ref taken from this event's own payload
+      # (github.event.repository.default_branch, populated on every
+      # workflow_run webhook), never left to an implicit default. This
+      # sidesteps needing to rely on (or independently verify) exactly how
+      # actions/checkout resolves an unset `ref:` for a workflow_run-
+      # triggered job -- confidence note: it is documented elsewhere that a
+      # workflow_run job's implicit checkout context resolves to the
+      # repository's default branch rather than the triggering run's own
+      # head, but that behavior was NOT independently verified here (no live
+      # GitHub Actions run in this session), so an explicit ref is used
+      # instead of relying on it. This checkout is ONLY ever used to obtain
+      # validate_ci_result.py and ci-result.schema.json below -- it must
+      # NEVER be used to check out or reference anything from the PR or the
+      # downloaded artifact.
+      - name: Checkout trusted validator/schema (default branch, never the PR/artifact)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Download the review job's result artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ccs-ci-result
+          # Selected by the triggering run's OWN id, never "latest" -- an
+          # artifact from any other run (a stale prior run, a differently
+          # triggered run) must never be picked up here.
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: .
+
+      - name: Look up the PR independently of workflow_run.pull_requests
+        id: lookup_pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -u
+          # `github.event.workflow_run.pull_requests` is populated by GitHub
+          # ONLY for a same-repository PR branch -- for a PR from a FORK
+          # (exactly the case this whole design exists to handle safely) it
+          # is documented to come back empty, so it cannot be this job's
+          # only source of truth for "which PR does this run belong to."
+          # Instead, ask GitHub directly which open PR(s) are associated
+          # with the triggering run's own head commit -- a lookup keyed by
+          # commit SHA, which is populated regardless of fork origin. This
+          # exact API call ("List pull requests associated with a commit",
+          # GET /repos/{owner}/{repo}/commits/{sha}/pulls) was NOT exercised
+          # against a live GitHub API in this session (no network access
+          # during implementation) -- confirm this still matches GitHub's
+          # current documented behavior before relying on it in production.
+          HEAD_SHA="${{ github.event.workflow_run.head_sha }}"
+          API_PR_NUMBER="$(gh api "repos/${{ github.repository }}/commits/${HEAD_SHA}/pulls" --jq '.[0].number // empty')"
+          if [ -z "$API_PR_NUMBER" ]; then
+            echo "::error::no open PR found for head commit $HEAD_SHA via the commits/.../pulls API -- aborting without posting"
+            exit 1
+          fi
+          echo "pr_number=$API_PR_NUMBER" >> "$GITHUB_OUTPUT"
+
+      - name: Verify artifact provenance before trusting any of its content
+        id: verify
+        run: |
+          set -u
+          if [ ! -f .ccs-ci-result.json ]; then
+            echo "::error::.ccs-ci-result.json missing from the downloaded artifact -- aborting without posting"
+            exit 1
+          fi
+          ARTIFACT_HEAD_SHA="$(jq -r '.head_sha // empty' .ccs-ci-result.json)"
+          ARTIFACT_PR_NUMBER="$(jq -r '.pr_number // empty' .ccs-ci-result.json)"
+          EXPECTED_HEAD_SHA="${{ github.event.workflow_run.head_sha }}"
+          EXPECTED_PR_NUMBER="${{ steps.lookup_pr.outputs.pr_number }}"
+
+          if [ "$ARTIFACT_HEAD_SHA" != "$EXPECTED_HEAD_SHA" ]; then
+            echo "::error::artifact head_sha ($ARTIFACT_HEAD_SHA) does not match the triggering run's head_sha ($EXPECTED_HEAD_SHA) -- aborting without posting"
+            exit 1
+          fi
+          if [ "$ARTIFACT_PR_NUMBER" != "$EXPECTED_PR_NUMBER" ]; then
+            echo "::error::artifact pr_number ($ARTIFACT_PR_NUMBER) does not match the independently looked-up PR ($EXPECTED_PR_NUMBER) -- aborting without posting"
+            exit 1
+          fi
+          echo "pr_number=$EXPECTED_PR_NUMBER" >> "$GITHUB_OUTPUT"
+
+      # Prefers a real JSON Schema validator; falls back to explicit
+      # field/type checks (mirroring the schema's own six exit_state
+      # branches by hand) if the package can't be installed on this runner.
+      # See codex-stream-review/scripts/validate_ci_result.py's own
+      # docstring for the full rationale -- this is NOT the untrusted
+      # review job, so a `pip install` here (unlike inside
+      # ccs-ci-review.yml) carries no PR-content trust-boundary concern.
+      - name: Install jsonschema (best-effort)
+        # Pinned (not hash-pinned -- that would be more supply-chain rigor
+        # than this fix calls for) rather than an unconstrained "whatever is
+        # newest today" install in a job that holds `pull-requests: write`.
+        run: pip install --quiet jsonschema==4.23.0 || echo "::warning::jsonschema install failed -- validate_ci_result.py will use its explicit fallback checks instead"
+
+      - name: Schema-validate the artifact before rendering any field
+        run: |
+          python3 codex-stream-review/scripts/validate_ci_result.py \
+            codex-stream-review/schemas/ci-result.schema.json \
+            .ccs-ci-result.json
+
+      - name: Render and post the PR comment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ steps.verify.outputs.pr_number }}
+        run: |
+          set -u
+          EXIT_STATE="$(jq -r '.exit_state' .ccs-ci-result.json)"
+          VERDICT="$(jq -r '.verdict' .ccs-ci-result.json)"
+
+          case "$EXIT_STATE" in
+            CLEAN) ICON="✅" ;;
+            CONFIRMED_ISSUES|NOT_CONVERGED) ICON="⚠️" ;;
+            *) ICON="🛑" ;;
+          esac
+
+          {
+            echo "### $ICON codex-stream-review: $EXIT_STATE ($VERDICT)"
+            echo
+            FINDINGS_COUNT="$(jq -r 'if .findings == null then "n/a" else (.findings | length) end' .ccs-ci-result.json)"
+            echo "- Findings: $FINDINGS_COUNT"
+            COVERAGE_STATUS="$(jq -r 'if .coverage == null then "n/a" else .coverage.status end' .ccs-ci-result.json)"
+            echo "- Source coverage: $COVERAGE_STATUS"
+            echo
+            if jq -e '(.findings // []) | length > 0' .ccs-ci-result.json >/dev/null 2>&1; then
+              echo "| file | line | severity | disposition | summary |"
+              echo "|---|---|---|---|---|"
+              jq -r '(.findings // [])[] | "| \(.file) | \(.line // "n/a") | \(.severity // "n/a") | \(.disposition) | \(.summary) |"' .ccs-ci-result.json
+              echo
+            fi
+            if jq -e '.infrastructure_error != null' .ccs-ci-result.json >/dev/null 2>&1; then
+              echo "**Infrastructure error:** $(jq -r '.infrastructure_error.message' .ccs-ci-result.json)"
+              echo
+            fi
+            echo "_workflow run: ${{ github.event.workflow_run.id }} · head: \`$(jq -r '.head_sha' .ccs-ci-result.json)\`_"
+          } > comment_body.md
+
+          gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}" --body-file comment_body.md

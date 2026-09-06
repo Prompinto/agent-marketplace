@@ -822,8 +822,7 @@ Before Item 2 is validated, not merely implemented:
   at the exact known location with `disposition == "open"` (never `"resolved"` — the fixture has no
   remediation step, so only `"open"` is ever correct for it).
 
-**CI trust boundary** (the untrusted-PR-content + live-credentials risk surface, addressed in
-full — not just the inner dispatch):
+**CI trust boundary** (the untrusted-PR-content + live-credentials risk surface):
 - The entire `pull_request`-triggered job — including the OUTER headless wrapper process itself,
   not merely the `codex exec` calls inside it — runs with no write/deploy-scoped credentials and no
   elevated permissions, under a plain `pull_request` trigger (never `pull_request_target`, so a
@@ -835,6 +834,15 @@ full — not just the inner dispatch):
   `pr_number` fields match the triggering event before trusting it, schema-validates the full
   payload BEFORE rendering any field, and uses a token scoped to nothing beyond posting that one
   comment.
+- **Not addressed in full** — see "Phase 4 Item 2 known limitation" below: because `pull_request`
+  always runs the workflow YAML as it exists on the PR's own ref (fork or same-repo, no
+  distinction), and forging this gate's reported result needs no secret at all, a PR author
+  motivated to defeat the gate can do so by editing the review workflow itself. The mitigations
+  above close every credential/permission-escalation path they were designed for (write/deploy
+  creds, elevated-permission code execution, artifact provenance spoofing via a mismatched SHA/PR
+  number) — they do not, and cannot by construction, make the review's reported OUTCOME tamper-proof
+  against a PR willing to rewrite the workflow that produces it. This CI result is advisory for
+  every PR, not a hard security boundary.
 
 **CI result contract** — a versioned JSON Schema (draft 2020-12), written by the `pull_request` job
 via write-to-temp-then-atomic-rename to a fixed path, consumed by the `workflow_run` reporting job:
@@ -866,7 +874,188 @@ requirement. Same one-item-at-a-time implement → verify → `/ccs` adversarial
 commit/push/PR cycle every prior phase used — with Item 1 explicitly scoped as evaluation-only
 (never itself requiring a merge to `run-ccs-review.sh`/`SKILL.md`) unless its own results
 separately justify a follow-up adoption proposal.
-once Phase 3 ships.
+
+---
+
+## Phase 4 Item 1 canary results (executed after negotiation, per the negotiated protocol)
+
+> Executed 2026-09-06 against the actual installed `codex-cli 0.153.0`, immediately after the
+> Phase 4 negotiation above reached CLEAN. Standalone throwaway script (`/tmp/phase4-canary/
+> fork-canary.sh`, not committed — shares zero code with `run-ccs-review.sh`/`SKILL.md`, per the
+> non-regression requirement). Raw work directory (`/tmp/phase4-canary-run.QMSh6x`, including every
+> dispatch's own JSONL event log and last-message file) was left on disk for inspection at
+> execution time; treat the figures below as the durable record.
+
+**Property 1 — parent-session immutability: PASS.**
+Parent thread `01a0753f-85a1-75f1-b2c8-99ab944aa719`. Two forks dispatched (`codex exec fork
+<parent-id> ...`, both exit 0). Parent's own rollout file
+(`~/.codex/sessions/2026/09/06/rollout-2026-09-06T14-44-52-01a0753f-....jsonl`) hash and size
+before and after:
+```
+BEFORE_HASH=0afe79a6171a0b5df5e40e1266681db97e1c84ee5d4f2f4b5f3840c148e12dd7
+AFTER_HASH=0afe79a6171a0b5df5e40e1266681db97e1c84ee5d4f2f4b5f3840c148e12dd7
+BEFORE_SIZE=105768  AFTER_SIZE=105768
+```
+Byte-for-byte identical. Forking does not mutate the parent.
+
+**Property 2 — concurrent-child isolation AND inheritance: PASS.**
+Parent thread `01a0753f-cbd1-73e2-a1c1-5286c001ff35`, 3 children forked and dispatched
+CONCURRENTLY, all exit 0. Each child's own last-message output:
+```
+A_TEXT: PARENT-MARKER-7f3a / CHILD-A-ONLY-9d2e
+B_TEXT: PARENT-MARKER-7f3a / CHILD-B-ONLY-4c81
+C_TEXT: PARENT-MARKER-7f3a / CHILD-C-ONLY-e650
+```
+Every child recited the shared parent sentinel (proving inheritance) and ONLY its own sentinel —
+never a sibling's (proving isolation). The parent's own rollout hash was identical both
+immediately after forking and again after all 3 children's concurrent turns completed
+(`46538a06...` both times) — the parent was not contaminated by concurrent child activity either.
+
+**Property 3 — resume/fork history integrity, all 3 children: PASS.**
+Parent thread `01a07540-007c-7aa1-857d-27cca7a9343d`, 3 children each given a distinct sentinel
+turn, then each independently resumed (`codex exec resume <child-id> ...`) and asked to recite
+both sentinels in order. All 3 succeeded (exit 0) and correctly recited the parent sentinel
+followed by their own child-turn sentinel, in order, with no cross-contamination.
+
+**Property 4 — comparative cost measurement: FAIL (not beneficial — actively worse).**
+Identical workload (a small representative diff + 3 distinct review-focus prompts) dispatched two
+ways:
+```
+Baseline (3 independent fresh dispatches):
+  baseline0 non-cached input_tokens=19772
+  baseline1 non-cached input_tokens=22142
+  baseline2 non-cached input_tokens=41879
+  BASELINE_TOTAL=83793
+
+Fork (1 parent + 3 forked children, full workflow, no exclusions):
+  fork parent   non-cached input_tokens=21254
+  fork-child0   non-cached input_tokens=44129
+  fork-child1   non-cached input_tokens=44130
+  fork-child2   non-cached input_tokens=69767
+  FORK_TOTAL=179280
+
+REDUCTION_PCT = -114.0%  (fork used 2.14x the tokens of the independent-dispatch baseline)
+```
+The required 30% reduction threshold was not merely missed — the fork-based approach cost
+substantially MORE, not less, in this measurement. Per the negotiated design, this is a valid,
+complete, non-blocking outcome for this item.
+
+**Methodology caveat, disclosed rather than hidden:** during this run, at least one bare `codex
+exec` dispatch (`baseline1`) was observed spending part of its own turn exploring locally-installed,
+workload-irrelevant Claude Code plugin skill files (`using-superpowers`, `ponytail`) rather than
+staying scoped to the pasted review workload — the canary script did not constrain the dispatch
+with `--sandbox read-only` or an explicit scope-constraint instruction the way `run-ccs-review.sh`'s
+own trusted prompt template does for every real `/ccs` round. This means the token figures above are
+not a perfectly clean, isolated measurement of "diff-ingestion cost alone" — some variance in both
+the baseline and fork arms may be attributable to this unconstrained tool-use rather than the
+workload itself. This is disclosed as a limitation, not smoothed over: however, given the fork side
+lost by more than 2x rather than narrowly missing a 30% win, this methodology gap is very unlikely
+to be large enough to flip the qualitative conclusion.
+
+**Recommendation: DO NOT adopt `codex exec fork` for parallel mode's redundant-ingestion-avoidance
+use case.** Fork is confirmed SAFE (3/3 safety properties passed cleanly) but NOT BENEFICIAL for
+this specific use case (failed property 4 decisively) on the actual installed CLI. Parallel mode's
+existing N-independent-dispatch design should NOT be redesigned around fork based on this evidence.
+This closes Item 1 as an evaluated, documented non-adoption — per the negotiated design, this is a
+complete outcome, not a blocker requiring further work, and needs no PR against
+`run-ccs-review.sh`/`SKILL.md`. Revisit only if a future CLI release's own notes claim a change to
+fork's context-sharing/caching behavior specifically.
+
+---
+
+## Phase 4 Item 2 known limitation (accepted, disclosed and corrected during rounds 2–3 of
+implementation review)
+
+The two-checkout trust split (`ccs-ci-review.yml`'s own header comment has the full detail) stops a
+PR from tampering with the review tooling it runs, but for an `on: pull_request` trigger GitHub
+always executes the workflow YAML as it exists on the PR's own ref — for a PR from a fork exactly as
+much as a same-repository PR. Forging this gate's reported result needs no repository secret at all:
+`github.event.pull_request.head.sha`/`.number` are ordinary, non-secret event-payload fields, and
+`actions/upload-artifact` needs only the default, unprivileged `GITHUB_TOKEN` every run already has.
+A PR author — from a fork, or from within the repository, no distinction — could therefore edit
+`ccs-ci-review.yml` itself to skip the real review and upload a fabricated result with valid
+provenance fields, and the trusted reporting job has no way to detect that the real review never ran.
+
+*Correction (round 3):* an earlier draft of this section claimed fork PRs were structurally
+protected because GitHub withholds repository secrets from them. Two independent reviewers (both
+review groups, in the same round) identified this as wrong: withholding secrets prevents secret
+theft, not fabrication of a schema-valid result, which requires no secret whatsoever. The corrected
+position is that this CI result is **advisory for every PR, fork or same-repo alike** — a real,
+useful signal when nobody bothers to forge it, but not a tamper-proof gate. Fixing this for real
+would require either running the actual review logic from a workflow definition that is always
+resolved from the trusted default branch regardless of what any PR contains (e.g. a
+`workflow_run`-triggered redesign — a materially larger restructuring, deferred rather than
+attempted here since /ccs's own review mechanism executes reviewed code as part of verification and
+would need new sandboxing in that context), or an org-level policy control outside this repository's
+own files. **By explicit maintainer decision**, given this repository's current contribution model,
+neither is pursued now: the limitation is accepted and disclosed rather than architecturally fixed,
+revisitable if this repository later accepts PRs from parties motivated to defeat the gate.
+
+**Rollout/bootstrap note.** `origin/main` does not yet contain any of Item 2's 5 new files
+(`ccs-ci-review.yml`, `ccs-ci-report.yml`, `run-ccs-ci.sh`, `ci-result.schema.json`,
+`validate_ci_result.py`) — confirmed directly via `git ls-tree -r --name-only origin/main`. This CI
+gate can only validate a PR once these files have themselves landed on the default branch; the PR
+that introduces them cannot be validated by itself. This is expected for any self-hosted CI gate's
+own introduction, not a defect.
+
+## Phase 4 Item 2 validation results (executed during implementation review)
+
+> Executed 2026-09-06, during the round-1 review-findings fix pass on Item 2's implementation
+> (`.github/workflows/ccs-ci-review.yml`, `ccs-ci-report.yml`, `run-ccs-ci.sh`,
+> `ci-result.schema.json`, `validate_ci_result.py`). This section records only the HEADLESS half of
+> the negotiated equivalence canary — the deterministic known-bug fixture — run for real against the
+> actual installed CLIs. Mirrors the "Phase 4 Item 1 canary results" section above in style/level of
+> detail.
+
+**Fixture setup.** A throwaway 2-commit repository (`/private/tmp/phase4-item2-fixture/repo`, not
+committed): the base commit has a correct `sum_first_n` in `calc.py`; the head commit changes
+`for i in range(n):` to `for i in range(n + 1):` at `calc.py:3` — a single, deliberate, off-by-one
+regression, never remediated on this fixture branch.
+
+**Headless run — result: CONFIRMED_ISSUES, PASS.** Two separate headless invocations were run
+against this fixture (a scripted run with its own generated `workflow_run_id`,
+`canary-headless-1788677291`, and a second manual re-verification invocation using a literal
+placeholder id, `"x"`, not a real generated one) and both independently reached the same qualitative
+outcome: `exit_state: CONFIRMED_ISSUES`, with a finding at the exact planted bug location
+(`calc.py:3`, `disposition: "open"`). Two consistent runs are stronger evidence than one. The actual
+`.ccs-ci-result.json` from the second (manual) run:
+
+```json
+{"exit_state":"CONFIRMED_ISSUES","exit_code":1,"verdict":"ISSUES","workflow_run_id":"x","head_sha":"5475abf7f5922d0888d99ab79ea66820e1b832f7","pr_number":1,"findings":[{"file":"calc.py","line":3,"severity":"high","summary":"Off-by-one regression in sum_first_n: `range(n + 1)` iterates one index past the intended bound, over-summing and raising IndexError at the collection boundary.","evidence":"Diff HEAD~1..HEAD changed `for i in range(n)` to `for i in range(n + 1)` in calc.py. Direct execution: sum_first_n([1,2,3], 0) returns 1 (expected 0); sum_first_n([1,2,3], 2) returns 6 (expected 3); sum_first_n([1,2,3], 3) raises IndexError: list index out of range. Codex independently reproduced identical results via its own execution in rounds 1 and 2.","verification":"Round 1: Codex reported the finding with file/line evidence and reproduction steps; Claude independently re-verified by reading calc.py directly and executing the function for n=0,2,3, obtaining identical results — accepted as VALID. Round 2 (resume, file unchanged, no fix applied per this run's report-only override): Codex re-asserted the identical finding with no new evidence (evidence_delta=none), tripping the per-claim oscillation guard, which is the expected mechanism for a genuinely valid, deliberately-unfixed finding — yielding a terminal NOT CONVERGED for the underlying ccs skill run, correctly translated to CONFIRMED_ISSUES here since disposition was never advanced to resolved/retracted.","disposition":"open"}],"coverage":{"status":"complete","reviewed_file_count":1,"omitted":[]}}
+```
+
+Note: `workflow_run_id: "x"` above is a literal placeholder from this manual re-verification
+invocation, not a real generated run id — distinct from the earlier scripted run's own generated
+`canary-headless-1788677291`, which first produced this same qualitative result. Both are genuine
+executions of the real headless path.
+
+**Three real bugs found and fixed only through this actual execution** (all already reflected in
+the current `run-ccs-ci.sh`, see its own header comment): a `$schema`/`allOf` incompatibility with
+`claude -p --json-schema` (the flag rejects a top-level `$schema` key and a top-level `allOf`,
+requiring a flattened copy of the schema handed to the CLI); the report-only prompt override so the
+headless session accepts-but-never-fixes a valid finding during a CI run instead of silently
+patching it and reporting a false CLEAN; and a third, found only afterward while independently
+re-verifying round-1's validator-tightening fix against this section's own raw evidence: **both
+real headless invocations' raw `structured_output` (confirmed directly from each session's own
+transcript) omitted the `infrastructure_error` key entirely**, rather than setting it to `null` as
+every branch of `ci-result.schema.json` requires. This went unnoticed at first because the
+round-1-era hand-written validator did not yet check for the key's presence; once round 1's fix
+tightened that validator to fully mirror the canonical schema (see "Round-1 findings" in the
+implementation-review section below), the exact JSON shown above would now be rejected by the
+script's own re-validation and misreported as `INFRASTRUCTURE_FAILURE` instead of the correct
+`CONFIRMED_ISSUES` — a real regression risk, not a hypothetical one, since it already happened
+twice out of two real runs. `build_ci_prompt()` now explicitly instructs the model to include all 9
+top-level keys on every response, `infrastructure_error` set to `null` whenever nothing
+infrastructure-related failed. The JSON captured above predates this fix and is kept as the
+historical record of the bug it documents, not as a claim that a fresh run today would reproduce it.
+
+**Honest disclosure — this is not the full equivalence comparison.** Only the HEADLESS half of the
+negotiated headless-vs-interactive equivalence canary has been run. The INTERACTIVE half (running
+the identical fixture through a live, human-driven `/ccs` session and comparing structured fields —
+verdict, per-severity finding counts, round count, thread count — against this headless result) has
+NOT yet been run. Do not treat this section as closing that canary requirement; it only confirms the
+headless path itself reaches the correct terminal outcome on a known-bug fixture, which is real,
+useful evidence, but is one half of what was negotiated.
 
 ---
 
