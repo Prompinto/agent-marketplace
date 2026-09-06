@@ -134,3 +134,10 @@ and never exits the loop on its own separate cadence.
   one, already-merged-across-groups value from that file's step 3 — the same merge-once
   pattern `SKILL.md` already uses for `coverage_source`, not a second, independently-invented merge
   rule.
+  **The claim ledger's `claude_verification[].claim_id`/`.evidence_delta` and the round-level
+  `claim_closures[]` array (see `codex-stream-review/skills/ccs/references/claim-ledger.md`) follow
+  this same top-level-only rule — never nested inside a `groups[]` entry.** `claim_id`s are already
+  group-namespaced (`g1:f3`, `g2:f7`, …), so a single flat array carries no cross-group ambiguity;
+  `claude_verification[]` itself was already a top-level-only field before the claim ledger existed
+  (this canonical `groups[]` schema above never included it), so this is a continuation of the
+  existing convention, not a new one.

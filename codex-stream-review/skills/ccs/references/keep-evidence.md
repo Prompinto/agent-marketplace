@@ -26,10 +26,13 @@ explicit opt-in, never the unconditional default.
 kept last-message text, moved into a durable per-session directory; (2) every Codex thread that
 would otherwise have been `--cleanup`'d, left alive instead (`SKILL.md`'s Phase 3 keep-evidence
 gate — see that section, not repeated here). **This applies to `⚠️ COULD NOT VERIFY`/
-`⚠️ NOT CONVERGED`/`⚠️ PARTIAL COVERAGE` only — never to `🛑 SNAPSHOT INTEGRITY FAILURE`**, which
-always cleans up regardless of `--keep-evidence` (see `references/snapshot-integrity.md` and
-`SKILL.md`'s Phase 3 keep-evidence gate for why: that status means Claude's own local record of the
-reviewed subject can no longer be trusted, so the threads' history can no longer be vouched for
+`⚠️ NOT CONVERGED`/`⚠️ PARTIAL COVERAGE` only — never to `🛑 SNAPSHOT INTEGRITY FAILURE` or
+`🛑 REVIEW LOG INTEGRITY FAILURE`**, both of which
+always clean up regardless of `--keep-evidence` (see `references/snapshot-integrity.md`,
+`SKILL.md`'s "Review history log" section, and `SKILL.md`'s Phase 3 keep-evidence gate for why:
+either status means Claude's own local record of the
+reviewed subject or its review history can no longer be trusted, so the threads' history can no
+longer be vouched for
 either — retaining them would build on an already-unreliable foundation, not preserve a
 trustworthy one).
 
@@ -85,9 +88,13 @@ JSONL and its round-scoped temp files get cleaned up):**
   create the `<session-id>-kept-evidence` directory if it doesn't exist yet (owner-only, as above),
   then `mv` (not copy — it's a temp file, no need to keep two copies) `LAST_MESSAGE_KEEP_FILE` to
   `<that directory>/round-<R>-<GROUP>-lastmsg.txt`. **Best-effort:** if the move fails for any
-  reason, note it once and move on — never abort the round, matching this log's own existing
-  "a log-write failure never aborts... note it once and continue" discipline (see `SKILL.md`'s
-  "Review history log" section, "Failure isolation").
+  reason, note it once and move on — never abort the round. This is a DIFFERENT, still-best-effort
+  operation from the JSONL append itself (which now requires a hard-stop `🛑 REVIEW LOG INTEGRITY
+  FAILURE` on a failed write — see `SKILL.md`'s "Review history log" → "Write"/"Failure isolation"
+  sections) — losing a kept-evidence file is a diagnostics-quality loss, never a correctness risk
+  to the claim ledger the way a silently-dropped JSONL line would be, so it keeps the softer
+  best-effort handling on its own merits, not by analogy to a rule that no longer applies to the
+  log itself.
 - Add the resulting durable path (only when a file was actually kept) as a new optional field on
   that round's own JSONL log line: `"kept_last_message_path": "<the durable path>"`. Omitted
   entirely when `KEEP_EVIDENCE` was OFF, the round succeeded, or the move failed. For a parallel
@@ -99,27 +106,30 @@ JSONL and its round-scoped temp files get cleaned up):**
 
 **Phase 3 (terminal path) — the actual cleanup-skip.** `SKILL.md`'s own Phase 3 has a
 "Keep-evidence gate" immediately before its step 1: when `KEEP_EVIDENCE` is ON for this session AND
-the run's final terminal status is NOT `✅ CLEAN` AND NOT `🛑 SNAPSHOT INTEGRITY FAILURE`, steps 1
+the run's final terminal status is NOT `✅ CLEAN` AND NOT `🛑 SNAPSHOT INTEGRITY FAILURE` AND NOT
+`🛑 REVIEW LOG INTEGRITY FAILURE`, steps 1
 and 2 (the `GROUP_THREADS` `--cleanup` loop and the `LEAKED_THREAD_IDS` `--cleanup` loop) are
 skipped entirely — every thread is left alive so a human can `--resume` it manually later to keep
 investigating, or inspect it directly. When `KEEP_EVIDENCE` is OFF, the outcome IS `✅ CLEAN`, OR
-the outcome IS `🛑 SNAPSHOT INTEGRITY FAILURE` (see `references/snapshot-integrity.md` for why that
-one status is never eligible for this skip, regardless of `KEEP_EVIDENCE`), behavior is unchanged
+the outcome IS `🛑 SNAPSHOT INTEGRITY FAILURE` or `🛑 REVIEW LOG INTEGRITY FAILURE` (see
+`references/snapshot-integrity.md` and `SKILL.md`'s "Review history log" section for why either
+status is never eligible for this skip, regardless of `KEEP_EVIDENCE`), behavior is unchanged
 from before this feature existed: always cleanup. This is a conditional gate on those two existing
 steps, not a duplicate of them — see `SKILL.md`'s Phase 3 for the actual gate text and the two
 steps it guards.
 
-**Final report.** When `KEEP_EVIDENCE` was ON and the outcome was non-CLEAN **AND NOT
-`🛑 SNAPSHOT INTEGRITY FAILURE`**, `SKILL.md`'s own Final-report "Thread cleanup results" bullet
+**Final report.** When `KEEP_EVIDENCE` was ON and the outcome was non-CLEAN **AND NEITHER
+`🛑 SNAPSHOT INTEGRITY FAILURE` NOR `🛑 REVIEW LOG INTEGRITY FAILURE`**, `SKILL.md`'s own Final-report "Thread cleanup results" bullet
 requires: an explicit statement that cleanup was intentionally skipped due to `--keep-evidence`;
 every thread ID left alive (per group); every kept last-message file's durable path (per
 round/group that actually kept one, read back from the JSONL log); the exact manual commands to
 inspect or clean up later (`cat <path>` to read the retained output,
 `"$INSTALL_PATH/scripts/run-ccs-review.sh" --cleanup "<threadId>"` to delete a thread once done
 investigating); and a one-line note that kept-evidence directories are auto-pruned after roughly
-30 days if never manually cleaned up (matching Phase 0 Step 0's own pruning sweep). **For
-`🛑 SNAPSHOT INTEGRITY FAILURE` specifically — regardless of `KEEP_EVIDENCE`** — none of the above
-applies: cleanup ran unconditionally for that status (see `references/snapshot-integrity.md`), so
+30 days if never manually cleaned up (matching Phase 0 Step 0's own pruning sweep). **For either
+`🛑` status specifically — regardless of `KEEP_EVIDENCE`** — none of the above
+applies: cleanup ran unconditionally for both (see `references/snapshot-integrity.md` and
+`SKILL.md`'s "Review history log" section), so
 the final report states a normal cleanup outcome instead, never "threads left alive." See
 `SKILL.md`'s Final report section for exactly where this plugs in.
 

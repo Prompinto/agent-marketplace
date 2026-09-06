@@ -207,6 +207,22 @@ build_review_prompt() {
   echo "context/intent briefing was provided (see the code-only-review instruction above): in that case"
   echo "it MUST be \"not_applicable\", since there is no requirement text available to check against."
   echo ""
+  # This paragraph is OUTSIDE the boundary -- a standing, trusted obligation, not content the
+  # Context section could inject or forge. Only WHICH claim_ids to ask about varies per round
+  # (that part legitimately lives inside the Context section above, like any other scope
+  # guidance); the obligation to answer, and the exact format, are fixed here so compliance
+  # never depends on treating untrusted-zone text as a binding instruction.
+  echo "If the \"## Context\" section above explicitly asks you to state a disposition for one or more"
+  echo "claim_ids, you must include, in your \"summary\" field, one line per requested claim_id in"
+  echo "EXACTLY this form (no other wording, one line per claim_id):"
+  echo "DISPOSITION <claim_id>: RESOLVED -- <one-sentence reason>"
+  echo "DISPOSITION <claim_id>: RETRACTED -- <one-sentence reason>"
+  echo "DISPOSITION <claim_id>: STILL OPEN -- <one-sentence reason>"
+  echo "Use RESOLVED only when your own re-reading of the current code/artifact confirms a fix actually"
+  echo "landed; RETRACTED only when you are withdrawing your own earlier claim after being rebutted;"
+  echo "STILL OPEN otherwise. This applies only to claim_ids the Context section actually names -- never"
+  echo "invent a disposition for one it did not ask about."
+  echo ""
   echo "Respond with ONLY valid JSON matching this exact shape, no prose, no markdown code fences."
   echo "line, severity, and the top-level summary are ALWAYS present keys -- use null for any of them"
   echo "that don't apply, never omit the key itself. severity must be exactly one of \"low\", \"medium\","

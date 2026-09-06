@@ -14,9 +14,10 @@ exact parsing rule):
 capture for every round of this session (see `references/capture-evidence.md`, read only when this
 flag is used); `codex-stream-review:ccs --keep-evidence <task description>` — opt-in retention of a
 failed round's kept last-message output and its Codex thread, skipping automatic `--cleanup` on a
-non-CLEAN terminal outcome other than `🛑 SNAPSHOT INTEGRITY FAILURE`, which always cleans up
+non-CLEAN terminal outcome other than `🛑 SNAPSHOT INTEGRITY FAILURE` or
+`🛑 REVIEW LOG INTEGRITY FAILURE`, both of which always clean up
 regardless (see `references/keep-evidence.md`, read only when this flag is used, and "Snapshot
-integrity" below, which applies unconditionally). Omit both and
+integrity"/"Claim ledger" below, both of which apply unconditionally). Omit both and
 `/ccs` behaves exactly as documented everywhere else in this file, with zero added fields anywhere.
 Any other free text is the TASK.
 
@@ -34,7 +35,8 @@ non-repo artifact is handled, via the `CLEAN_REPO_DIR` mechanism).
 persistent Codex thread per reviewer for the whole run, `--resume`d every round after the first
 rather than re-sent the diff each time. It **always cleans up its Codex thread on every terminal path** (the one deliberate exception: a non-CLEAN outcome with `--keep-evidence` ON, see "Kept
 evidence on failure" below — itself unconditionally overridden back to always-cleanup for a
-`🛑 SNAPSHOT INTEGRITY FAILURE` specifically, see "Snapshot integrity" below) — never left to the
+`🛑 SNAPSHOT INTEGRITY FAILURE` or `🛑 REVIEW LOG INTEGRITY FAILURE` specifically, see "Snapshot
+integrity"/"Claim ledger" below) — never left to the
 user by default, unlike `stream-review`'s own caller-owns-cleanup contract.
 
 `/ccs` also supports parallel multi-reviewer mode — N concurrent, dimension-focused reviewers
@@ -62,6 +64,12 @@ may be given for a session, in any order (see Phase 0 Step 0 for the exact parsi
 full mechanics. Every session hashes its own private copy of the reviewed subject once, at round 1,
 and revalidates it before every later round's dispatch; a corrupted or deleted local copy is a hard
 stop (`🛑 SNAPSHOT INTEGRITY FAILURE`), never a silently-continued review.
+
+**The claim ledger is also always on, no opt-in** — see `references/claim-ledger.md` for its full
+mechanics. Every open finding is tracked as a claim across rounds via a stable `claim_id`; a claim
+reasserted with no new evidence since its own prior occurrence is `⚠️ NOT CONVERGED` regardless of
+how many other rounds intervened, and CLEAN requires every claim to have reached an explicit
+`resolved`/`retracted` disposition — never a silent disappearance treated as agreement.
 
 **Parallel multi-reviewer mode is supported** (see Phase 1 below): every group — including the
 single-reviewer case, `GROUP="main"` — keeps its own persistent, resumable Codex thread for the
@@ -308,11 +316,13 @@ never accidentally clean up the very thread it just asked to `--resume`.
 `run-stream-review.sh` leaves a thread's cleanup entirely to the caller because a generic caller
 might still want to `--resume` it later. `/ccs` owns a thread's entire lifecycle itself — it is
 the only thing that ever `--resume`s it — so it calls `--cleanup` on **every** terminal path
-(CLEAN, NOT CONVERGED, COULD NOT VERIFY, PARTIAL COVERAGE, SNAPSHOT INTEGRITY FAILURE)
+(CLEAN, NOT CONVERGED, COULD NOT VERIFY, PARTIAL COVERAGE, SNAPSHOT INTEGRITY FAILURE, REVIEW LOG
+INTEGRITY FAILURE)
 automatically, with no separate opt-in step a human needs to remember — **except** when
 `--keep-evidence` was ON for this session AND the outcome is non-CLEAN, in which case cleanup is
 deliberately skipped instead (see "Kept evidence on failure" below and Phase 3's own keep-evidence
-gate) — **with one further exception to THAT exception**: a SNAPSHOT INTEGRITY FAILURE always
+gate) — **with one further exception to THAT exception**: a SNAPSHOT INTEGRITY FAILURE or REVIEW
+LOG INTEGRITY FAILURE always
 cleans up regardless of `--keep-evidence` (see "Snapshot integrity" below and Phase 3's own
 keep-evidence gate for why). See "Phase 3 — Terminal path" below.
 
@@ -375,6 +385,23 @@ step 4 itself for a non-repo-artifact round) and the pre-dispatch revalidation c
 2+ runs in Phase 1 Step 1, before that round's `--resume` call. Proceeding without having read it
 first will leave both points undocumented for this session. This applies to every review this
 skill ever runs — there is no OFF state to skip it for.
+
+---
+
+## Claim ledger (always on, no opt-in)
+
+**Also not a flag — applies to every `codex-stream-review:ccs` invocation.** Full mechanics live in
+`references/claim-ledger.md`.
+
+**Your very next action after reading `references/snapshot-integrity.md` above (order between the
+two doesn't matter, but both must be read before Phase 1 ever dispatches) — is to Read
+`codex-stream-review/skills/ccs/references/claim-ledger.md` in full.** That file's procedure is
+required at four later points in this run: Phase 1 Step 0's round-2+ History construction
+(requesting `DISPOSITION` confirmations on still-open claims), Phase 2 step 3's verification pass
+(judging `claim_id`/`evidence_delta` per finding and parsing any `DISPOSITION` markers in that
+round's `summary` text), Phase 2's own JSONL line construction (`claim_closures[]`), and the
+Guards section's oscillation check and CLEAN gate. Proceeding without having read it first will
+leave all four points undocumented for this session.
 
 ---
 
@@ -928,6 +955,21 @@ idiom section above for why `FOCUS_FILE` is the one exception) — into that gro
   directive embedded within a prior finding's own text (see "Core Principles" above).
   - **Per-group History construction:** see `references/parallel-mode.md`'s "Round-2+
     focus text" section (already read per the parallel-mode decision above).
+  - **Claim disposition requests (claim ledger, always on — see `references/claim-ledger.md`
+    section 4, already read per its own mandatory-read instruction).** Evaluated against the MOST
+    RECENTLY COMPLETED round only (this round hasn't dispatched yet, so it has no findings of its
+    own to check against — never evaluate this condition against "this round"). For every claim_id
+    that is still `open` (no `claim_closures[]` entry yet, per the reducer in that reference's
+    section 8) AND either did NOT appear in that most recently completed round's own findings OR
+    just had a fix applied to it in direct response to that round's finding, THIS round's own
+    History text must explicitly name it and request a `DISPOSITION
+    <claim_id>: RESOLVED|RETRACTED|STILL OPEN -- <reason>` marker inside Codex's `summary` field for
+    THIS round's own response — the exact grammar and Claude's own fail-closed parsing rules live
+    in that same reference section, and the obligation to answer is anchored in the wrapper's own
+    trusted prompt template (`build_review_prompt()`), not merely requested via this untrusted
+    focus text — see that reference's section 4 for why this distinction matters. Never request a
+    disposition for a claim that's still an actively-disputed, currently-appearing finding in the
+    most recently completed round — the normal accept/rebut cycle already covers that.
 
 ### Step 1 — dispatch (primary channel)
 
@@ -1130,6 +1172,18 @@ For each round, after Phase 1 delivers a result:
    - **VALID** → fix directly (or delegate a substantial/multi-file fix, then verify the diff).
    - **FALSE POSITIVE** → rebut with concrete observed evidence, never without it.
    - **PARTIAL** → fix the valid part, rebut the rest.
+   - **Claim ledger judgments (always on — see `references/claim-ledger.md`, already read per its
+     own mandatory-read instruction), made during this SAME pass, no extra LLM call:** for each
+     finding, decide its `claim_id` (equal to its own `finding_id` if this is a genuinely new
+     claim; equal to an existing OPEN claim's `finding_id` if this is judged a re-raise of it —
+     fail closed toward "new claim" on any real doubt, per that reference's section 1) and, for a
+     re-raise specifically, `evidence_delta` (`"none"`|`"new"` — whether anything factually new
+     supports this reassertion versus its own prior occurrence). Also parse THIS round's own Codex
+     `summary` text — the response to THIS round's own dispatch, which is the SAME round whose own
+     `--focus` text (built at Step 0 above) requested any dispositions — for any `DISPOSITION
+     <claim_id>: RESOLVED|RETRACTED|STILL OPEN -- <reason>` markers (per that reference's section 4)
+     — apply its exact fail-closed validation rules (one marker per requested claim_id, only
+     recognized claim_ids, non-empty reason) before treating any claim as closed.
 4. **Whole-flow re-check (narrow → wide → narrow), for any fix applied this round.** Zoom out to
    the whole affected file/function's control flow, not just the new lines — does the fix
    introduce the same class of problem it just fixed, in a new form; is it consistent with how
@@ -1166,8 +1220,23 @@ For each round, after Phase 1 delivers a result:
    `ok:true`, or move it into this session's durable kept-evidence directory on `ok:false` — adding
    the resulting `kept_last_message_path` field (when a file was actually kept) to that round's
    line (top-level for a single-reviewer round, inside that group's own `groups[]` entry for a
-   parallel round — see that reference file for the exact nesting). Then
-   append this round's line to the review history log (below), best-effort. Clean up this round's
+   parallel round — see that reference file for the exact nesting). **Construct this round's
+   `claim_closures[]` array** (always on — see `references/claim-ledger.md` section 3, already
+   read per its own mandatory-read instruction) from step 3's own marker-parsing results this same
+   round — one `{claim_id, disposition, source_round, marker_reason}` entry per claim whose
+   `DISPOSITION` marker validated as `RESOLVED`/`RETRACTED`; omit the field entirely when no claim
+   closed this round. **Always a single TOP-LEVEL array, in both single-reviewer and parallel
+   mode — never nested inside a `groups[]` entry, unlike `kept_last_message_path` above.** This
+   matches the existing `investigation_evidence` precedent (also always top-level, merged across
+   groups — see `references/parallel-mode.md`'s own JSONL section), for the same reason:
+   `claim_id`s are already group-namespaced (`g1:f3`, `g2:f7`, …), so a flat array has no
+   cross-group ambiguity, and `claude_verification[]` itself (which `claim_id`/`evidence_delta`
+   attach to) was ALREADY a top-level-only field before this feature — introducing group-nesting
+   for it now would be a new, unnecessary structure. Then
+   append this round's line to the review history log (below) and VERIFY that append landed (see
+   "Review history log" → "Write" — this is a hard stop on failure, `🛑 REVIEW LOG INTEGRITY
+   FAILURE`, never best-effort, now that the claim ledger makes this durability load-bearing for
+   correctness). Clean up this round's
    now-unneeded `.pid`/`-out.json`/`-err.log`/`-focus.txt` temp files for EVERY dispatched group —
    nothing needs to read any of them again once the round is logged. (The `-eventlog.jsonl` temp
    file, when one was allocated, is already gone by this point — deleted as part of the capture
@@ -1243,7 +1312,19 @@ described above.
   (real omitted files) or `"unknown"` fail this condition unless every omitted path has since been
   explicitly reviewed another way or explicitly accepted as out-of-scope by the user. For round 1
   scoped `--base`/`--commit`, this condition is automatically satisfied — those scopes never
-  report coverage at all.
+  report coverage at all. **AND**
+- **Claim ledger closure (always on — see `references/claim-ledger.md`, already read per its own
+  mandatory-read instruction): every claim_id that has ever appeared this session (per-group, in
+  parallel mode) has reached a terminal disposition — `resolved` or
+  `retracted`.** An `accept`-only claim with no closure entry does NOT satisfy this condition —
+  `accept` means "valid, fix applied or pending, awaiting recheck," never "closed." Neither does a
+  claim left at `deferred`. Reconstruct each claim's current status via that reference's section 8
+  reducer over EVERY PRIOR round's JSONL lines, **THEN merge in THIS round's own just-parsed,
+  not-yet-appended `claim_id`/`evidence_delta`/closure judgments from step 3 above** — never
+  evaluate this condition using only prior JSONL lines, since this round's own append (step 6,
+  below) hasn't happened yet at this point in the loop; a claim closed by THIS round's own
+  `DISPOSITION` marker must count as closed for THIS round's own convergence check, not only
+  starting next round. Never assume from memory across a 20-round run.
 → Stop the loop, go to Phase 3 as **✅ CLEAN**.
 
 ### Convergence logic across groups — round-level, all-groups-together (confirmed decision)
@@ -1275,17 +1356,34 @@ meaning.
   describing the subject Claude's local record says it does), `$SNAPSHOT_FILE` itself is removed,
   and the final report tells the user plainly that a fresh `codex-stream-review:ccs` invocation is
   needed — never silently restarted on the user's behalf.
+- **🛑 REVIEW LOG INTEGRITY FAILURE receives EXACTLY the same treatment as
+  `🛑 SNAPSHOT INTEGRITY FAILURE` everywhere else in this skill** — every rule, exception, gate, and
+  final-report requirement written for `🛑 SNAPSHOT INTEGRITY FAILURE` elsewhere in this file
+  (unconditional Phase 3 cleanup regardless of `--keep-evidence`, exclusion from the keep-evidence
+  gate, `--cleanup`'s own "every terminal path" list, the Final report's Consensus-status enum, and
+  the "fresh invocation required" content) applies identically to it — differing only in WHEN it's
+  detected (a failed JSONL-append verification, per "Review history log" → "Write" above, or a
+  stale `schema_version` on a resumed session's first line, per that same section's "Read
+  (continuity)") and WHY a fresh session is required (the review-history log — and therefore the
+  claim ledger it carries — can no longer be trusted for this session, not the snapshot). Treat
+  every other mention of `🛑 SNAPSHOT INTEGRITY FAILURE` in this file as applying to this status
+  too, except where a passage names one specifically and not the other.
 - **Never fake-clean.** A genuine, evidence-unresolved disagreement is not convergence.
 - **Cap:** R = 20 without convergence → stop, report **⚠️ NOT CONVERGED**, listing every open
   disagreement (finding, Codex's position, Claude's evidence-based counter, why unresolved).
-- **Zero progress twice in a row.** For a single-reviewer round: same open-disagreement set, no
-  new evidence, no accepted rebuttal/counter — check the last two rounds'
-  `claude_verification[].action` in the log rather than memory — stop early, report NOT CONVERGED
-  rather than burning remaining rounds. **For a parallel round, this check generalizes to the
-  UNION of all dispatched groups' open items**: no new state machine, just a union check — if the
-  combined set of every group's own open disagreements shows no movement across the last two
-  rounds (checking each group's own `claude_verification[].action` entries in that round's
-  `groups[]` log entry), stop early and report NOT CONVERGED the same way.
+- **Per-claim oscillation guard (always on — see `references/claim-ledger.md` section 7, already
+  read per its own mandatory-read instruction; replaces the old "zero progress in the last two
+  rounds" comparison entirely).** The moment an `open` claim_id (no `claim_closures[]` entry yet)
+  is reasserted with `evidence_delta: "none"` since its own most recent PRIOR occurrence —
+  regardless of how many OTHER rounds intervened in between — stop early, report NOT CONVERGED,
+  rather than burning remaining rounds. Scoped per-claim via the reducer in that reference's
+  section 8 (never "the last two rounds as a whole"), which is what actually catches oscillation
+  across non-consecutive rounds the old adjacent-round-only comparison missed. **For a parallel
+  round, this check applies independently within EACH group's own group-namespaced claim_ids** —
+  no cross-group aggregation needed, since claim_ids never collide across groups (section 9).
+  **No digest/snapshot condition of any kind gates this** — `evidence_delta` alone is sufficient;
+  see that reference's own section 7 for why an earlier draft's whole-subject-digest condition was
+  rejected as a false-negative risk.
 - **Empty / failed review ≠ CLEAN.** `ok:false` for a group → retry that group before accepting
   failure, reusing the exact dispatch shape appropriate to whether a thread actually exists for
   it — the shape of that retry depends on the failure reason (below), it is not always the same
@@ -1492,18 +1590,25 @@ one more legal value (`"resume"`) to describe what `/ccs` rounds 2+ actually do.
 `--keep-evidence` is ON for this session AND a round's group actually failed and had its last
 message kept, that round's line (or that group's own `groups[]` entry, for a parallel round) also
 gains `kept_last_message_path` — see `references/keep-evidence.md` for its exact placement and
-omission rules. **The common
-case — a single-reviewer round (`GROUP="main"`), capture-evidence and keep-evidence both OFF — is
-completely unchanged
-from before:** `target.focus`/`codex_review` stay single string/object values, `groups` is
-omitted entirely, and so are `investigation_evidence` and `kept_last_message_path`, exactly as
-shown below:
+omission rules. **The claim ledger (always on, no opt-in — see `references/claim-ledger.md`) adds
+`claim_id` (always present) and `evidence_delta` (conditional — omitted on a claim's own first
+appearance, present from its second occurrence onward) to every `claude_verification[]` entry, plus
+one new
+optional round-level array (`claim_closures[]`), present only on a round that actually closes one
+or more claims.** The session's FIRST line only also gains a top-level `schema_version` field (see
+`references/claim-ledger.md`'s legacy-session policy). **The common
+case — a single-reviewer round (`GROUP="main"`), capture-evidence and keep-evidence both OFF, no
+claim closed this round — is otherwise
+unchanged from before:** `target.focus`/`codex_review` stay single string/object values, `groups`
+is omitted entirely, and so are `investigation_evidence`, `kept_last_message_path`, and
+`claim_closures`, exactly as shown below:
 
 ```json
 {
   "session_id": "2026-09-03T143000-54321",
   "round": 1,
   "ts": "2026-09-03T14:31:05+09:00",
+  "schema_version": 2,
   "thread_id": "<this round's own threadId>",
   "target": {"repo": "<repo root>", "scope": "uncommitted", "focus": "<the focus text sent this round>"},
   "codex_review": {"ok": true, "verdict": "ISSUES", "findings": [
@@ -1511,17 +1616,28 @@ shown below:
   ]},
   "coverage_source": {"status": "complete"},
   "claude_verification": [
-    {"finding_id": "f1", "action": "accept|reject_with_rationale|request_rereview|parked", "rationale": "..."}
+    {"finding_id": "f1", "claim_id": "f1", "action": "accept|reject_with_rationale|request_rereview|parked", "rationale": "..."}
   ],
   "round_outcome": "continue|converged|not_converged"
 }
 ```
+
+(`schema_version` shown here for illustration — in practice it appears ONLY on a session's first
+JSONL line, never repeated on every round; see `references/claim-ledger.md` section 10. A later
+round reasserting an existing claim would additionally carry `"evidence_delta": "none"|"new"` on
+that `claude_verification[]` entry, and a round closing a claim would add a sibling
+`"claim_closures": [...]` array — both omitted from this baseline example since neither applies to
+a claim's own first appearance.)
 
 **With capture-evidence ON**, that same line gains one more sibling field,
 `investigation_evidence` — see `references/capture-evidence.md`'s JSONL field section (you already
 read this file per this session's capture-evidence decision above) for its exact shape and
 omission rule.
 
+- `schema_version`: an integer, present ONLY on a session's first JSONL line, bumped only when a
+  future change alters how EXISTING lines must be interpreted (never for a purely additive field).
+  See `references/claim-ledger.md` section 10 for the legacy-session `--resume` refusal policy this
+  enables.
 - `thread_id`: the single-reviewer round's own `THREAD_ID` (`GROUP="main"`'s entry in
   `GROUP_THREADS`) — the exact same durable-backstop purpose the parallel case's `groups[].thread_id`
   serves (see `references/parallel-mode.md`'s "JSONL field: `groups`" section), just at the top
@@ -1544,14 +1660,32 @@ omission rule.
   across all rounds, `linked_finding_id` traces a
   disputed finding's multi-round thread, actions are `accept` / `reject_with_rationale` /
   `request_rereview` / `parked`.
+- `claude_verification[].claim_id`/`.evidence_delta`, and the round-level `claim_closures[]`
+  array: see `references/claim-ledger.md` (already read per its own mandatory-read instruction)
+  for the full construction, parsing, and fail-closed rules — sections 1-4 and 11 in particular.
 - `groups`: added only for a parallel round — see `references/parallel-mode.md`'s
   "JSONL field: `groups`" section (already read per this session's parallel-mode decision) for
   the full schema, the worst-case-wins aggregation rule, and the `investigation_evidence`
-  interaction.
+  interaction. `claim_id`s are group-namespaced (`references/claim-ledger.md` section 9), so
+  `claude_verification[].claim_id`/`.evidence_delta` and the round-level `claim_closures[]` stay
+  TOP-LEVEL ONLY in parallel mode too — same as `investigation_evidence`, never nested per group
+  the way `kept_last_message_path` is (see Phase 2 step 6 above for the exact reasoning: a flat
+  array has no cross-group ambiguity once `claim_id` already carries the group prefix).
 
 **Write:** append via `jq -nc` redirected with `>>`, `umask 077` restated immediately before
 every append (a fresh Bash call each time — the earlier `mkdir`'s umask doesn't carry over).
-Never overwrite or truncate.
+Never overwrite or truncate. **Verify the append actually landed, immediately after writing**
+(`tail -n 1 <the log path> | jq -e '.round == <this round's own literal number>'` — exit 0 means
+the just-written line is really the last line and really carries this round's own number). This
+verification is new specifically because the claim ledger (always on — see
+`references/claim-ledger.md`) makes JSONL durability load-bearing for correctness, not merely an
+audit trail: a silently-failed append that drops a round's `claude_verification[]`/
+`claim_closures[]` content would make that round's claim state invisible to every later round's
+reducer, letting a still-open or still-oscillating claim vanish from consideration and permit a
+false `✅ CLEAN`. If this verification fails, that is a hard stop — report the new terminal status
+`🛑 REVIEW LOG INTEGRITY FAILURE` — never fall back to "note it once and continue" for this
+specific failure (see "Failure
+isolation" below for which failures that softer handling still applies to).
 
 **Read (continuity):** at the start of round R > 1, before building this round's History text,
 query the log rather than relying on memory:
@@ -1559,10 +1693,20 @@ query the log rather than relying on memory:
 jq -c 'select(.round < 3)' ~/.claude/plugins/data/codex-stream-review/ccs-logs/<repo-slug>/<session-id>.jsonl
 ```
 (substitute the actual current round number by hand — no live `$R` shell
-variable survives into a separately-dispatched call).
+variable survives into a separately-dispatched call). **Also check the session's first line's
+`schema_version` at this same point** (per `references/claim-ledger.md` section 10) — if it's
+missing or older than this skill's current version (e.g. the plugin was updated mid-session, an
+edge case made possible by nothing preventing a `/plugin update`/reload in a separate terminal
+while a long-running `/ccs` session is still active), this is a hard stop: do not attempt to
+reduce a mixed old-format/new-format claim ledger. Report `🛑 REVIEW LOG INTEGRITY FAILURE`, clean
+up exactly like `🛑 SNAPSHOT INTEGRITY FAILURE` (Phase 3 steps 1-3, unconditionally), and tell the
+user a fresh `codex-stream-review:ccs` invocation is required.
 
-**Failure isolation:** a log-write failure never aborts or degrades the round — note it once and
-continue.
+**Failure isolation:** best-effort applies to everything else around the write (directory
+creation, `chmod` retightening, the `umask` restatement itself) — a failure in any of those never
+aborts or degrades the round, note it once and continue. **The one exception is the append-then-
+verify step immediately above**, which is a hard stop on failure, not best-effort — see that
+section for why.
 
 **Retention: kept indefinitely, no automatic cleanup — this is a completely separate policy from
 the automatic Codex-thread cleanup below.** "Automatic cleanup" throughout this skill refers only
@@ -1574,7 +1718,8 @@ this JSONL audit log, which persists as a durable record.
 ## Phase 3 — Terminal path
 
 On **every** terminal outcome — `✅ CLEAN`, `⚠️ NOT CONVERGED`, `⚠️ COULD NOT VERIFY`,
-`⚠️ PARTIAL COVERAGE`, or `🛑 SNAPSHOT INTEGRITY FAILURE` — do all of the following before
+`⚠️ PARTIAL COVERAGE`, `🛑 SNAPSHOT INTEGRITY FAILURE`, or `🛑 REVIEW LOG INTEGRITY FAILURE` — do
+all of the following before
 reporting to the user. None of these is ever left to the user to remember; this is the deliberate
 difference from `stream-review`'s own caller-owns-cleanup contract (see "Mode 2 — cleanup" above).
 
@@ -1585,9 +1730,11 @@ every thread in `GROUP_THREADS` and `LEAKED_THREAD_IDS` alive so a human can `--
 keep investigating, or inspect it directly — then go straight to step 3 and the final report. When
 `--keep-evidence` is OFF, or the outcome IS `✅ CLEAN`, run steps 1 and 2 exactly as written below,
 with no change from today. See `references/keep-evidence.md` for the full reasoning and the final
-report's additional required content in this case. **`🛑 SNAPSHOT INTEGRITY FAILURE` is the one
-outcome that is NEVER subject to this gate, even with `--keep-evidence` ON** — always run steps 1
-and 2 unconditionally for it (see `references/snapshot-integrity.md` for why: the threads' own
+report's additional required content in this case. **`🛑 SNAPSHOT INTEGRITY FAILURE` and
+`🛑 REVIEW LOG INTEGRITY FAILURE` are the two outcomes that are NEVER subject to this gate, even
+with `--keep-evidence` ON** — always run steps 1
+and 2 unconditionally for either (see `references/snapshot-integrity.md`, and the Guards section's
+own "receives EXACTLY the same treatment" rule, for why: the threads' own
 history can no longer be vouched for as describing the subject Claude's local record says it does,
 so keeping them alive would build on an already-unreliable foundation rather than preserve a
 trustworthy one).
@@ -1657,14 +1804,22 @@ Structure:
 - **Round-by-round convergence table** — per round, `[Codex finding → re-verification result
   (accepted/rebutted + evidence) → action taken]`. For a parallel round, break out which group
   (dimension) found what.
+- **Claim status (always on — see `references/claim-ledger.md`)** — every distinct claim_id this
+  session, its final disposition (`resolved`/`retracted`, with the closing round and reason from
+  its `claim_closures[]` entry), or, for a NOT CONVERGED/COULD NOT VERIFY outcome, which claim_ids
+  are still `open` and why (last known `evidence_delta`, whether an oscillation was detected). For
+  a parallel round, group by group-namespaced claim_id.
 - **Consensus status** — exactly one of: `✅ CLEAN (N rounds)` / `⚠️ NOT CONVERGED (hit the
   20-round cap, K unresolved)` / `⚠️ COULD NOT VERIFY (Codex review unavailable)` /
   `⚠️ PARTIAL COVERAGE (source coverage unresolved)` / `🛑 SNAPSHOT INTEGRITY FAILURE (Claude's
-  own local record of the reviewed subject could not be re-verified)`. If `COULD NOT VERIFY` in
-  parallel mode, name which group. **For `🛑 SNAPSHOT INTEGRITY FAILURE` specifically**, state
+  own local record of the reviewed subject could not be re-verified)` /
+  `🛑 REVIEW LOG INTEGRITY FAILURE (the review-history log could not be verified or is on an
+  incompatible schema version)`. If `COULD NOT VERIFY` in
+  parallel mode, name which group. **For either `🛑` status specifically**, state
   plainly that a fresh `codex-stream-review:ccs` invocation is required to review the target's
   current state — this run cannot simply be resumed or retried as-is (see
-  `references/snapshot-integrity.md`).
+  `references/snapshot-integrity.md` for the snapshot case; "Review history log" above for the log
+  case).
 - **Source coverage** — if round 1 was `--uncommitted` and its `coverage_source.status` (the
   N-group merged value in parallel mode) was ever `"partial"`/`"unknown"`, mention it regardless
   of the final outcome — which files were omitted, why, and whether it was resolved afterward.
@@ -1674,16 +1829,18 @@ Structure:
   group's cleanup outcome with nothing omitted, and if any threadId failed to clean up, name which
   group's, which one, and why (this reflects `/ccs`'s own automatic thread cleanup at the end of
   every run). **When `--keep-evidence` was ON for this session and the outcome was non-CLEAN, AND
-  that outcome is NOT `🛑 SNAPSHOT INTEGRITY FAILURE`** (Phase 3's keep-evidence gate skipped
+  that outcome is NEITHER `🛑 SNAPSHOT INTEGRITY FAILURE` NOR `🛑 REVIEW LOG INTEGRITY FAILURE`**
+  (Phase 3's keep-evidence gate skipped
   cleanup): state that explicitly instead of a cleanup outcome — list every thread ID left alive
   (per group), every kept last-message file's durable path (per round/group that actually kept one,
   from the JSONL log), the exact manual commands to inspect/clean up later (`cat <path>` to read
   the retained output, `"$INSTALL_PATH/scripts/run-ccs-review.sh" --cleanup "<threadId>"` to delete
   a thread once done investigating), and a one-line note that kept-evidence directories are
   auto-pruned after ~30 days if never manually cleaned up (see `references/keep-evidence.md`). **For
-  `🛑 SNAPSHOT INTEGRITY FAILURE` specifically — regardless of `--keep-evidence`** — report a normal
-  cleanup outcome instead (cleanup always ran unconditionally for this status; see "Snapshot
-  integrity" above), plus the required content from that section (a fresh invocation is needed).
+  either `🛑` status specifically — regardless of `--keep-evidence`** — report a normal
+  cleanup outcome instead (cleanup always ran unconditionally for both; see "Snapshot
+  integrity" above and the Guards section's "receives EXACTLY the same treatment" rule), plus the
+  required content from the relevant section (a fresh invocation is needed).
 - **Verified / unverified / remaining risks and assumptions** — be honest; never dress up
   something written but not run/verified as "done."
 
@@ -1695,22 +1852,31 @@ Structure:
 - Never accept a Codex finding without verifying the evidence yourself; never dismiss one without
   reading the actual file or running the actual command.
 - Always include the `⚠️ SCOPE CONSTRAINT` block in every round's `--focus`.
-- Every round appends one line to the review history log — best-effort on failure, but skipping
-  the write on purpose is not allowed.
+- Every round appends one line to the review history log, and that append is verified (not
+  best-effort — see "Review history log" → "Write" above) — skipping the write, or continuing
+  past a verification failure, is not allowed.
 - **Always run `--cleanup` on every terminal path, for every group, UNLESS `--keep-evidence` is ON
   for this session AND the outcome is non-CLEAN** (see "Kept evidence on failure" above and Phase
   3's keep-evidence gate) — outside that one deliberate exception, this is not optional, not
   user-prompted, and not something a future round can undo by mistake (the wrapper's own
   `--cleanup`/dispatch mode split already prevents cleaning up a thread a caller is still trying
-  to `--resume`). **`🛑 SNAPSHOT INTEGRITY FAILURE` is a further, unconditional exception to THAT
-  exception** — always run `--cleanup` for it regardless of `--keep-evidence` (see "Snapshot
-  integrity" below and Phase 3's own keep-evidence gate for why: the threads' own history can no
+  to `--resume`). **`🛑 SNAPSHOT INTEGRITY FAILURE` and `🛑 REVIEW LOG INTEGRITY FAILURE` are a
+  further, unconditional exception to THAT
+  exception** — always run `--cleanup` for either regardless of `--keep-evidence` (see "Snapshot
+  integrity" below, and the Guards section's "receives EXACTLY the same treatment" rule, for why:
+  the threads' own history can no
   longer be vouched for as describing the subject Claude's local record says it does).
 - Do not report to the user until Phase 3.
 - **Snapshot integrity is always on, no opt-in** (see "Snapshot integrity" above and
   `references/snapshot-integrity.md`) — every round 2+ revalidates `SNAPSHOT_FILE` against
   `SNAPSHOT_DIGEST` before dispatching any group, and a mismatch or missing file is a hard stop
   (`🛑 SNAPSHOT INTEGRITY FAILURE`, never silently ignored or treated as an ordinary retry case).
+- **The claim ledger is also always on, no opt-in** (see "Claim ledger" above and
+  `references/claim-ledger.md`) — a claim disappearing from Codex's findings is NEVER treated as
+  implicit resolution; CLEAN requires every claim_id to have reached an explicit `resolved`/
+  `retracted` disposition via a validated `DISPOSITION` marker, and a claim reasserted with no new
+  evidence since its own prior occurrence is NOT CONVERGED regardless of how many other rounds
+  intervened.
 - A non-repo-artifact review is in scope (see Phase 0 step 4's `CLEAN_REPO_DIR` mechanism) — it is
   always single-group `main`, never parallel (see "Determine review mode" in Phase 1 above).
 - **Parallel multi-reviewer mode is native to `/ccs`** (see "Determine review mode" in Phase 1
