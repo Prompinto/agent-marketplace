@@ -78,9 +78,9 @@ emits it) token usage per dispatch, and this skill separately records a coordina
 value, no caller-facing configuration.
 
 **Parallel multi-reviewer mode is supported** (see Phase 1 below): every group — including the
-single-reviewer case, `GROUP="main"` — keeps its own persistent, resumable Codex thread for the
-whole run, created once at round 1 and `--resume`d every round after; `GROUP="main"`/N=1 is simply
-the special case of the same mechanism, not a separate construct. The review target can be a real
+single-reviewer case, `GROUP="main"` (see the N=1 note above) — keeps its own persistent, resumable
+Codex thread for the whole run, created once at round 1 and `--resume`d every round after. The
+review target can be a real
 repo diff (`--uncommitted` / `--base <ref>` / `--commit <sha>` — `--base <ref>` diffs `ref`'s
 merge-base with `HEAD` to `HEAD`, a three-dot diff, not a review of every file in the tree) or a
 non-repo artifact — pasted analysis, generated text, a plan — via the `CLEAN_REPO_DIR` mechanism
@@ -369,89 +369,53 @@ keep-evidence gate for why). See "Phase 3 — Terminal path" below.
 
 ---
 
-## Investigation evidence capture (opt-in via `--capture-evidence`)
+## Reference files this skill must read in full — when and why
 
-**Off by default.** Full mechanics live in `references/capture-evidence.md`, read only when this
-session actually uses `--capture-evidence`.
+Two of the five below are conditional (read only if the session actually uses that flag — if OFF,
+never read or act on that file: zero behavior change from every other place in this skill). Three
+apply unconditionally to every invocation, with no OFF state — for those three, the "read it now"
+instruction isn't signaling a special trigger, just naming the one point in the run before which
+each must be read. Every one of the five is read once, before Phase 1 ever dispatches, and its
+procedure is required at the specific later points listed under it — skipping the read leaves
+those points undocumented.
 
-**Once Phase 0 Step 0 determines capture is ON for this session, your very next action — before
-doing anything else in this run — is to Read `codex-stream-review/skills/ccs/references/capture-evidence.md`
-in full.** That file's procedure is required at no fewer than four later points in this run (Phase
-1 Step 0's `EVENTLOG_FILE` allocation, Step 1's `--capture-eventlog` flag, Phase 2's extraction
-step, Guards' retry-time eventlog handling) — proceeding without having read it first will leave
-those points undocumented for this session. If capture is OFF for this session, never read this
-file and never touch anything it describes — zero behavior change from every other place in this
-skill.
+### Investigation evidence capture (opt-in via `--capture-evidence`)
+Once Phase 0 Step 0 determines capture is ON for this session, read
+`codex-stream-review/skills/ccs/references/capture-evidence.md` in full before doing anything else
+in this run. Required at four later points: Phase 1 Step 0's `EVENTLOG_FILE` allocation, Step 1's
+`--capture-eventlog` flag, Phase 2's extraction step, Guards' retry-time eventlog handling.
 
----
+### Kept evidence on failure (opt-in via `--keep-evidence`)
+Once Phase 0 Step 0 determines `--keep-evidence` is ON for this session, read
+`codex-stream-review/skills/ccs/references/keep-evidence.md` in full before doing anything else in
+this run (order relative to capture-evidence above doesn't matter if both are ON; both must be read
+before Phase 1 ever dispatches). Required at four later points: Phase 1 Step 0's
+`LAST_MESSAGE_KEEP_FILE` allocation, Step 1's `--keep-last-message` flag, Phase 2's keep-or-delete
+step, Phase 3's conditional cleanup-skip.
 
-## Kept evidence on failure (opt-in via `--keep-evidence`)
+### Snapshot integrity (always on, no opt-in)
+Applies to every `codex-stream-review:ccs` invocation that gets past Phase 0's early-exit checks.
+Read `codex-stream-review/skills/ccs/references/snapshot-integrity.md` in full after Phase 0 step 4
+determines the ARTIFACT, before Phase 1's "Determine review mode" ever runs. Required at two later
+points: allocating `SNAPSHOT_FILE`/`SNAPSHOT_DIGEST` (right after Phase 1's sizing step for a
+repo-diff round, or right after Phase 0 step 4 for a non-repo-artifact round), and the pre-dispatch
+revalidation check every round 2+ runs in Phase 1 Step 1.
 
-**Off by default.** Full mechanics live in `references/keep-evidence.md`, read only when this
-session actually uses `--keep-evidence`.
+### Claim ledger (always on, no opt-in)
+Applies to every invocation. Read `codex-stream-review/skills/ccs/references/claim-ledger.md` in
+full (order relative to the other two always-on files here doesn't matter; all three must be read
+before Phase 1 ever dispatches). Required at four later points: Phase 1 Step 0's round-2+ History
+construction (requesting `DISPOSITION` confirmations on still-open claims), Phase 2 step 3's
+verification pass (judging `claim_id`/`evidence_delta`, parsing `DISPOSITION` markers), Phase 2's
+JSONL line construction (`claim_closures[]`), and the Guards section's oscillation check and CLEAN
+gate.
 
-**Once Phase 0 Step 0 determines `--keep-evidence` is ON for this session, your very next action —
-before doing anything else in this run (or immediately after reading
-`references/capture-evidence.md` too, if BOTH flags are ON this session — order between the two
-doesn't matter, but both must be read before Phase 1 ever dispatches) — is to Read
-`codex-stream-review/skills/ccs/references/keep-evidence.md` in full.** That file's procedure is
-required at four later points in this run (Phase 1 Step 0's `LAST_MESSAGE_KEEP_FILE` allocation,
-Step 1's `--keep-last-message` flag, Phase 2's keep-or-delete step, and Phase 3's conditional
-cleanup-skip) — proceeding without having read it first will leave those points undocumented for
-this session. If `--keep-evidence` is OFF for this session, never read this file and never touch
-anything it describes — zero behavior change from every other place in this skill.
-
----
-
-## Snapshot integrity (always on, no opt-in)
-
-**Unlike `--capture-evidence`/`--keep-evidence`, this is not a flag — it applies to every
-`codex-stream-review:ccs` invocation that gets past Phase 0's early-exit checks.** Full mechanics
-live in `references/snapshot-integrity.md`.
-
-**Your very next action after Phase 0 step 4 determines the ARTIFACT — before Phase 1's "Determine
-review mode" ever runs, and regardless of `--capture-evidence`/`--keep-evidence` — is to Read
-`codex-stream-review/skills/ccs/references/snapshot-integrity.md` in full.** That file's procedure
-is required at two later points in this run: allocating `SNAPSHOT_FILE`/`SNAPSHOT_DIGEST` (right
-after Phase 1's "Determine review mode" sizing step for a repo-diff round, or right after Phase 0
-step 4 itself for a non-repo-artifact round) and the pre-dispatch revalidation check every round
-2+ runs in Phase 1 Step 1, before that round's `--resume` call. Proceeding without having read it
-first will leave both points undocumented for this session. This applies to every review this
-skill ever runs — there is no OFF state to skip it for.
-
----
-
-## Claim ledger (always on, no opt-in)
-
-**Also not a flag — applies to every `codex-stream-review:ccs` invocation.** Full mechanics live in
-`references/claim-ledger.md`.
-
-**Your very next action after reading `references/snapshot-integrity.md` above (order between the
-two doesn't matter, but both must be read before Phase 1 ever dispatches) — is to Read
-`codex-stream-review/skills/ccs/references/claim-ledger.md` in full.** That file's procedure is
-required at four later points in this run: Phase 1 Step 0's round-2+ History construction
-(requesting `DISPOSITION` confirmations on still-open claims), Phase 2 step 3's verification pass
-(judging `claim_id`/`evidence_delta` per finding and parsing any `DISPOSITION` markers in that
-round's `summary` text), Phase 2's own JSONL line construction (`claim_closures[]`), and the
-Guards section's oscillation check and CLEAN gate. Proceeding without having read it first will
-leave all four points undocumented for this session.
-
----
-
-## Execution telemetry (always on, no opt-in)
-
-**Also not a flag — applies to every `codex-stream-review:ccs` invocation, wrapper-owned, no
-caller-facing configuration.** Full mechanics live in `references/execution-telemetry.md`.
-
-**Your very next action after reading `references/claim-ledger.md` above (order among Snapshot
-integrity/Claim ledger/Execution telemetry doesn't matter, but all three must be read before Phase 1
-ever dispatches) — is to Read `codex-stream-review/skills/ccs/references/execution-telemetry.md` in
-full.** That file's procedure is required at three later points in this run: Phase 1 Step 1's own
-round-level wall-clock timestamps (taken right before issuing this round's dispatch calls, and again
-once all of this round's groups' results are in hand), Phase 2 step 6's JSONL line construction
-(the `execution`/`round_wall_seconds` fields), and the Final report's own execution-telemetry
-bullet. Proceeding without having read it first will leave all three points undocumented for this
-session.
+### Execution telemetry (always on, no opt-in)
+Applies to every invocation, wrapper-owned, no caller-facing configuration. Read
+`codex-stream-review/skills/ccs/references/execution-telemetry.md` in full (same read-order rule as
+the other two always-on files). Required at three later points: Phase 1 Step 1's round-level
+wall-clock timestamps, Phase 2 step 6's JSONL line construction (`execution`/`round_wall_seconds`),
+and the Final report's own execution-telemetry bullet.
 
 ---
 
@@ -544,18 +508,14 @@ up using `--capture-evidence` at all):**
   strip — this handles either flag alone, both together in either order, or neither, and stays
   correct if a future third flag is ever added the same way, rather than hardcoding just today's two
   fixed orderings:
-  1. Start with `TEXT` = the task text as given.
-  2. Repeat: if `TEXT` starts with the literal prefix `--capture-evidence ` (note the trailing
-     space), or `TEXT` is exactly the string `--capture-evidence` with nothing after it, record
-     **capture-evidence is ON** (if not already recorded) and set `TEXT` to whatever text follows
-     that prefix (the empty string, if `TEXT` was exactly the bare flag). Else, if `TEXT` starts
-     with the literal prefix `--keep-evidence ` (same trailing-space rule), or `TEXT` is exactly the
-     string `--keep-evidence`, record **keep-evidence is ON** (if not already recorded) and set
-     `TEXT` the same way. Otherwise — neither prefix matches — stop the loop.
-  3. The loop ends the first time neither prefix matches. Whatever `TEXT` remains at that point is
-     the effective task text for every rule below and everywhere else in this file — for a session
-     that gave both flags with nothing else after them, this is the empty string, which "Usage"
-     above already treats as "review the work just done."
+  Strip any number of leading `--capture-evidence`/`--keep-evidence` prefixes from the task text,
+  in whatever order they appear: each time the remaining text starts with `--capture-evidence `
+  (or is exactly that string with nothing after it), record **capture-evidence is ON** and remove
+  the prefix; each time it starts with `--keep-evidence ` (or is exactly that string), record
+  **keep-evidence is ON** and remove the prefix. Stop the first time neither prefix matches — the
+  remaining text is the effective task text for every rule below and everywhere else in this file.
+  For a session that gave both flags with nothing else after them, this is the empty string, which
+  "Usage" above already treats as "review the work just done."
 
   A flag never detected during the loop is OFF for this session. **The two decisions are
   independent booleans — `CAPTURE_EVIDENCE` and `KEEP_EVIDENCE` — never a single combined state:**
@@ -962,14 +922,9 @@ before) — harmless, since these are ephemeral per-run files cleaned up at the 
 (Phase 2 step 6) regardless of naming.
 
 **Why `ERR_FILE` is separate from `OUT_FILE`.** `run-ccs-review.sh` prints the early
-`THREAD_ID=<uuid>` signal on **stderr** the moment a thread starts (or immediately, on a resumed
-round) — well before the round's final JSON appears on stdout. `/ccs` keeps this stream separate from stdout's clean JSON, exactly as `stream-review`'s
-own SKILL.md documents ("redirect stdout and stderr to SEPARATE files") — any wrapper-emitted
-stderr noise (there is none in normal operation today, but the separation costs nothing and
-matches the sibling skill's own convention) never contaminates the JSON parse. This
-reasoning applies identically per group — each dispatched group has its own `OUT_FILE`/`ERR_FILE`
-pair (Step 0 above), so each group's early `THREAD_ID` signal and final JSON are separated from
-every other group's, never just from each other within one group's own pair.
+`THREAD_ID=<uuid>` signal on stderr, well before the round's final JSON appears on stdout, so
+keeping the streams in separate files (one `OUT_FILE`/`ERR_FILE` pair per group) prevents any
+stderr noise from ever contaminating the JSON parse.
 
 Then, using the Write tool (never a shell redirect — see the sentinel idiom above), write this
 round's focus text — the exact intended content, no trailing sentinel needed (see the sentinel
@@ -1118,8 +1073,7 @@ cat "$OUT_FILE"
 
 Each group's dispatch is issued as its own separate backgrounded Bash call, all issued within the
 same turn — one Bash `run_in_background: true` invocation per group ("run each group's call at the
-same time → wait for all → synthesize"). The single-reviewer case is simply N=1 of this same loop,
-not a separate branch.
+same time → wait for all → synthesize").
 
 **Why this dispatch call itself needs no additional `core.fsmonitor` guard.** The `unset`-based
 sanitization just above protects against redirected repository/worktree discovery and
@@ -1166,12 +1120,10 @@ paraphrasing it.
 
 ### Step 2 — liveness watcher (secondary channel, defense in depth)
 
-A PID-plus-start-time watcher, reusing that group's own `PID_FILE`,
-dispatched as an independent `Monitor` call right after that group's Step 1 dispatch. **One
-independent `(GROUP, PID_FILE)` `Monitor` call per group** this round — N concurrent watchers for a
-parallel round; the
-`GROUP` segment baked into each `PID_FILE`'s `mktemp` template (Step 0) is what prevents one
-group's watcher from ever reading another group's PID record:
+A PID-plus-start-time watcher, reusing that group's own `PID_FILE`, dispatched as an independent
+`Monitor` call right after that group's Step 1 dispatch — one `(GROUP, PID_FILE)` call per group
+(N concurrent watchers for a parallel round). `GROUP` being baked into each `PID_FILE`'s `mktemp`
+template (Step 0) is what keeps one group's watcher from ever reading another group's PID record:
 
 ```bash
 GROUP="<literal from step 0 — e.g. main or g1>"
@@ -1192,23 +1144,18 @@ echo "Round <R> (${GROUP}): process exited"
 Checks PID **plus** recorded start time (mitigates PID reuse after the process exits) — a
 defense-in-depth secondary signal, not the primary completion mechanism.
 
-**Wait for ALL N groups' PRIMARY results before proceeding to Phase 2 — confirmed, not react-as-
-completed.** Do not begin Phase 2 processing on any group's result until every dispatched group
-this round has completed **its primary channel** (Step 1's own backgrounded dispatch — the
-harness's own task-finished notification, or reading that group's `OUT_FILE` once available).
-This is structurally required, not just a style preference: the convergence gate (below) requires
-CLEAN to hold for EVERY dispatched group, and re-verification must go through EACH group's
-findings — both presuppose every group's result is already in hand. Reacting to a subset would
-mean re-verifying/gating on an incomplete picture, only to redo that work once a straggler group
-lands. A single-reviewer round trivially satisfies this (N=1, nothing to wait on beyond that one
-group). **Do not additionally wait on that group's own watcher to print its "process exited"
-line once the primary result has already arrived** — the watcher is a defense-in-depth secondary
-signal only (see immediately above), consulted when a group's primary notification is delayed or
-never arrives, not a second gate stacked on top of an already-available primary result. The
-watcher's own poll interval (`sleep 180` above) means treating it as a required gate could stall
-an already-finished round by up to ~180s for no benefit, compounding across up to 20 rounds — stop
-that group's watcher (it has no further purpose) as soon as its primary result is in hand, exactly
-as done for every group in this same round.
+**Wait for ALL N groups' PRIMARY results before proceeding to Phase 2.** Don't begin Phase 2 on any
+group's result until every dispatched group this round has completed its primary channel (Step 1's
+backgrounded dispatch — the harness's task-finished notification, or reading that group's
+`OUT_FILE` once available). This is structurally required: the convergence gate needs CLEAN across
+EVERY dispatched group, and re-verification must go through EACH group's findings — both need every
+group's result already in hand, or a straggler forces redoing work done against an incomplete
+picture. (N=1 trivially satisfies this.) **Don't additionally wait on a group's own watcher to
+print "process exited" once its primary result has already arrived** — the watcher is a
+defense-in-depth secondary signal, consulted only when a primary notification is delayed or never
+arrives, not a second gate on top of an already-available result; its `sleep 180` poll interval
+would otherwise stall an already-finished round for no benefit. Stop that group's watcher (it has
+no further purpose) as soon as its primary result is in hand.
 
 ## Phase 2 — Converge loop (R = 1 … 20)
 
