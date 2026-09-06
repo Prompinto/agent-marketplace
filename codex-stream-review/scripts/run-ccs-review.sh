@@ -44,6 +44,12 @@ mktemp_registered() {
 # derived here from $SOURCE_COVERAGE_JSON.omitted, not self-reported by the
 # model. Shared by both the empty-diff fast path and the normal result
 # path so both always get a coverage object, never just one of them.
+# Splices in an execution object second, the identical fallback-on-failure
+# pattern applied to the global $EXECUTION_JSON (see build_execution_json)
+# -- present whenever $DISPATCH_PID was ever actually captured for this
+# dispatch, absent (empty string) for every pre-dispatch failure, in which
+# case this splice is simply skipped, exactly like the coverage splice
+# above when $SOURCE_COVERAGE_JSON is empty/malformed.
 emit_final_output() {
   local json_text="$1" spliced
   if printf '%s' "$SOURCE_COVERAGE_JSON" | jq -e '(.reviewed_file_count | type == "number") and (.omitted | type == "array")' >/dev/null 2>&1; then
@@ -56,13 +62,55 @@ emit_final_output() {
     spliced="$(printf '%s' "$json_text" | jq -c --argjson cov "$SOURCE_COVERAGE_JSON" \
       '. + {coverage: {source: ($cov + {status: (if ($cov.omitted | length) > 0 then "partial" else "complete" end)})}}' 2>/dev/null)"
     if [ -n "$spliced" ]; then
-      printf '%s\n' "$spliced"
-    else
-      printf '%s\n' "$json_text"
+      json_text="$spliced"
     fi
-  else
-    printf '%s\n' "$json_text"
   fi
+  if printf '%s' "$EXECUTION_JSON" | jq -e 'type == "object" and has("elapsed_seconds")' >/dev/null 2>&1; then
+    spliced="$(printf '%s' "$json_text" | jq -c --argjson exec "$EXECUTION_JSON" '. + {execution: $exec}' 2>/dev/null)"
+    if [ -n "$spliced" ]; then
+      json_text="$spliced"
+    fi
+  fi
+  printf '%s\n' "$json_text"
+}
+
+# build_execution_json -> prints this dispatch's own `execution` object
+# (or nothing at all) to stdout. Returns immediately with no output when
+# `$DISPATCH_PID` was never actually captured for this dispatch (only the
+# three pre-dispatch failures -- see the DISPATCH_PID declaration above for
+# why this is a SEPARATE, never-cleared variable from $CODEX_PID, which
+# on_signal's own kill-targeting instead needs cleared immediately after
+# each reap). This
+# means, unlike an earlier revision, callers may call this function at ANY
+# point after the dispatch is reaped, in any order relative to when they
+# reset $CODEX_PID for their own signal-safety bookkeeping -- no ordering
+# dependency to maintain at each call site anymore. Assign the result
+# straight into $EXECUTION_JSON; "no output" means emit_final_output's own
+# splice is a no-op, exactly like an empty $SOURCE_COVERAGE_JSON.
+# `elapsed_seconds` is a plain `$SECONDS` delta against the snapshot taken
+# right before this dispatch's own background launch. `usage` reuses the
+# exact tolerant jq -Rn/fromjson? extraction pattern already established in
+# references/capture-evidence.md, applied to THIS dispatch's own $EVENTLOG
+# (read here, before it is ever deleted) -- the LAST "type":"turn.completed"
+# event's own `.usage` object, kept only when it is genuinely a non-empty
+# object (never an empty `{}` placeholder, and never absent/null) --
+# omitted entirely otherwise, collapsing "no such event" and "an emitted
+# but empty {} usage" to the identical "usage unavailable" outcome. Never
+# reports a "model" value -- this wrapper never sets --model, only
+# -c model_reasoning_effort=xhigh on a fresh dispatch (inherited, unset, on
+# --resume), and SKILL.md's own final report is what surfaces that text,
+# not this JSON field.
+build_execution_json() {
+  [ -n "${DISPATCH_PID:-}" ] || return 0
+  local elapsed
+  elapsed=$((SECONDS - DISPATCH_START_SECONDS))
+  jq -Rn -c --argjson elapsed "$elapsed" '
+    ([inputs | fromjson? | select(.type == "turn.completed") | .usage] | last) as $usage
+    | if ($usage | type) == "object" and ($usage | length) > 0
+      then {elapsed_seconds: $elapsed, usage: $usage}
+      else {elapsed_seconds: $elapsed}
+      end
+  ' "${EVENTLOG:-/dev/null}" 2>/dev/null
 }
 
 # _focus_is_empty -> true (exit 0) if $FOCUS_RECEIVED_FILE's content is
@@ -285,6 +333,45 @@ TIMEOUT_SECS="$DEFAULT_TIMEOUT_SECS"
 SOURCE_COVERAGE_JSON=""
 CAPTURE_EVENTLOG_PATH=""
 KEEP_LAST_MESSAGE_PATH=""
+# EXECUTION_JSON / DISPATCH_START_SECONDS / DISPATCH_PID -- Phase 3
+# execution-telemetry state (always on, no opt-in). Declared here (not
+# just where they're first assigned) so they're always defined under
+# `set -u` regardless of which terminal path runs.
+#
+# DISPATCH_PID is a SEPARATE variable from CODEX_PID, deliberately, even
+# though both hold the identical PID value once set: CODEX_PID's lifetime
+# must stay tied to "is there currently a live/reapable child to signal"
+# (on_signal's own `kill_process_group` targets it, so it MUST be reset to
+# empty immediately once the child is confirmed reaped -- see each `wait
+# "$CODEX_PID"` call site's own reset, matching this file's pre-existing
+# UNTRACKED_PID precedent -- otherwise a later signal could sent TERM/KILL
+# to a stale, potentially OS-recycled and completely unrelated PID; live
+# reproduction confirmed a trap CAN still be serviced in exactly that
+# post-`wait` window: `(exit 0) & pid=$!; wait "$pid"; kill -TERM $$` runs
+# the trap while `$pid` is stale). DISPATCH_PID's lifetime is the opposite
+# on purpose: it is build_execution_json()'s own persistent eligibility
+# signal and must NOT be cleared once set, since telemetry extraction can
+# run at any point after the dispatch is already fully reaped (indeed,
+# after $EXIT_CODE/$TASK_COMPLETE_SEEN are already known) -- long after
+# CODEX_PID has correctly gone back to empty. Both are set together, once,
+# immediately after the background launch, under a brief signal-catching
+# window (see that dispatch site's own comment for why even that pair of
+# assignments needs it, not just careful ordering -- and for why a CAUGHT
+# trap is used there, not an IGNORE one).
+EXECUTION_JSON=""
+DISPATCH_START_SECONDS=""
+DISPATCH_PID=""
+# Reset up front, same reasoning as SAFE_GIT_HOME immediately below: an
+# inherited environment value here (however unlikely) could otherwise be
+# mistaken for THIS invocation's own dispatched child before any launch
+# has actually happened -- confirmed directly: `CODEX_PID=424242 bash -c
+# '[ -n "${CODEX_PID:-}" ] && echo eligible'` prints `eligible` with no
+# launch of any kind. Explicit assignment closes that off entirely; the
+# ONLY other place this variable is ever set is `CODEX_PID=$!`,
+# immediately after the real launch below (DISPATCH_PID above needs the
+# identical up-front reset for the identical reason, covered by its own
+# declaration immediately above).
+CODEX_PID=""
 # Reset up front so cleanup_temp_files()'s "${SAFE_GIT_HOME:-}" guard always
 # sees an explicit empty string on any exit path before the real
 # `mktemp -d` assignment below runs, never an env value inherited from
@@ -410,6 +497,18 @@ keep_and_remove_last_message() {
   fi
 }
 on_signal() {
+  # Round 5 finding: this function used to leave $CODEX_PID reaped-but-set
+  # for its whole remaining body (job handling, telemetry extraction, file
+  # cleanup, JSON output) with the real trap still installed -- a SECOND
+  # INT/TERM arriving anywhere in that window re-enters this same function
+  # (live-reproduced: two TERM signals sent to a handler that keeps a
+  # reaped PID around both see the same stale value on the second entry),
+  # and the kill_process_group call below would then act on that stale,
+  # possibly-OS-recycled PID. Disabling INT/TERM for the rest of this
+  # cleanup closes that off entirely -- this function always exits the
+  # whole script before returning, so there is no later point that still
+  # needs INT/TERM handling restored.
+  trap '' INT TERM
   kill_process_group "${CODEX_PID:-}"
   # Reap the killed dispatch before touching $LAST_MESSAGE_FILE: SIGKILL only
   # requests termination, it does not prove the child has actually stopped
@@ -418,10 +517,28 @@ on_signal() {
   # race the writer. Guarded on CODEX_PID being set: a signal landing before
   # dispatch (e.g. during diff collection) has no PID to wait on.
   [ -n "${CODEX_PID:-}" ] && wait "$CODEX_PID" 2>/dev/null
+  # Reset immediately -- matches this file's own UNTRACKED_PID precedent
+  # (see that variable's own reset comment) and the no_thread_started/
+  # shared-epilogue reset sites: a stale PID left here risks the OS reusing
+  # it for an unrelated process that a later kill_process_group call would
+  # wrongly TERM/KILL. Safe here too, now that INT/TERM are disabled above
+  # AND build_execution_json() below reads the separate, never-cleared
+  # $DISPATCH_PID instead.
+  CODEX_PID=""
   local job_pid
   for job_pid in $(jobs -p 2>/dev/null); do
     kill -KILL -"$job_pid" 2>/dev/null
   done
+  # Safe to extract telemetry from $EVENTLOG now, before
+  # keep_and_remove_last_message/emit_final_output ever touch it.
+  # build_execution_json() checks $DISPATCH_PID, not $CODEX_PID -- a
+  # separate, never-cleared variable set together with $CODEX_PID at
+  # dispatch time (see that assignment site's own comment) -- so it is
+  # unaffected by $CODEX_PID already being reset just above; it is simply a
+  # no-op when no dispatch was ever launched for this invocation at all
+  # (the signal landed before the background launch, while INT/TERM were
+  # still on their normal `on_signal` disposition).
+  EXECUTION_JSON="$(build_execution_json)"
   keep_and_remove_last_message
   local out_json
   if [ -n "${THREAD_ID:-}" ]; then
@@ -693,6 +810,68 @@ mktemp_registered EVENTLOG
 # final answer text this same process already produced).
 mktemp_registered LAST_MESSAGE_FILE
 
+# DISPATCH_START_SECONDS: a plain $SECONDS snapshot, taken unconditionally
+# right here -- TIMING, with no dependency on the launch below actually
+# succeeding.
+#
+# Round 4 finding: an earlier revision kept $CODEX_PID non-empty past its
+# own reap, purely so build_execution_json() could still read it later,
+# which reintroduced exactly the stale-PID risk this file's own
+# UNTRACKED_PID precedent exists to prevent -- a signal landing after
+# `wait "$CODEX_PID"` but before the (now-delayed) reset would
+# `kill_process_group` a PID the OS may already have recycled for
+# something unrelated (reproduced directly: `(exit 0) & pid=$!; wait
+# "$pid"; kill -TERM $$; pid=""` still runs the trap while `$pid` is
+# stale). Fixed by splitting into two variables with deliberately
+# different lifetimes, instead of stretching one variable's lifetime to
+# cover both jobs:
+#   - $CODEX_PID stays exactly what on_signal's own kill_process_group
+#     targets, reset to empty immediately after every `wait "$CODEX_PID"`
+#     reaps it (matching UNTRACKED_PID's own precedent exactly -- see each
+#     reset site's own comment). It is NEVER kept alive past its own reap
+#     just to satisfy a later read.
+#   - $DISPATCH_PID holds the identical PID value once set, but is never
+#     reset afterward -- it exists purely as build_execution_json()'s own
+#     persistent eligibility signal (see that function's comment), safe to
+#     read at any point after this dispatch, long after $CODEX_PID has
+#     already gone back to empty.
+# Two earlier revisions each tried closing the ownership-tracking gap with
+# ordering alone (a second marker set either right after or right before
+# this same launch) and each introduced its own confirmed-live bug: ANY
+# second assignment statement, whichever side of the launch it sits on, is
+# itself an interruption point a trap can be serviced at (reproduced
+# directly both ways: `pid=$!; kill -TERM $$; marker=1` runs the kill
+# before `marker=1`; `marker=1; kill -TERM $$; (sleep 1) &` runs the kill
+# before the job is ever created). No ordering of separate statements can
+# close this, so the launch, `CODEX_PID=$!`, and `DISPATCH_PID=...` below
+# are instead made genuinely atomic with respect to signal delivery.
+#
+# Round 5 finding: doing that atomicity via `trap '' INT TERM` (ignore) had
+# two further bugs, both live-reproduced: (1) it DISCARDS a signal that
+# arrives during the window instead of deferring it, so a genuine Ctrl-C
+# landing there could leave the round running to completion with no
+# visible effect at all; (2) an IGNORED (SIG_IGN) disposition, unlike a
+# CAUGHT one, survives exec() -- so the codex process launched inside that
+# window would inherit permanently-ignored TERM for its entire lifetime,
+# silently defeating every later graceful `kill -TERM` this wrapper ever
+# sends it (confirmed directly: `set -m; trap "" TERM; (exec sleep 5) &`
+# left the child alive on TERM, unlike an unmasked control, which exited).
+# Fixed by CATCHING instead of ignoring: the trap below only records the
+# signal into $DEFERRED_SIGNAL rather than acting on it immediately (acting
+# immediately mid-assignment would reopen exactly the race this mechanism
+# exists to close) -- and because a CAUGHT disposition always resets to
+# default on exec regardless of timing (unlike SIG_IGN), the dispatched
+# codex process is unaffected either way, whether or not a signal actually
+# lands during the window. Once the launch and both PID assignments are
+# done, the real `on_signal` trap is restored, and, if a signal WAS
+# recorded during the window, invoked immediately and directly -- deferred,
+# never dropped, never fabricated. This closes the one gap every earlier
+# revision explicitly accepted as unavoidable (the launch-to-`$!`-capture
+# instant itself) -- it no longer exists, and does so without the two new
+# problems the ignore-based version introduced.
+DISPATCH_START_SECONDS=$SECONDS
+DEFERRED_SIGNAL=0
+trap 'DEFERRED_SIGNAL=1' INT TERM
 (
   cd "$CWD" || exit 127
   if [ -n "$RESUME_THREAD_ID" ]; then
@@ -705,6 +884,9 @@ mktemp_registered LAST_MESSAGE_FILE
   fi
 ) > "$EVENTLOG" 2>&1 &
 CODEX_PID=$!
+DISPATCH_PID="$CODEX_PID"
+trap on_signal INT TERM
+[ "$DEFERRED_SIGNAL" -eq 1 ] && on_signal
 # $PROMPT_FILE is NOT removed here: the dispatched subshell above still
 # needs to open it for its `< "$PROMPT_FILE"` stdin redirect, and
 # backgrounding it with `&` gives no guarantee the child has done so yet.
@@ -736,7 +918,15 @@ if [ -z "$THREAD_ID" ]; then
   if [ -z "$THREAD_ID" ]; then
     kill_process_group "$CODEX_PID"
     wait "$CODEX_PID" 2>/dev/null
+    # Reset immediately -- matches this file's own UNTRACKED_PID precedent
+    # (see that variable's own reset comment): a stale PID left after this
+    # job exits risks the OS reusing it for an unrelated process that
+    # kill_process_group would then wrongly TERM/KILL on a later interrupt.
+    # Safe to do before extracting telemetry below: build_execution_json()
+    # reads the separate, never-cleared $DISPATCH_PID instead, so this
+    # reset no longer affects its eligibility check.
     CODEX_PID=""
+    EXECUTION_JSON="$(build_execution_json)"
     keep_and_remove_last_message
     emit_final_output "$(printf '{"ok":false,"reason":"no_thread_started","detail":"no thread.started event within %ss"}\n' "$THREAD_WAIT_SECS")"
     exit 1
@@ -791,6 +981,12 @@ if [ "$TASK_COMPLETE_SEEN" -eq 1 ]; then
 fi
 wait "$CODEX_PID" 2>/dev/null
 EXIT_CODE=$?
+# Reset immediately -- matches this file's own UNTRACKED_PID precedent (see
+# that variable's own reset comment): a stale PID left after this job exits
+# risks the OS reusing it for an unrelated process that kill_process_group
+# would then wrongly TERM/KILL on a later interrupt. Safe this early: the
+# shared epilogue's own execution-telemetry extraction, further down, reads
+# the separate, never-cleared $DISPATCH_PID instead.
 CODEX_PID=""
 if [ "$TASK_COMPLETE_SEEN" -eq 0 ] && [ "$TIMED_OUT" -eq 0 ]; then
   grep -q '"type":"turn.completed"' "$EVENTLOG" 2>/dev/null && TASK_COMPLETE_SEEN=1
@@ -862,6 +1058,12 @@ else
   fi
 fi
 
+# Safe to extract execution telemetry from $EVENTLOG now, before it is
+# copied/deleted below. $CODEX_PID was already reset immediately after its
+# own `wait` above (this file's usual UNTRACKED_PID-matching pattern) --
+# build_execution_json() reads the separate, never-cleared $DISPATCH_PID
+# instead, so it is unaffected by that reset's timing.
+EXECUTION_JSON="$(build_execution_json)"
 if [ -n "$CAPTURE_EVENTLOG_PATH" ]; then
   cp "$EVENTLOG" "$CAPTURE_EVENTLOG_PATH" 2>/dev/null || true
 fi

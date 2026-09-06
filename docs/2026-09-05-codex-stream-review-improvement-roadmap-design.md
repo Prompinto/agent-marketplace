@@ -1,9 +1,10 @@
 # codex-stream-review Improvement Roadmap — Negotiated Plan
 
-> Status: **Phase 1 negotiated to CLEAN and fully implemented** (6 items, PRs #55–#59,
-> `codex-stream-review` now v0.9.0). **Phase 2 negotiated to CLEAN** in a second `/ccs`
-> non-repo-artifact session (see "Phase 2 negotiation" below) — concretized, not yet implemented.
-> Phases 3–4 remain sketch-level only. This document is the design input for
+> Status: **Phase 1 negotiated to CLEAN and fully implemented** (6 items, PRs #55–#59).
+> **Phase 2 negotiated to CLEAN and fully implemented** (claim ledger, PR #60,
+> `codex-stream-review` now v0.10.0). **Phase 3 negotiated to CLEAN** in a third `/ccs`
+> non-repo-artifact session (see "Phase 3 negotiation" below) — concretized, not yet implemented.
+> Phase 4 remains sketch-level only. This document is the design input for
 > `superpowers:writing-plans`-style implementation, taken phase by phase. Still pre-1.0.0 by
 > design: the SKILL.md structure, script contracts, and supported feature set are still actively
 > changing release to release, so a 1.0.0 tag would falsely signal a frozen interface.
@@ -467,6 +468,73 @@ was reaching for.
 
 ---
 
+## Phase 3 negotiation (third `/ccs` session, non-repo-artifact, post-Phase-2-implementation)
+
+> Status: **negotiated to CLEAN with Codex**, thread `01a07469-fcc0-7c31-9ef0-68f136faac37`
+> (cleaned up after convergence), 4 rounds, 0 unresolved disagreements. Conducted after Phase 2
+> shipped (PR #60, `codex-stream-review` now v0.10.0) — this negotiation concretizes the Phase 3
+> headline sketch from the original round-1 negotiation ("best-effort cost/effort reporting") into
+> an actual, implementable design, grounded in the real v0.10.0 wrapper/skill mechanics.
+
+**Round-by-round summary:**
+- **R1** — Claude's brief asked Codex directly (as the more authoritative source on its own CLI)
+  whether real per-round token usage is even obtainable from `codex exec --json`'s
+  `turn.completed.usage` event, since this project's own fake-CLI fixture only ever emits an empty
+  `{}` there. Codex **live-verified this rather than guessing**: the real `codex-cli 0.153.0`
+  populates `input_tokens`/`cached_input_tokens`/`cache_write_input_tokens`/`output_tokens`/
+  `reasoning_output_tokens` (sometimes `total_tokens`) — the fake fixture's `{}` is confirmed
+  non-representative, and the scope is worth pursuing. Codex raised 4 findings: (1) a raw
+  grep/direct-`jq` extraction is unsafe against the wrapper's actual mixed stdout/stderr event log
+  (a real capture contained a non-JSON stderr line that broke naive parsing) — must reuse the
+  existing tolerant `jq -Rn`/`fromjson?` pattern from `capture-evidence.md` instead; (2) the design
+  must never report a "model" value, since the wrapper only ever sets `model_reasoning_effort`, not
+  `--model`; (3) telemetry needs a durable, per-round/per-group JSONL schema, since the wrapper
+  deletes its event log after every dispatch; (4) a low-severity meta-note that the brief's own
+  "no need to open project files" scope constraint read like an evidence-suppression instruction
+  inside the untrusted Context zone — Codex correctly treated it as informational and verified the
+  live files anyway, which is exactly right for a planning negotiation.
+- **R2** — Claude accepted all 4 findings and proposed the concrete shapes: reuse the exact
+  existing tolerant `jq` pattern; report reasoning effort only ("xhigh on fresh dispatch; inherited
+  on resume"); persist a new `execution: {elapsed_seconds, usage}` object, top-level for
+  single-reviewer / nested per-group in `groups[]` for parallel mode (a deliberate departure from
+  Phase 2's own top-level-only convention, since execution telemetry — unlike a group-namespaced
+  `claim_id` — is genuinely per-group data with no other disambiguator); plus a separate
+  coordinator-measured `round_wall_seconds` to avoid overstating wall-clock cost by summing
+  concurrent groups' individual times. Codex found 2 more issues: (1) the proposed "only for a
+  dispatch that actually started" availability rule wrongly excluded `no_thread_started` and a
+  post-launch `interrupted` — both DO have a launched child worth timing/extracting from; (2) an
+  emitted-but-empty `usage: {}` object (confirmed: the fake fixture emits this even on its SUCCESS
+  path) is ambiguous against "no object was ever emitted" — both need to collapse to the same
+  "usage unavailable" reporting outcome, while a non-empty object with zero-valued counters must be
+  kept and reported as real data.
+- **R3** — Claude fixed both: availability keyed to a `DISPATCH_STARTED` marker (covering
+  `no_thread_started` and post-launch `interrupted`, excluding only genuine pre-dispatch failures);
+  `execution.usage` omitted (never an empty placeholder) for both the absent and the empty-object
+  case, retained only when genuinely non-empty. Codex found one more subtlety, and one fixture-
+  matrix impossibility: (1) setting `DISPATCH_STARTED` immediately before the background launch
+  races the actual `CODEX_PID=$!` assignment on the very next line — a signal landing in that exact
+  gap could see the marker true with no PID yet to reap; (2) the proposed fixture matrix asked for
+  `no_thread_started` on both fresh AND resume, but that reason is structurally fresh-only (a
+  `--resume` call already has a threadId and never enters the `thread.started` polling branch at
+  all).
+- **R4** — Claude separated TIMING (a plain `DISPATCH_START_SECONDS` snapshot, taken
+  unconditionally right before launch) from OWNERSHIP (the actual telemetry-eligibility marker,
+  set only after `CODEX_PID=$!` succeeds) — the narrow fork-to-PID handoff gap is accepted as an
+  honest best-effort omission (no telemetry in that vanishingly rare race window, never a fabricated
+  record), and corrected the fixture matrix to test `no_thread_started` fresh-only while testing
+  usage/interruption variants on both fresh and resume. **CLEAN** — Codex confirmed real usage data
+  on the actual installed CLI once more and that the design is complete and appropriately narrow.
+
+**What changed most from the original headline sketch:** "cost/effort reporting" turned out to
+need real design work despite sounding simple — the actual token-usage data source had to be
+empirically verified (not assumed from the project's own necessarily-unrealistic test fixture), the
+extraction had to reuse an already-hardened parser rather than a naive one, and the availability/
+timing rules needed two rounds of correction to actually match the wrapper's real process-lifecycle
+edge cases (`no_thread_started`, post-launch signals, the fork-to-PID gap) rather than a
+plausible-sounding approximation of them.
+
+---
+
 ## Final consolidated plan (post-negotiation, ready for implementation planning)
 
 This section is the single source of truth for what to actually build; everything above is the
@@ -561,11 +629,54 @@ beyond judgments Claude's existing per-round verification pass already makes.
     than the two legal ones, or any marker-parsing ambiguity — all leave the claim open / that
     round unable to converge, never a silent pass-through to CLEAN.
 
-### Phase 3 — Upstream-risk hardening (shrunk after negotiation)
+### Phase 3 — Upstream-risk hardening (final, fully concretized — see negotiation above)
 Gzip-awareness for `resolve_rollout` is **dropped** — superseded by Phase 1's `-o` switch, which
 removes the correctness dependency on rollout parsing entirely. Remaining scope: best-effort
-cost/effort reporting (selected model/effort, elapsed time, any process-emitted usage figures —
-never framed as authoritative billing/quota data, no extra quota-lookup call).
+execution telemetry (reasoning effort, elapsed time, real process-emitted token usage — confirmed
+obtainable on the actual installed CLI, not assumed) surfaced in `/ccs`'s final report only, never
+framed as authoritative billing/quota data.
+
+1. **Extraction**: wrapper-owned (`run-ccs-review.sh`), reusing the exact existing
+   `capture-evidence.md` tolerant `jq -Rn`/`fromjson?` pattern against the per-dispatch
+   `$EVENTLOG` — no new parser, no raw-log retention, no extra API/quota-lookup call.
+2. **Availability, precisely**: separate TIMING from OWNERSHIP. `DISPATCH_START_SECONDS` is a
+   plain timestamp snapshot taken unconditionally right before the background `codex exec`/
+   `codex exec resume` launch. The actual telemetry-eligibility marker is set only AFTER
+   `CODEX_PID=$!` has successfully captured a real PID — never before, closing the launch-vs-PID-
+   assignment race. Every terminal path gated on that PID-backed marker (normal success/failure,
+   `no_thread_started`, timeout, and `interrupted` when the signal lands after PID capture)
+   reaps the child first, then extracts telemetry, never altering the review verdict. Pre-dispatch
+   failures (`bad_args`/`git_error`/`incomplete_collection`) and a signal landing in the narrow
+   fork-to-PID handoff gap are accepted, honest best-effort omissions — no fabricated or racy
+   record.
+3. **Shape**: `execution: {elapsed_seconds, usage?}` on the wrapper's own JSON response — one
+   optional additive field, backward-compatible with every existing consumer (`.ok`/`.threadId`/
+   `.verdict`/`.coverage` reads are unaffected). `elapsed_seconds` is present whenever the
+   PID-backed marker was set. `usage` is present ONLY when a genuinely non-empty usage object was
+   extracted — omitted (never an empty `{}` placeholder) both when no object was ever emitted AND
+   when an empty object was emitted (the real CLI does emit `{}` on some successful turns) — both
+   report as "usage unavailable" downstream. A non-empty object is kept and reported as-is even
+   with individual zero-valued counters (a real zero is meaningful, distinct from no data at all).
+4. **Never a "model" value** — the wrapper only ever sets `-c model_reasoning_effort=xhigh` on a
+   fresh dispatch (no `--model` flag exists anywhere in it); report reasoning effort only: "xhigh
+   on fresh dispatch; inherited on resume" (a `--resume` call has no `-c` flags of its own).
+5. **Persistence**: the review-history JSONL gains `execution` per dispatch — top-level for a
+   single-reviewer round, nested inside each `groups[]` member for a parallel round (genuinely
+   per-group data, unlike Phase 2's claim-ledger fields which stayed top-level because `claim_id`
+   is already self-disambiguating). A separate, coordinator-measured `round_wall_seconds`
+   (dispatch-fan-out to all-groups-joined) is recorded once per round — never derived by summing
+   individual groups' own `elapsed_seconds`, which would overstate true wall-clock cost since
+   groups run concurrently.
+6. **Final report**: a "best-effort execution telemetry — not authoritative billing or quota data"
+   section listing effort, per-round/per-group elapsed time, round/overall wall-clock time, and
+   token usage when available ("usage unavailable" otherwise) — any summed figure explicitly
+   labeled as a sum, never presented as wall-clock time or billable cost.
+7. **Non-goals** (explicit, per the roadmap's own Standing rule): no cost subsystem, no
+   caller-facing configuration option, no full raw event-log retention as a side effect, no
+   model/quota-lookup API call, no attempt to report a "model" identity.
+8. **Fixture coverage**: `no_thread_started` (fresh-dispatch-only, structurally unreachable on
+   resume); populated/empty/null/absent usage, a non-JSON stderr line mixed into the stream, and
+   post-launch interruption — each of those on both fresh and resume paths.
 
 ### Phase 4 — Structural/strategic expansion (unchanged in spirit, refined criteria)
 - `codex exec fork` (confirmed available in the installed 0.153.0 CLI, same `--json`/`-o`/
@@ -580,11 +691,12 @@ explicit disposition: a phase assignment, an accepted-residual-risk statement, o
 non-goal — never silent omission.
 
 ### Next step
-Phase 1 shipped in full (6 items, PRs #55–#59, v0.9.0). Phase 2 is now also fully concretized (see
-"Phase 2 negotiation" above) and ready for implementation — same one-item-at-a-time
-implement → verify → `/ccs` adversarial review-to-CLEAN → commit/push/PR cycle Phase 1 used.
-Phases 3–4 remain sketch-level only; concretize each via the same non-repo-artifact `/ccs`
-negotiation once Phase 2 ships.
+Phase 1 (PRs #55–#59) and Phase 2 (PR #60, the claim ledger) have both shipped in full —
+`codex-stream-review` is at v0.10.0. Phase 3 (execution telemetry) is now also fully concretized
+(see "Phase 3 negotiation" above) and ready for implementation — same one-item-at-a-time
+implement → verify → `/ccs` adversarial review-to-CLEAN → commit/push/PR cycle Phase 1/2 both used.
+Phase 4 remains sketch-level only; concretize it via the same non-repo-artifact `/ccs` negotiation
+once Phase 3 ships.
 
 ---
 

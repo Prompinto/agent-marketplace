@@ -71,6 +71,12 @@ reasserted with no new evidence since its own prior occurrence is `⚠️ NOT CO
 how many other rounds intervened, and CLEAN requires every claim to have reached an explicit
 `resolved`/`retracted` disposition — never a silent disappearance treated as agreement.
 
+**Execution telemetry is also always on, no opt-in** — see `references/execution-telemetry.md` for
+its full mechanics. `run-ccs-review.sh` reports best-effort elapsed time and (when the real CLI
+emits it) token usage per dispatch, and this skill separately records a coordinator-measured
+`round_wall_seconds` per round — never authoritative billing/quota data, never a "model" identity
+value, no caller-facing configuration.
+
 **Parallel multi-reviewer mode is supported** (see Phase 1 below): every group — including the
 single-reviewer case, `GROUP="main"` — keeps its own persistent, resumable Codex thread for the
 whole run, created once at round 1 and `--resume`d every round after; `GROUP="main"`/N=1 is simply
@@ -243,6 +249,19 @@ possible even after a failed round):
 | `invalid_json` | The final answer wasn't valid JSON despite the schema | Yes |
 | `schema_mismatch` | The final answer was valid JSON but failed the semantic verdict rules (CLEAN/findings cross-field consistency, nonblank evidence, complete dimension set) | Yes |
 
+**Execution telemetry (always on, no opt-in — see "Execution telemetry" above and
+`references/execution-telemetry.md`, already read per that section's own mandatory-read
+instruction):** both a success response AND a failure response can carry an additional spliced-in
+`"execution":{"elapsed_seconds":<int>,"usage"?:{...}}` object — present whenever this dispatch's own
+`$DISPATCH_PID` was ever actually captured (i.e. every reason above except `bad_args`/
+`git_error`/`incomplete_collection`, which never dispatch at all — see
+`references/execution-telemetry.md` section 3 for the dual-variable `$CODEX_PID`/`$DISPATCH_PID`
+design and why signal-masking closes every other gap). `usage`
+is present only when
+a genuinely non-empty usage object was actually extracted — omitted entirely (never an empty `{}`
+placeholder) otherwise. Never a `"model"` field or value anywhere. Independent of `coverage` above —
+either, both, or neither may be present on a given response, gated on entirely separate conditions.
+
 Note there is no longer any reason meaning "the `--resume` threadId itself could not be resolved"
 — the wrapper no longer looks up a thread's on-disk rollout file at all (round completion is
 instead detected by grepping the round's own captured `codex exec --json` stdout for
@@ -402,6 +421,23 @@ required at four later points in this run: Phase 1 Step 0's round-2+ History con
 round's `summary` text), Phase 2's own JSONL line construction (`claim_closures[]`), and the
 Guards section's oscillation check and CLEAN gate. Proceeding without having read it first will
 leave all four points undocumented for this session.
+
+---
+
+## Execution telemetry (always on, no opt-in)
+
+**Also not a flag — applies to every `codex-stream-review:ccs` invocation, wrapper-owned, no
+caller-facing configuration.** Full mechanics live in `references/execution-telemetry.md`.
+
+**Your very next action after reading `references/claim-ledger.md` above (order among Snapshot
+integrity/Claim ledger/Execution telemetry doesn't matter, but all three must be read before Phase 1
+ever dispatches) — is to Read `codex-stream-review/skills/ccs/references/execution-telemetry.md` in
+full.** That file's procedure is required at three later points in this run: Phase 1 Step 1's own
+round-level wall-clock timestamps (taken right before issuing this round's dispatch calls, and again
+once all of this round's groups' results are in hand), Phase 2 step 6's JSONL line construction
+(the `execution`/`round_wall_seconds` fields), and the Final report's own execution-telemetry
+bullet. Proceeding without having read it first will leave all three points undocumented for this
+session.
 
 ---
 
@@ -993,6 +1029,15 @@ runs Phase 3's cleanup unconditionally even under `--keep-evidence`). On `SNAPSH
 proceed to dispatch normally, below. Round 1 never runs this check — there is nothing yet to
 revalidate against.
 
+**Round wall-clock start timestamp (execution telemetry, always on — see "Execution telemetry"
+above and `references/execution-telemetry.md`, already read per that section's own mandatory-read
+instruction).** Immediately before issuing this round's dispatch calls below (every group, in the
+same turn), note this round's own start timestamp — e.g. `ROUND_WALL_START=$(date +%s)` — a plain
+literal fact Claude remembers for this round only, the same way `PID_FILE`/`OUT_FILE` etc. are
+remembered per round. This is COORDINATOR-measured, entirely distinct from any group's own
+`execution.elapsed_seconds` (which `run-ccs-review.sh` itself reports) — see Phase 2 step 6 below
+for the matching end timestamp and where `round_wall_seconds` is actually computed and recorded.
+
 For each group dispatched this round (one, for the common `GROUP="main"` single-reviewer case; N
 concurrent backgrounded dispatches for a parallel round — one per group, each with its own temp
 files from Step 0 and its own entry in `GROUP_THREADS`, below):
@@ -1232,7 +1277,22 @@ For each round, after Phase 1 delivers a result:
    `claim_id`s are already group-namespaced (`g1:f3`, `g2:f7`, …), so a flat array has no
    cross-group ambiguity, and `claude_verification[]` itself (which `claim_id`/`evidence_delta`
    attach to) was ALREADY a top-level-only field before this feature — introducing group-nesting
-   for it now would be a new, unnecessary structure. Then
+   for it now would be a new, unnecessary structure. **Carry forward each dispatched group's own
+   `execution` object (always on — see "Execution telemetry" above and
+   `references/execution-telemetry.md`, already read per that section's own mandatory-read
+   instruction)** exactly as `run-ccs-review.sh` itself reported it in that group's own JSON
+   response — top-level on this round's line for a single-reviewer round, inside that group's own
+   `groups[]` entry for a parallel round (same nesting rule as `kept_last_message_path` above, never
+   `investigation_evidence`/`claim_closures[]`'s always-top-level rule); omitted entirely for a
+   group whose response never carried one. **Compute and record this round's own `round_wall_seconds`
+   now**, once every dispatched group's result is confirmed in hand (per Step 2's "wait for ALL N
+   groups" rule): note this round's own end timestamp — e.g. `ROUND_WALL_END=$(date +%s)` — and
+   compute `round_wall_seconds = ROUND_WALL_END - ROUND_WALL_START` (the literal fact noted in Step 1
+   above). Add this as a new, always-present, TOP-LEVEL field on this round's JSONL line — single-
+   reviewer or parallel alike, one value per round regardless of group count. **Never compute this by
+   summing individual groups' own `execution.elapsed_seconds` values instead** — groups run
+   CONCURRENTLY within a round, so summing would overstate true wall-clock cost; see
+   `references/execution-telemetry.md` section 5 for the full reasoning. Then
    append this round's line to the review history log (below) and VERIFY that append landed (see
    "Review history log" → "Write" — this is a hard stop on failure, `🛑 REVIEW LOG INTEGRITY
    FAILURE`, never best-effort, now that the claim ledger makes this durability load-bearing for
@@ -1596,10 +1656,18 @@ appearance, present from its second occurrence onward) to every `claude_verifica
 one new
 optional round-level array (`claim_closures[]`), present only on a round that actually closes one
 or more claims.** The session's FIRST line only also gains a top-level `schema_version` field (see
-`references/claim-ledger.md`'s legacy-session policy). **The common
+`references/claim-ledger.md`'s legacy-session policy). **Execution telemetry (always on, no opt-in
+— see "Execution telemetry" above and `references/execution-telemetry.md`) adds `execution`
+(top-level for a single-reviewer round, inside that group's own `groups[]` entry for a parallel
+round — present whenever that dispatch's own `$DISPATCH_PID` was actually captured, omitted entirely
+otherwise) and a separate, always top-level, coordinator-measured
+`round_wall_seconds` (one per round, present every round regardless of group count — never derived
+by summing groups' own `execution.elapsed_seconds`).** The common
 case — a single-reviewer round (`GROUP="main"`), capture-evidence and keep-evidence both OFF, no
 claim closed this round — is otherwise
-unchanged from before:** `target.focus`/`codex_review` stay single string/object values, `groups`
+unchanged from before, aside from `execution`/`round_wall_seconds` themselves (present whenever a
+dispatch genuinely ran, per "Execution telemetry" above):** `target.focus`/`codex_review` stay
+single string/object values, `groups`
 is omitted entirely, and so are `investigation_evidence`, `kept_last_message_path`, and
 `claim_closures`, exactly as shown below:
 
@@ -1618,7 +1686,9 @@ is omitted entirely, and so are `investigation_evidence`, `kept_last_message_pat
   "claude_verification": [
     {"finding_id": "f1", "claim_id": "f1", "action": "accept|reject_with_rationale|request_rereview|parked", "rationale": "..."}
   ],
-  "round_outcome": "continue|converged|not_converged"
+  "round_outcome": "continue|converged|not_converged",
+  "execution": {"elapsed_seconds": 165, "usage": {"input_tokens": 512, "output_tokens": 77}},
+  "round_wall_seconds": 187
 }
 ```
 
@@ -1671,6 +1741,16 @@ omission rule.
   TOP-LEVEL ONLY in parallel mode too — same as `investigation_evidence`, never nested per group
   the way `kept_last_message_path` is (see Phase 2 step 6 above for the exact reasoning: a flat
   array has no cross-group ambiguity once `claim_id` already carries the group prefix).
+- `execution`/`round_wall_seconds`: see "Execution telemetry" above and
+  `references/execution-telemetry.md` (already read per that section's own mandatory-read
+  instruction) for the full extraction/availability/shape rules. `execution` is genuinely PER-GROUP
+  data — top-level for a single-reviewer round, nested inside each dispatched group's own
+  `groups[]` entry for a parallel round (same nesting rule as `kept_last_message_path`, never
+  `investigation_evidence`/`claim_closures[]`'s always-top-level rule — see
+  `references/parallel-mode.md`'s own "JSONL field: `groups`" section, updated alongside this
+  file). `round_wall_seconds` is a SEPARATE, coordinator-measured, always-TOP-LEVEL field — one per
+  round regardless of group count, NEVER derived by summing groups' own `execution.elapsed_seconds`
+  (they run concurrently, so summing would overstate true wall-clock cost).
 
 **Write:** append via `jq -nc` redirected with `>>`, `umask 077` restated immediately before
 every append (a fresh Bash call each time — the earlier `mkdir`'s umask doesn't carry over).
@@ -1841,6 +1921,15 @@ Structure:
   cleanup outcome instead (cleanup always ran unconditionally for both; see "Snapshot
   integrity" above and the Guards section's "receives EXACTLY the same treatment" rule), plus the
   required content from the relevant section (a fresh invocation is needed).
+- **Execution telemetry (always on)** — see "Execution telemetry" above and
+  `references/execution-telemetry.md`. Head this bullet's actual content with **"best-effort
+  execution telemetry — not authoritative billing or quota data"**, then list: effort (reasoning
+  effort only — "xhigh on fresh dispatch; inherited on resume" — NEVER a model value); per-round/
+  per-group elapsed time, from each round's own `execution.elapsed_seconds` (per group, in parallel
+  mode); each round's own `round_wall_seconds`; and token usage when available, from each
+  round/group's own `execution.usage` (state "usage unavailable" for a round/group where it was
+  omitted). Any summed figure across rounds/groups must be explicitly labeled as a sum, never
+  presented as wall-clock time or billable cost.
 - **Verified / unverified / remaining risks and assumptions** — be honest; never dress up
   something written but not run/verified as "done."
 
