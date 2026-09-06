@@ -58,8 +58,9 @@ trusting the claim at face value.
    - **Fresh dispatch:** `threadId` is only ever set once a real `thread.started` event actually
      fires (confirmed from the wrapper's own fresh-dispatch code path) — its presence in the
      result IS a reliable "a process genuinely started" signal here. Skip extraction only for
-     `bad_args`/`git_error`/`incomplete_collection`/`no_thread_started` (never carry a `threadId`
-     at all) or for `interrupted` specifically WITHOUT a `threadId` in the result (the signal
+     `bad_args`/`git_error`/`incomplete_collection`/`no_thread_started`/`artifact_too_large` (never
+     carry a `threadId` at all on a fresh dispatch) or for `interrupted` specifically WITHOUT a
+     `threadId` in the result (the signal
      arrived before `thread.started` ever fired). Every other fresh-dispatch outcome — `ok:true`,
      or `ok:false` with `threadId` present — means extraction is meaningful; run it, even if it
      ends up reporting a real, honest zero.
@@ -91,7 +92,14 @@ trusting the claim at face value.
      `resume_thread_not_found` check that used to sit here, and the separate post-launch
      `rollout_not_found` failure, are both gone — a dead/unknown `--resume` threadId now simply
      surfaces via whatever the actual dispatch attempt produces); extraction is meaningful and
-     always runs for these.
+     always runs for these. **`artifact_too_large` (Phase 5 Item A) is the ONE exception to "there
+     is no pre-launch preflight check on `--resume` at all anymore" just stated** — it fires
+     strictly before `codex exec resume` is ever launched, exactly like the fresh-dispatch case
+     above, DESPITE carrying a `threadId` (the resumed thread already existed — see `SKILL.md`'s
+     own reason table note on this one row). Skip extraction for it here too: this round's own
+     `EVENTLOG_FILE` was never written to by the wrapper (it stays exactly the empty file `mktemp`
+     created), so treat it the same as the ID-less skip cases above, never as one of the
+     "genuinely launched" reasons this bullet otherwise lists.
    Either skip path means this group's contribution to `investigation_evidence` is simply absent
    (see step 3's merge behavior for what that means in parallel mode) — never a zero-command
    placeholder standing in for "nothing actually happened":

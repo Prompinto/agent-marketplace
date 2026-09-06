@@ -859,6 +859,64 @@ coverage map to `PARTIAL_COVERAGE` when no confirmed issue exists, but a confirm
 takes precedence over an incomplete-coverage exit state when both occur together (mirroring the
 interactive skill's own already-established disagreement-over-coverage-gap precedent).
 
+### Phase 5 — diff/artifact-size preflight and a durable interactive result artifact (negotiated to CLEAN, implemented)
+
+Two items from the gap-list disposition audit below (#10, #23) needed a real code change, not just
+a documentation disposition. Negotiated to CLEAN over an 8-round `/ccs` non-repo-artifact session
+(18 real findings across those rounds, on the design draft this section originally sketched) —
+this is the FINAL, negotiated design, now fully implemented; a first read of an earlier draft would
+suggest a materially simpler shape than what actually shipped. A few of the most significant
+findings from that negotiation: the CI-contract propagation gap (an earlier draft added the new
+`artifact_too_large` failure reason only to the interactive skill, leaving `ci-result.schema.json`,
+`run-ccs-ci.sh`, and `validate_ci_result.py` silently out of sync with a reason the headless CI path
+can equally encounter via its own `--base` dispatch); the resume-scope gap (an earlier draft only
+checked the rendered prompt on a fresh round 1, missing that an oversized resumed rebuttal/follow-up
+text can overflow context just as much as an oversized fresh diff); the parallel-mode per-group
+`input_errors[]` need (one group can hit the size limit while a sibling group has already dispatched
+or completed, requiring a per-group array rather than a single scalar); and the claims-null-on-
+log-failure requirement (Item B's `claims` field must be `null`, never an empty array, specifically
+for `SNAPSHOT_INTEGRITY_FAILURE`/`REVIEW_LOG_INTEGRITY_FAILURE`, since neither status can vouch for
+claims about the reviewed subject or the log recording them).
+
+- **Item A — diff/artifact-size preflight.** Before every dispatch — fresh round 1 or any resumed
+  round — `run-ccs-review.sh` checks the fully rendered prompt's byte size against a concrete,
+  named threshold (`PROMPT_SIZE_LIMIT_BYTES=131072`, a conservative operational policy, not a
+  vendor-guaranteed limit) and fails closed with a new `artifact_too_large` reason and a
+  state-specific, actionable `detail` message, rather than silently risking a context-window
+  overflow mid-review. Never retried (an identical resend of the same oversized payload fails
+  identically). Surfaces in `/ccs` as a new terminal status, `🛑 INPUT TOO LARGE`, and propagates
+  through the headless CI path as `exit_state: "INPUT_TOO_LARGE"` (`exit_code` 6) with a structured
+  `input_errors[]` array. Closes gap-list #10.
+- **Item B — durable final-verdict artifact for the interactive path.** The interactive `/ccs`
+  skill previously persisted only a round-by-round JSONL history (`claude_verification[]`, etc.) —
+  a caller had to replay that log to learn the run's own final outcome. Phase 3 now also writes a
+  small, durable JSON file (`schemas/interactive-result.schema.json`) at the run's own terminal
+  path (CLEAN/NOT_CONVERGED/etc.), mirroring Phase 4 Item 2's `ci-result.schema.json` shape
+  (verdict, claim statuses, round count, thread ids), so the interactive path has the same kind of
+  single-file final answer the headless CI path already has — written best-effort, on every
+  terminal outcome, never a hard stop on write failure. Closes gap-list #23.
+
+**Implementation-review outcome (2026-09-06):** a parallel 2-group `/ccs` code-diff review (g1
+security/trust-boundary, g2 correctness/contract-consistency) reached CLEAN in 2 rounds. Two real
+findings, both fixed and independently re-verified: (1) `input_errors[].limit_bytes` was checked
+only relative to `actual_bytes` (`actual_bytes > limit_bytes`), never against the documented fixed
+131072 policy itself — a fabricated pair like `actual_bytes:1, limit_bytes:0` passed; worse,
+`validate_ci_result.py`'s preferred (jsonschema-installed) code path never ran the fallback check
+that even had this relative comparison at all, so the real CI environment enforced nothing. Fixed
+by pinning `limit_bytes` to `{"const": 131072}` and `actual_bytes` to
+`{"exclusiveMinimum": 131072}` directly in both `ci-result.schema.json` and
+`interactive-result.schema.json`, closing the gap in the actual preferred validation path, not just
+a fallback. (2) The negotiated `claims[]` join-key expression was applied to the wrong data source
+in the implementation instructions — raw per-group findings
+(`groups[].codex_review.findings[]`) never carry their own `group` field, only the outer `groups[]`
+entry does, so the join always fell through to a bare local id and silently dropped every
+parallel-mode claim. Fixed by joining against each round's own top-level AGGREGATED
+`codex_review.findings[]` array instead, which already carries a `group` tag on each item for
+exactly this purpose.
+
+**Version:** with all 27 gap-list items now dispositioned and both Phase 5 items shipped, the
+plugin is versioned **1.0.0**.
+
 ### Standing rule
 Before calling this roadmap 1.0-ready, every one of the 27 internal gap-list items must have an
 explicit disposition: a phase assignment, an accepted-residual-risk statement, or an explicit
@@ -874,6 +932,105 @@ requirement. Same one-item-at-a-time implement → verify → `/ccs` adversarial
 commit/push/PR cycle every prior phase used — with Item 1 explicitly scoped as evaluation-only
 (never itself requiring a merge to `run-ccs-review.sh`/`SKILL.md`) unless its own results
 separately justify a follow-up adoption proposal.
+
+---
+
+## Gap-list disposition audit (completing the Standing Rule, executed 2026-09-06)
+
+> All 27 items from the "Internal gap analysis" section (lines 39-121) now have an explicit
+> disposition, closing the Standing Rule above. Negotiated via a dedicated non-repo-artifact `/ccs`
+> session (2 rounds to this point); items already dispositioned through Phases 1-4's own work are
+> listed for completeness, not re-litigated here.
+
+**Already dispositioned via phase work (see each phase's own section above for detail):**
+#2 CLOSED (Phase 1, README fix) · #3 CLOSED (Phase 1, stdin transport) · #4 PARTIAL — tracking via
+`LEAKED_THREAD_IDS` exists, durable cross-session recovery does not; accepted as-is · #11 CLOSED
+(Phase 1, with #3) · #12 CLOSED (Phase 1, snapshot-integrity revalidation) · #13 CLOSED (Phase 2,
+per-claim oscillation guard) · #15 ACCEPTED-RESIDUAL-RISK (shallow-clone diff sources; labeled as
+such directly in `ccs-ci-review.yml`'s own comments) · #16 CLOSED (Phase 1, untrusted-data framing
+for Codex's own output) · #17 ACCEPTED-RESIDUAL-RISK (`git status` is defense-in-depth only, stated
+explicitly rather than implied as a guarantee) · #19 CLOSED (Phase 3, execution telemetry) · #24
+CLOSED (Phase 4 Item 2, headless CI entry point, merged and validated).
+
+**Newly dispositioned in this audit:**
+
+- **#1** (automatic thread cleanup destroys diagnostic artifacts) — **CLOSED (Phase 1)**. The
+  `--keep-evidence` flag retains a failed round's thread and last-message output instead of
+  deleting them on a non-CLEAN outcome, directly addressing this gap (never previously
+  cross-referenced to it by number).
+- **#5** (orchestration "brain" is unenforced natural-language prose, zero automated coverage) —
+  **ACCEPTED-RESIDUAL-RISK**. The deterministic shell/Python layer (`run-ccs-review.sh`,
+  `git-safe.sh`, `collect_untracked_files.py`) is covered by CI (ShellCheck, `bash -n`, the fixture
+  suite, collector selftest). The LLM-interpreted orchestration logic in SKILL.md cannot be
+  unit-tested the way deterministic code can; its correctness is instead validated by this
+  project's own recurring practice of running `/ccs` adversarially against its own changes — the
+  most rigorous validation achievable for natural-language-interpreted control flow with current
+  tooling. A separate deterministic test harness for LLM-interpreted prose is out of scope.
+- **#6** (`kill_process_group`'s `kill -TERM/-KILL -"$pid"` assumes Codex never `setsid()`s a child
+  out of its process group; unverified) — **CLOSED, verified live 2026-09-06**. A real
+  `codex exec --sandbox read-only` dispatch was launched using `set -m` (monitor mode) with the
+  job's own `$!` captured, exactly mirroring `run-ccs-review.sh`'s own launch mechanism (confirmed
+  directly: the wrapper enables `set -m` and uses a backgrounded job's `$!` as `$CODEX_PID`).
+  Direct process-tree inspection (`ps -eo pid,pgid,ppid,command`) while the dispatch was running
+  showed the job leader (the `node codex exec` process) at PID/PGID 68829, and its native binary
+  child at PID 68831 / PGID 68829 — the SAME process group as the job leader. Codex does not
+  `setsid()`/`setpgid()` itself out of the job's own process group; `kill -TERM -"$CODEX_PID"`
+  correctly reaches it. (An earlier same-day verification attempt, without `set -m`, was correctly
+  challenged as testing a different scenario — job control changes which process group a
+  backgrounded job's leader gets; this corrected reproduction matches the wrapper's actual launch
+  mechanism.)
+- **#7** (`$PROMPT_FILE` deferred-deletion ordering untested under real scheduling delay) —
+  **ACCEPTED-RESIDUAL-RISK**. The ordering (delete only after the child process is reaped) is sound
+  and matches `LAST_MESSAGE_FILE`'s own lifecycle elsewhere in this codebase. Simulating genuine OS
+  scheduling delay in a fixture is inherently flaky versus the narrow real-world exposure window.
+- **#8** (`resolve_rollout`'s `find | head -1` has no multiplicity check) — **CLOSED, superseded by
+  Phase 1**. The `-o`/`--output-last-message` switch removes the correctness dependency on rollout
+  parsing entirely (confirmed: no active `/ccs` code path reads or trusts rollout-file content for
+  its verdict any longer) — a multiplicity bug there can no longer produce an incorrect verdict.
+- **#9** (resume-safety classification empirically tested only for `nonzero_exit`; others inferred)
+  — **ACCEPTED-RESIDUAL-RISK**. SKILL.md's own "Resume-safety by failure reason" table already
+  discloses that 6 of 7 resume-safe reasons are "inferred safe by the identical reasoning, not
+  separately live-tested one by one." This roadmap entry is the explicit, gap-list-referenced
+  acceptance of that same disclosed risk.
+- **#10** (no diff-size preflight / context-window overflow guard) — **Phase 5 Item A** (see above).
+- **#14** (no compaction strategy for Claude's own accumulating context across rounds) —
+  **NON-GOAL, already resolved at the platform level**. Claude Code's own harness automatically
+  compresses prior conversation context as it approaches context limits, independent of this
+  plugin — no plugin-level mitigation is needed on top of this existing platform behavior.
+- **#18** (`resolve_rollout` trusts `~/.codex/sessions/` implicitly, no permission check) —
+  **CLOSED**. Same basis as #8: the active wrapper performs no rollout-file read of any kind in any
+  code path, so there is no residual trust-boundary risk left to accept.
+- **#20** (parallel-mode narration has no aggregated "X of N groups done" line) — **NON-GOAL**.
+  Low-priority UX polish; each group's own per-round narration already exists, and convergence is
+  already round-atomic across all groups. Revisitable if specifically requested.
+- **#21** (no incremental/delta review mode) — **NON-GOAL**. The existing
+  `--uncommitted`/`--base <ref>`/`--commit <sha>` scope flags already cover the practical use cases;
+  a delta-of-a-delta mode adds meaningful state-tracking complexity for an undemonstrated need.
+- **#22** (no numeric/aggregate severity scoring across rounds) — **NON-GOAL**. Findings already
+  carry a per-finding severity; reducing qualitatively-distinct findings to one number would be a
+  lossy simplification conflicting with this project's own "never fake agreement / no false
+  precision" design philosophy.
+- **#23** (no structured, machine-readable final verdict artifact) — **Phase 5 Item B** (see
+  above). `schemas/review-verdict.schema.json` constrains each ROUND's response shape but is not
+  itself a persisted final-result artifact for the interactive path, and the JSONL log requires
+  replaying round-by-round history rather than reading one final answer — a real, distinct gap from
+  what Phase 4 Item 2 solved for the headless CI path specifically.
+- **#25** (no `--paths`/file-filter flag) — **NON-GOAL**. A deterministic path filter would
+  genuinely reduce collected diff/context size (unlike `--focus`, which is advisory attention-
+  direction only, not a content filter) — this is a real, acknowledged gap; the disposition is a
+  deliberate choice not to build it now, not a claim it is already covered.
+- **#26** (no model/effort selection or adaptive low-effort-first strategy) — **NON-GOAL**. The
+  hardcoded `model_reasoning_effort=xhigh` reflects a deliberate quality-over-cost tradeoff
+  consistent with this project's demonstrated priorities across all four phases' negotiation and
+  implementation-review cycles; an adaptive low-effort-first strategy risks missing real findings
+  on a cheap first pass.
+- **#27** (no remote-PR-diff or notebook/schema-diff-format support) — **NON-GOAL, deferred**. No
+  demonstrated user need for either capability has surfaced across four phases of active
+  development; revisitable if a concrete need arises.
+
+**All 27 items now have an explicit disposition, and Phase 5 Items A/B are implemented** (see
+"Phase 5" above). A 1.0.0 version bump remains a decision for the maintainer, not implied by this
+audit alone.
 
 ---
 

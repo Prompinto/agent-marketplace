@@ -5,11 +5,11 @@
   "properties": {
     "exit_state": {
       "type": "string",
-      "enum": ["CLEAN", "CONFIRMED_ISSUES", "NOT_CONVERGED", "COULD_NOT_VERIFY", "PARTIAL_COVERAGE", "INFRASTRUCTURE_FAILURE"]
+      "enum": ["CLEAN", "CONFIRMED_ISSUES", "NOT_CONVERGED", "COULD_NOT_VERIFY", "PARTIAL_COVERAGE", "INFRASTRUCTURE_FAILURE", "INPUT_TOO_LARGE"]
     },
     "exit_code": {
       "type": "integer",
-      "enum": [0, 1, 2, 3, 4, 5]
+      "enum": [0, 1, 2, 3, 4, 5, 6]
     },
     "verdict": {
       "type": "string",
@@ -62,6 +62,19 @@
       "required": ["message", "detail"],
       "additionalProperties": false
     },
+    "input_errors": {
+      "type": ["array", "null"],
+      "items": {
+        "type": "object",
+        "properties": {
+          "group": { "type": "string" },
+          "actual_bytes": { "type": "integer", "exclusiveMinimum": 131072 },
+          "limit_bytes": { "type": "integer", "const": 131072 }
+        },
+        "required": ["group", "actual_bytes", "limit_bytes"],
+        "additionalProperties": false
+      }
+    },
     "workflow_run_id": { "type": "string", "minLength": 1 },
     "head_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
     "pr_number": { "type": "integer", "minimum": 1 }
@@ -87,9 +100,10 @@
             },
             "required": ["status", "omitted"]
           },
-          "infrastructure_error": { "type": "null" }
+          "infrastructure_error": { "type": "null" },
+          "input_errors": { "type": "null" }
         },
-        "required": ["exit_code", "verdict", "findings", "coverage", "infrastructure_error"]
+        "required": ["exit_code", "verdict", "findings", "coverage", "infrastructure_error", "input_errors"]
       }
     },
     {
@@ -100,9 +114,10 @@
           "verdict": { "const": "ISSUES" },
           "findings": { "type": "array", "minItems": 1 },
           "coverage": { "type": "object" },
-          "infrastructure_error": { "type": "null" }
+          "infrastructure_error": { "type": "null" },
+          "input_errors": { "type": "null" }
         },
-        "required": ["exit_code", "verdict", "findings", "coverage", "infrastructure_error"]
+        "required": ["exit_code", "verdict", "findings", "coverage", "infrastructure_error", "input_errors"]
       }
     },
     {
@@ -113,9 +128,10 @@
           "verdict": { "const": "ISSUES" },
           "findings": { "type": "array", "minItems": 1 },
           "coverage": { "type": "object" },
-          "infrastructure_error": { "type": "null" }
+          "infrastructure_error": { "type": "null" },
+          "input_errors": { "type": "null" }
         },
-        "required": ["exit_code", "verdict", "findings", "coverage", "infrastructure_error"]
+        "required": ["exit_code", "verdict", "findings", "coverage", "infrastructure_error", "input_errors"]
       }
     },
     {
@@ -125,9 +141,10 @@
           "exit_code": { "const": 3 },
           "verdict": { "const": "UNAVAILABLE" },
           "findings": { "type": "null" },
-          "infrastructure_error": { "type": "null" }
+          "infrastructure_error": { "type": "null" },
+          "input_errors": { "type": "null" }
         },
-        "required": ["exit_code", "verdict", "findings", "coverage", "infrastructure_error"]
+        "required": ["exit_code", "verdict", "findings", "coverage", "infrastructure_error", "input_errors"]
       }
     },
     {
@@ -144,9 +161,10 @@
             },
             "required": ["status"]
           },
-          "infrastructure_error": { "type": "null" }
+          "infrastructure_error": { "type": "null" },
+          "input_errors": { "type": "null" }
         },
-        "required": ["exit_code", "verdict", "findings", "coverage", "infrastructure_error"]
+        "required": ["exit_code", "verdict", "findings", "coverage", "infrastructure_error", "input_errors"]
       }
     },
     {
@@ -157,9 +175,24 @@
           "verdict": { "const": "UNAVAILABLE" },
           "findings": { "type": "null" },
           "coverage": { "type": "null" },
-          "infrastructure_error": { "type": "object" }
+          "infrastructure_error": { "type": "object" },
+          "input_errors": { "type": "null" }
         },
-        "required": ["exit_code", "verdict", "findings", "coverage", "infrastructure_error"]
+        "required": ["exit_code", "verdict", "findings", "coverage", "infrastructure_error", "input_errors"]
+      }
+    },
+    {
+      "if": { "properties": { "exit_state": { "const": "INPUT_TOO_LARGE" } }, "required": ["exit_state"] },
+      "then": {
+        "properties": {
+          "exit_code": { "const": 6 },
+          "verdict": { "const": "UNAVAILABLE" },
+          "findings": { "type": "null" },
+          "coverage": { "type": "null" },
+          "infrastructure_error": { "type": "null" },
+          "input_errors": { "type": "array", "minItems": 1 }
+        },
+        "required": ["exit_code", "verdict", "findings", "coverage", "infrastructure_error", "input_errors"]
       }
     }
   ]

@@ -84,7 +84,17 @@ JSONL and its round-scoped temp files get cleaned up):**
 - If `KEEP_EVIDENCE` is ON and this group's round **succeeded** (`ok:true`): delete
   `LAST_MESSAGE_KEEP_FILE` (`rm -f`) — nothing to keep, the parsed `verdict` in the JSON response
   already has everything useful.
-- If `KEEP_EVIDENCE` is ON and this group's round **FAILED** (`ok:false`, any reason): lazily
+- **`artifact_too_large` (Phase 5 Item A) — a no-dispatch carve-out, same classification as
+  `bad_args`/`git_error`/`incomplete_collection`.** This reason fires after `build_review_prompt()`
+  but before `codex exec`/`codex exec resume` is ever launched, so this round's own
+  `LAST_MESSAGE_KEEP_FILE` was never written to by the wrapper — it is still exactly the empty file
+  `mktemp` created. Delete it (`rm -f`), never move it into the durable directory, and omit
+  `kept_last_message_path` entirely from that round's JSONL line — never present with a misleading
+  empty/null value. This is independent of, and does not change, whether the underlying Codex
+  thread itself (on a resumed round) is kept alive by Phase 3's keep-evidence gate — that gate
+  governs the thread, this rule governs only this round's own ephemeral evidence file.
+- If `KEEP_EVIDENCE` is ON and this group's round **FAILED** (`ok:false`, any reason other than
+  `artifact_too_large`): lazily
   create the `<session-id>-kept-evidence` directory if it doesn't exist yet (owner-only, as above),
   then `mv` (not copy — it's a temp file, no need to keep two copies) `LAST_MESSAGE_KEEP_FILE` to
   `<that directory>/round-<R>-<GROUP>-lastmsg.txt`. **Best-effort:** if the move fails for any

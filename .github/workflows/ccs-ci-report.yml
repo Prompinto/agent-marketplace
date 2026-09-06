@@ -169,6 +169,14 @@ jobs:
               echo "**Infrastructure error:** $(jq -r '.infrastructure_error.message' .ccs-ci-result.json)"
               echo
             fi
+            if jq -e '(.input_errors // []) | length > 0' .ccs-ci-result.json >/dev/null 2>&1; then
+              echo "**Input too large** (Phase 5 Item A -- the rendered diff/focus prompt exceeded the review wrapper's own size limit before any dispatch was attempted):"
+              echo
+              echo "| group | actual bytes | limit bytes |"
+              echo "|---|---|---|"
+              jq -r '(.input_errors // [])[] | "| \(.group) | \(.actual_bytes) | \(.limit_bytes) |"' .ccs-ci-result.json
+              echo
+            fi
             echo "_workflow run: ${{ github.event.workflow_run.id }} · head: \`$(jq -r '.head_sha' .ccs-ci-result.json)\`_"
           } > comment_body.md
 

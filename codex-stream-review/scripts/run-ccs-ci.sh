@@ -168,6 +168,7 @@ build_infrastructure_failure() {
       findings: null,
       coverage: null,
       infrastructure_error: {message: $msg, detail: (if $detail == "" then null else $detail end)},
+      input_errors: null,
       workflow_run_id: $wrid,
       head_sha: $sha,
       pr_number: $prn
@@ -195,7 +196,8 @@ typing "/codex-stream-review:ccs --base $BASE_REF". Let the ENTIRE existing mult
 Claude+Codex adversarial review loop run to ITS OWN terminal outcome, unmodified and un-shortened:
 do not stop early, do not summarize instead of running it, and do not simulate what it would
 probably say. The skill's own terminal outcome is always exactly one of: CLEAN, NOT CONVERGED,
-COULD NOT VERIFY, PARTIAL COVERAGE, SNAPSHOT INTEGRITY FAILURE, or REVIEW LOG INTEGRITY FAILURE.
+COULD NOT VERIFY, PARTIAL COVERAGE, INPUT TOO LARGE, SNAPSHOT INTEGRITY FAILURE, or REVIEW LOG
+INTEGRITY FAILURE.
 
 REPORT-ONLY OVERRIDE (CI-specific, applies for this run only -- do not treat this as a permanent
 change to how codex-stream-review:ccs behaves): the skill's own Phase 2 step 3 normally has you fix
@@ -216,7 +218,7 @@ override. A finding you determine is a FALSE POSITIVE should still be rebutted n
 of Phase 2 step 3 is unaffected) -- this override only changes what happens to a finding you
 determine is real.
 
-STEP 2: Once (and only once) that skill invocation has reached one of those six terminal outcomes,
+STEP 2: Once (and only once) that skill invocation has reached one of those seven terminal outcomes,
 your OWN final response in this session -- the very last thing you output -- must be a JSON object
 matching the JSON Schema you were given, reporting THIS run's real outcome. Translate the skill's
 own terminal outcome using this mapping, judged from the skill's own actual final report content
@@ -247,20 +249,30 @@ or assumed:
 - The skill's outcome was SNAPSHOT INTEGRITY FAILURE or REVIEW LOG INTEGRITY FAILURE (the review
   mechanism's own bookkeeping broke, not a judgment about the code under review) ->
   exit_state "INFRASTRUCTURE_FAILURE".
+- The skill's outcome was its own "INPUT TOO LARGE" terminal status (the rendered prompt for this
+  diff/focus text exceeded the skill's own PROMPT_SIZE_LIMIT_BYTES before any dispatch was even
+  attempted) -> exit_state "INPUT_TOO_LARGE". Populate "input_errors" verbatim from what the
+  skill's own final report disclosed for this outcome (one entry per group that hit the limit --
+  usually one), reading the actual byte count and the limit from the skill's own report text; never
+  invent or approximate these numbers.
 
 Fill the rest of the JSON object per its schema's own per-exit_state requirements (e.g. CLEAN
 requires an empty findings array and complete coverage with no omissions; CONFIRMED_ISSUES and
-NOT_CONVERGED require at least one finding; COULD_NOT_VERIFY and INFRASTRUCTURE_FAILURE require
-findings to be null). Each finding's "disposition" field must be exactly "open", "resolved", or
+NOT_CONVERGED require at least one finding; COULD_NOT_VERIFY, INFRASTRUCTURE_FAILURE, and
+INPUT_TOO_LARGE require findings to be null). Each finding's "disposition" field must be exactly
+"open", "resolved", or
 "retracted", reflecting that claim's own real state in the skill's claim ledger at the time the run
 ended -- never invent a "resolved" disposition for a finding the skill itself never actually closed.
 
-Your JSON response MUST include every one of these 9 top-level keys, always, with no exceptions:
-exit_state, exit_code, verdict, findings, coverage, infrastructure_error, workflow_run_id,
-head_sha, pr_number. This explicitly includes "infrastructure_error" -- set it to JSON null
+Your JSON response MUST include every one of these 10 top-level keys, always, with no exceptions:
+exit_state, exit_code, verdict, findings, coverage, infrastructure_error, input_errors,
+workflow_run_id, head_sha, pr_number. This explicitly includes "infrastructure_error" and
+"input_errors" -- set "infrastructure_error" to JSON null
 whenever this run's own mechanism did not break (i.e. for every exit_state except
-INFRASTRUCTURE_FAILURE). Never omit a key just because it does not apply to this outcome; set it
-to null instead. Omitting "infrastructure_error" entirely (rather than setting it to null) is a
+INFRASTRUCTURE_FAILURE), and set "input_errors" to JSON null for every exit_state except
+INPUT_TOO_LARGE. Never omit a key just because it does not apply to this outcome; set it
+to null instead. Omitting "infrastructure_error" or "input_errors" entirely (rather than setting
+them to null) is a
 real mistake this instruction exists to prevent -- do not make it.
 
 These three fields are script-provided facts, not something for you to derive -- copy them into
@@ -357,8 +369,8 @@ else
     # explicitly instead.
     mktemp_registered VALIDATOR_JQ_FILE
     cat > "$VALIDATOR_JQ_FILE" <<'JQ_EOF'
-def exp_code: {"CLEAN":0,"CONFIRMED_ISSUES":1,"NOT_CONVERGED":2,"COULD_NOT_VERIFY":3,"PARTIAL_COVERAGE":4,"INFRASTRUCTURE_FAILURE":5};
-def exp_verdict: {"CLEAN":"CLEAN","CONFIRMED_ISSUES":"ISSUES","NOT_CONVERGED":"ISSUES","COULD_NOT_VERIFY":"UNAVAILABLE","PARTIAL_COVERAGE":"ISSUES","INFRASTRUCTURE_FAILURE":"UNAVAILABLE"};
+def exp_code: {"CLEAN":0,"CONFIRMED_ISSUES":1,"NOT_CONVERGED":2,"COULD_NOT_VERIFY":3,"PARTIAL_COVERAGE":4,"INFRASTRUCTURE_FAILURE":5,"INPUT_TOO_LARGE":6};
+def exp_verdict: {"CLEAN":"CLEAN","CONFIRMED_ISSUES":"ISSUES","NOT_CONVERGED":"ISSUES","COULD_NOT_VERIFY":"UNAVAILABLE","PARTIAL_COVERAGE":"ISSUES","INFRASTRUCTURE_FAILURE":"UNAVAILABLE","INPUT_TOO_LARGE":"UNAVAILABLE"};
 # is_int: a JSON number with no fractional part -- jq's own number/boolean
 # types are already distinct (unlike Python's bool-is-an-int-subclass trap),
 # but a float where an integer is required (e.g. pr_number: 1.5) must still
@@ -398,12 +410,26 @@ def valid_infra:
   and (($i | keys_unsorted | sort) == ["detail","message"])
   and ($i.message | type == "string")
   and (($i.detail == null) or ($i.detail | type == "string"));
+def valid_input_error_item:
+  # limit_bytes must equal the wrapper's own fixed PROMPT_SIZE_LIMIT_BYTES
+  # policy exactly (131072), never just "some number smaller than
+  # actual_bytes" -- a relative-only check would accept a fabricated pair
+  # like actual_bytes=1/limit_bytes=0 (found live during implementation
+  # review). Pinning limit_bytes also makes the actual_bytes bound absolute.
+  (type == "object")
+  and ((keys_unsorted | sort) == ["actual_bytes","group","limit_bytes"])
+  and (.group | type == "string")
+  and (.limit_bytes == 131072)
+  and (.actual_bytes | is_int) and (.actual_bytes > 131072);
+def valid_input_errors:
+  . as $ie
+  | ($ie == null) or (($ie | type) == "array" and ($ie | map(valid_input_error_item) | all));
 . as $doc
 | ($doc | keys_unsorted | sort) as $keys
 | ($doc.exit_state) as $st
 | (exp_code[$st]) as $ec
 | (exp_verdict[$st]) as $ev
-| ($keys == ["coverage","exit_code","exit_state","findings","head_sha","infrastructure_error","pr_number","verdict","workflow_run_id"])
+| ($keys == ["coverage","exit_code","exit_state","findings","head_sha","infrastructure_error","input_errors","pr_number","verdict","workflow_run_id"])
   and ($ec != null) and ($ev != null)
   and ($doc.exit_code | is_int) and ($doc.exit_code == $ec)
   and ($doc.verdict == $ev)
@@ -412,17 +438,20 @@ def valid_infra:
   and ($doc.pr_number | is_int) and ($doc.pr_number >= 1) and ($doc.pr_number == $prn)
   and ($doc.coverage | valid_coverage)
   and (($doc.findings == null) or (($doc.findings | type) == "array" and ($doc.findings | map(valid_finding_item) | all)))
+  and ($doc.input_errors | valid_input_errors)
   and (
     if $st == "CLEAN" then
-      ($doc.findings == []) and ($doc.coverage != null) and ($doc.coverage.status == "complete") and ($doc.coverage.omitted == []) and ($doc.infrastructure_error == null)
+      ($doc.findings == []) and ($doc.coverage != null) and ($doc.coverage.status == "complete") and ($doc.coverage.omitted == []) and ($doc.infrastructure_error == null) and ($doc.input_errors == null)
     elif ($st == "CONFIRMED_ISSUES") or ($st == "NOT_CONVERGED") then
-      (($doc.findings | type) == "array") and (($doc.findings | length) >= 1) and ($doc.coverage != null) and ($doc.infrastructure_error == null)
+      (($doc.findings | type) == "array") and (($doc.findings | length) >= 1) and ($doc.coverage != null) and ($doc.infrastructure_error == null) and ($doc.input_errors == null)
     elif $st == "COULD_NOT_VERIFY" then
-      ($doc.findings == null) and ($doc.infrastructure_error == null)
+      ($doc.findings == null) and ($doc.infrastructure_error == null) and ($doc.input_errors == null)
     elif $st == "PARTIAL_COVERAGE" then
-      ($doc.findings == []) and ($doc.coverage != null) and (($doc.coverage.status == "partial") or ($doc.coverage.status == "unknown")) and ($doc.infrastructure_error == null)
+      ($doc.findings == []) and ($doc.coverage != null) and (($doc.coverage.status == "partial") or ($doc.coverage.status == "unknown")) and ($doc.infrastructure_error == null) and ($doc.input_errors == null)
     elif $st == "INFRASTRUCTURE_FAILURE" then
-      ($doc.findings == null) and ($doc.coverage == null) and (($doc.infrastructure_error | type) == "object") and ($doc.infrastructure_error | valid_infra)
+      ($doc.findings == null) and ($doc.coverage == null) and (($doc.infrastructure_error | type) == "object") and ($doc.infrastructure_error | valid_infra) and ($doc.input_errors == null)
+    elif $st == "INPUT_TOO_LARGE" then
+      ($doc.findings == null) and ($doc.coverage == null) and ($doc.infrastructure_error == null) and (($doc.input_errors | type) == "array") and (($doc.input_errors | length) >= 1)
     else false
     end
   )
@@ -441,6 +470,6 @@ write_result_atomic "$RESULT_JSON"
 
 EXIT_CODE="$(printf '%s' "$RESULT_JSON" | jq -r '.exit_code')"
 case "$EXIT_CODE" in
-  0|1|2|3|4|5) exit "$EXIT_CODE" ;;
+  0|1|2|3|4|5|6) exit "$EXIT_CODE" ;;
   *) exit 5 ;;
 esac
