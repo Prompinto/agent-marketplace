@@ -269,7 +269,15 @@ pd_test_interrupted() {
   # captured output's .coverage.source.status is a real value -- the
   # on_signal coverage regression check. Off by default so the 3 existing
   # call sites below keep their original, unchanged assertions.
-  local mode="$1" tid="${2:-}" capture_path="${3:-}" check_coverage="${4:-}"
+  # check_execution (5th, optional): when non-empty, also asserts the
+  # captured output's .execution.elapsed_seconds is a real non-negative
+  # integer -- the execution-telemetry post-launch-interruption check (see
+  # build_execution_json in scripts/run-ccs-review.sh: $DISPATCH_PID is set,
+  # atomically alongside $CODEX_PID under signal-masking, immediately after
+  # the background launch -- well before fake-codex's own marker-file touch
+  # this function already waits on below, so it is always captured by the
+  # time the SIGTERM below is sent).
+  local mode="$1" tid="${2:-}" capture_path="${3:-}" check_coverage="${4:-}" check_execution="${5:-}"
   local label="$mode"
   local marker outfile wrapper_pid
   marker="$(mktemp -u)"
@@ -336,6 +344,15 @@ pd_test_interrupted() {
       pass "interrupted ($label): coverage.source is spliced in on this signal path (status=$cov_status)"
     else
       fail "interrupted ($label): expected a real coverage.source.status, got: $OUT"
+    fi
+  fi
+  if [ -n "$check_execution" ]; then
+    local exec_elapsed
+    exec_elapsed="$(printf '%s' "$OUT" | tail -1 | jq -r '.execution.elapsed_seconds // empty')"
+    if printf '%s' "$exec_elapsed" | grep -qE '^[0-9]+$'; then
+      pass "interrupted ($label): execution.elapsed_seconds is populated on this post-launch signal path ($exec_elapsed)"
+    else
+      fail "interrupted ($label): expected a real execution.elapsed_seconds, got: $OUT"
     fi
   fi
   rm -f "$marker" "$outfile"
@@ -734,6 +751,141 @@ else
 fi
 rm -rf "$CAPTURE_DIR"
 unset FAKE_CODEX_SCENARIO FAKE_CODEX_COMMANDS
+
+# --- execution telemetry fixtures (Phase 3, always on -- no opt-in) ---
+# Exercises build_execution_json's own extraction in scripts/run-ccs-review.sh:
+# elapsed_seconds is present whenever $DISPATCH_PID was ever actually captured
+# for this dispatch; usage is present only when a genuinely
+# non-empty usage object was extracted from the LAST "type":"turn.completed"
+# event, collapsing "no such event" and "an emitted-but-empty {} usage" to
+# the identical absent-usage outcome. fake-codex's own FAKE_CODEX_USAGE_JSON
+# controls what that event reports (see tests/fixtures/fake-codex).
+
+pd_assert_execution_elapsed_present() {
+  local out="$1" label="$2" val
+  val="$(printf '%s' "$out" | tail -1 | jq -r '.execution.elapsed_seconds // empty')"
+  if printf '%s' "$val" | grep -qE '^[0-9]+$'; then
+    pass "$label: execution.elapsed_seconds present ($val)"
+  else
+    fail "$label: expected execution.elapsed_seconds to be a non-negative integer, got: $out"
+  fi
+}
+pd_assert_usage_absent() {
+  local out="$1" label="$2"
+  if printf '%s' "$out" | tail -1 | jq -e '(.execution | has("usage")) | not' >/dev/null 2>&1; then
+    pass "$label: execution.usage is absent (usage unavailable)"
+  else
+    fail "$label: expected no execution.usage key at all, got: $out"
+  fi
+}
+pd_assert_usage_equals() {
+  local out="$1" expected="$2" label="$3" got
+  got="$(printf '%s' "$out" | tail -1 | jq -c '.execution.usage // empty')"
+  if [ "$got" = "$expected" ]; then
+    pass "$label: execution.usage matches expected value"
+  else
+    fail "$label: expected execution.usage=$expected, got: $got (full: $out)"
+  fi
+}
+
+# 1. Populated usage -- a real, non-empty usage object is kept and reported
+# as-is, even with individual zero-valued counters.
+PD_USAGE_POPULATED='{"input_tokens":128,"cached_input_tokens":0,"output_tokens":42,"reasoning_output_tokens":10}'
+export FAKE_CODEX_SCENARIO=normal FAKE_CODEX_USAGE_JSON="$PD_USAGE_POPULATED"
+OUT="$(pd_run fresh)"
+pd_assert_execution_elapsed_present "$OUT" "execution (fresh, populated usage)"
+pd_assert_usage_equals "$OUT" "$PD_USAGE_POPULATED" "execution (fresh, populated usage)"
+
+TID="$(pd_new_tid)"
+OUT="$(pd_run resume "$TID")"
+pd_assert_execution_elapsed_present "$OUT" "execution (resume, populated usage)"
+pd_assert_usage_equals "$OUT" "$PD_USAGE_POPULATED" "execution (resume, populated usage)"
+unset FAKE_CODEX_SCENARIO FAKE_CODEX_USAGE_JSON
+
+# 2. Empty {} usage -- the real CLI does emit this on some successful
+# turns; it must collapse to the same "usage unavailable" outcome as a
+# genuinely absent usage, never surfaced as an empty-object placeholder.
+# fake-codex's own default (FAKE_CODEX_USAGE_JSON unset) is already {}.
+export FAKE_CODEX_SCENARIO=normal
+OUT="$(pd_run fresh)"
+pd_assert_execution_elapsed_present "$OUT" "execution (fresh, empty usage)"
+pd_assert_usage_absent "$OUT" "execution (fresh, empty usage)"
+
+TID="$(pd_new_tid)"
+OUT="$(pd_run resume "$TID")"
+pd_assert_execution_elapsed_present "$OUT" "execution (resume, empty usage)"
+pd_assert_usage_absent "$OUT" "execution (resume, empty usage)"
+unset FAKE_CODEX_SCENARIO
+
+# 3. Absent usage -- the turn.completed event carries no "usage" key at all
+# (FAKE_CODEX_USAGE_JSON=null tells fake-codex to omit it entirely -- see
+# fake-codex's own header comment for why this sentinel means "omit the
+# key", distinct from case 3b below).
+export FAKE_CODEX_SCENARIO=normal FAKE_CODEX_USAGE_JSON=null
+OUT="$(pd_run fresh)"
+pd_assert_execution_elapsed_present "$OUT" "execution (fresh, absent usage)"
+pd_assert_usage_absent "$OUT" "execution (fresh, absent usage)"
+
+TID="$(pd_new_tid)"
+OUT="$(pd_run resume "$TID")"
+pd_assert_execution_elapsed_present "$OUT" "execution (resume, absent usage)"
+pd_assert_usage_absent "$OUT" "execution (resume, absent usage)"
+unset FAKE_CODEX_SCENARIO FAKE_CODEX_USAGE_JSON
+
+# 3b. Explicit JSON null usage -- the turn.completed event carries
+# "usage":null literally (FAKE_CODEX_USAGE_JSON=JSON_NULL), distinct from
+# case 3's genuinely absent key. The production jq extraction must treat
+# both identically ("usage unavailable"), but that must be PROVEN by a
+# fixture that actually emits a literal null, not assumed from the
+# absent-key case alone.
+export FAKE_CODEX_SCENARIO=normal FAKE_CODEX_USAGE_JSON=JSON_NULL
+OUT="$(pd_run fresh)"
+pd_assert_execution_elapsed_present "$OUT" "execution (fresh, explicit JSON null usage)"
+pd_assert_usage_absent "$OUT" "execution (fresh, explicit JSON null usage)"
+
+TID="$(pd_new_tid)"
+OUT="$(pd_run resume "$TID")"
+pd_assert_execution_elapsed_present "$OUT" "execution (resume, explicit JSON null usage)"
+pd_assert_usage_absent "$OUT" "execution (resume, explicit JSON null usage)"
+unset FAKE_CODEX_SCENARIO FAKE_CODEX_USAGE_JSON
+
+# 4. A non-JSON line mixed into the event stream (the same
+# FAKE_CODEX_GARBAGE_LINE the investigation_evidence fixtures above use)
+# must not break usage extraction -- build_execution_json's own fromjson?
+# tolerates it exactly like the investigation_evidence filter does.
+export FAKE_CODEX_SCENARIO=normal FAKE_CODEX_GARBAGE_LINE=1 FAKE_CODEX_USAGE_JSON="$PD_USAGE_POPULATED"
+OUT="$(pd_run fresh)"
+pd_assert_execution_elapsed_present "$OUT" "execution (fresh, garbage line mixed in)"
+pd_assert_usage_equals "$OUT" "$PD_USAGE_POPULATED" "execution (fresh, garbage line mixed in)"
+
+TID="$(pd_new_tid)"
+OUT="$(pd_run resume "$TID")"
+pd_assert_execution_elapsed_present "$OUT" "execution (resume, garbage line mixed in)"
+pd_assert_usage_equals "$OUT" "$PD_USAGE_POPULATED" "execution (resume, garbage line mixed in)"
+unset FAKE_CODEX_SCENARIO FAKE_CODEX_GARBAGE_LINE FAKE_CODEX_USAGE_JSON
+
+# 5. no_thread_started -- fresh-dispatch-only, structurally unreachable on
+# --resume (a --resume call already has a threadId and never enters the
+# thread.started polling branch at all -- see SKILL.md's own reason table
+# note; no resume variant is added here for exactly that reason). A
+# dispatch genuinely started (fake-codex is running, it just never emits
+# thread.started before the wrapper's own 10s poll gives up), so
+# $DISPATCH_PID was captured -- elapsed_seconds must still be present even
+# though no turn.completed event (and therefore no usage) was ever
+# produced.
+export FAKE_CODEX_NO_THREAD_STARTED=1
+OUT="$(pd_run fresh)"
+pd_assert_reason "$OUT" "no_thread_started" "execution (fresh, no_thread_started)"
+pd_assert_execution_elapsed_present "$OUT" "execution (fresh, no_thread_started)"
+pd_assert_usage_absent "$OUT" "execution (fresh, no_thread_started)"
+unset FAKE_CODEX_NO_THREAD_STARTED
+
+# 6. Post-launch interruption -- a SIGTERM/SIGINT sent to the wrapper AFTER
+# the child process has genuinely started must still populate
+# execution.elapsed_seconds in the resulting `interrupted` response.
+pd_test_interrupted fresh "" "" "" check_execution
+TID="$(pd_new_tid)"
+pd_test_interrupted resume "$TID" "" "" check_execution
 
 rm -rf "$FAKE_HOME" "$FAKE_BIN_DIR" "$PD_REPO"
 

@@ -141,3 +141,19 @@ and never exits the loop on its own separate cadence.
   `claude_verification[]` itself was already a top-level-only field before the claim ledger existed
   (this canonical `groups[]` schema above never included it), so this is a continuation of the
   existing convention, not a new one.
+  **`execution` (execution telemetry, always on — see
+  `codex-stream-review/skills/ccs/references/execution-telemetry.md`) follows the OPPOSITE rule from
+  `investigation_evidence`/the claim ledger's fields above — it nests INSIDE each dispatched group's
+  own `groups[]` entry, a sibling of that entry's own `thread_id`/`focus`/`codex_review` keys,
+  exactly like `kept_last_message_path` does (see `codex-stream-review/skills/ccs/references/
+  keep-evidence.md`'s own "JSONL field" section for that precedent).** Unlike `claim_id` (already
+  group-namespaced and therefore safe to flatten) or `investigation_evidence` (deliberately merged
+  across groups into one value), `execution` is genuinely per-dispatch data with no natural
+  cross-group merge that would mean anything — each group's own elapsed time and token usage
+  describe only that group's own dispatch, so it stays nested rather than flattened or merged. A
+  group whose dispatch never actually captured a `$DISPATCH_PID` has no `execution`
+  key in its `groups[]` entry at all — never a placeholder. The round-level `round_wall_seconds`
+  field (coordinator-measured, covering the whole round's wall-clock cost regardless of group count)
+  is, by contrast, always TOP-LEVEL — never per-group, never nested inside any `groups[]` entry, and
+  never derived by summing groups' own `execution.elapsed_seconds` (see that reference file's
+  section 5).

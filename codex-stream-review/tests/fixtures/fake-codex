@@ -54,6 +54,27 @@
 #                         thread.started unconditionally, before ever
 #                         looking at $FAKE_CODEX_SCENARIO). Unset (default):
 #                         stdout unchanged, byte-for-byte.
+#   FAKE_CODEX_USAGE_JSON  for execution-telemetry tests: the raw JSON value
+#                         to emit as the turn.completed event's own "usage"
+#                         field. Unset (default): "usage":{} (an empty
+#                         object -- matches the real CLI's own confirmed
+#                         behavior on some successful turns, per this
+#                         project's own execution-telemetry design). Set to
+#                         the literal string "null" to omit the "usage" key
+#                         from the event entirely (a genuinely absent
+#                         usage), or to the literal string "JSON_NULL" to
+#                         instead emit the key with a real JSON `null` value
+#                         ("usage":null) -- both are treated identically by
+#                         the production jq extraction, but are exercised as
+#                         two distinct fixture cases rather than assumed
+#                         equivalent. Set to a real non-empty JSON object (e.g.
+#                         '{"input_tokens":12,"output_tokens":34}') to
+#                         simulate a populated usage report. Only affects
+#                         the normal/invalid_json/schema_mismatch scenario's
+#                         own turn.completed event below -- no_task_complete
+#                         never emits turn.completed at all, and
+#                         no_final_answer emits its own turn.completed
+#                         separately (see below).
 set -u
 
 # `codex delete --force -- <threadId>` (run-ccs-review.sh's --cleanup mode)
@@ -131,6 +152,34 @@ fi
 DEFAULT_VERDICT='{"verdict":"CLEAN","findings":[],"summary":null,"dimensions":{"correctness":{"status":"not_applicable","evidence":"e"},"security":{"status":"not_applicable","evidence":"e"},"performance":{"status":"not_applicable","evidence":"e"},"reuse":{"status":"not_applicable","evidence":"e"},"contracts":{"status":"not_applicable","evidence":"e"},"resources_concurrency":{"status":"not_applicable","evidence":"e"},"intent":{"status":"not_applicable","evidence":"e"}}}'
 FINAL_ANSWER="${FAKE_CODEX_FINAL_ANSWER:-$DEFAULT_VERDICT}"
 
+# emit_turn_completed -> the one "type":"turn.completed" event every
+# reachable scenario below emits (no_task_complete is the sole exception --
+# it never emits this at all, by design). FAKE_CODEX_USAGE_JSON controls
+# the event's own "usage" field: unset defaults to an empty object (the
+# real CLI's own confirmed on-some-turns behavior); the literal string
+# "null" omits the "usage" key entirely (a genuinely absent usage); the
+# literal string "JSON_NULL" emits the key with a genuine JSON `null` value
+# (`"usage":null`, distinct from an absent key -- both are exercised
+# separately since the production jq extraction treats them identically,
+# but the fixture matrix should prove that, not assume it); any other value
+# is passed through verbatim as the raw JSON usage object.
+emit_turn_completed() {
+  # NOTE: deliberately not `${FAKE_CODEX_USAGE_JSON:-{}}` -- bash mis-parses
+  # a literal `{}` default alongside a SET, brace-containing value in that
+  # exact expansion form (confirmed directly: it silently appends a stray
+  # extra `}`), so the empty-object default is applied via a plain `if`
+  # instead.
+  local usage_raw='{}'
+  [ -n "${FAKE_CODEX_USAGE_JSON:-}" ] && usage_raw="$FAKE_CODEX_USAGE_JSON"
+  if [ "$usage_raw" = "null" ]; then
+    jq -nc '{type: "turn.completed"}'
+  elif [ "$usage_raw" = "JSON_NULL" ]; then
+    jq -nc '{type: "turn.completed", usage: null}'
+  else
+    jq -nc --argjson usage "$usage_raw" '{type: "turn.completed", usage: $usage}'
+  fi
+}
+
 case "$SCENARIO" in
   hang)
     # Used for `timeout` (the wrapper's own --timeout deadline fires while
@@ -150,11 +199,11 @@ case "$SCENARIO" in
     # turn.completed fires, but -o is deliberately never written -- matches
     # how a real `-o` file would be absent if the agent never produced a
     # final message despite the turn nominally completing.
-    jq -nc '{type: "turn.completed", usage: {}}'
+    emit_turn_completed
     exit 0
     ;;
   invalid_json|schema_mismatch|normal)
-    jq -nc '{type: "turn.completed", usage: {}}'
+    emit_turn_completed
     if [ -n "$LAST_MESSAGE_FILE_PATH" ]; then
       printf '%s' "$FINAL_ANSWER" > "$LAST_MESSAGE_FILE_PATH"
     fi
