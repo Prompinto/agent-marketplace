@@ -1127,6 +1127,138 @@ else
 fi
 rm -f "$DM_FIXTURE_6"
 
+# 7. A marker embedded mid-sentence (not at column zero, other text on the
+# same line) must NOT match -- a whole-text substring search would catch
+# this, but the line-anchored column-zero grammar must not.
+DM_FIXTURE_7="$(mktemp)"
+cat > "$DM_FIXTURE_7" <<'EOF'
+A prior response said DISPOSITION f9: RESOLVED -- embedded mid-sentence, not a real marker
+EOF
+DM_OUT="$(bash "$DISPOSITION_PARSER" "$DM_FIXTURE_7" f9)"
+if [ "$(dm_line_for "$DM_OUT" f9)" = "f9 FAIL_CLOSED missing" ]; then
+  pass "DISPOSITION parser: a mid-sentence/mid-prose marker (not column zero) does not match, fails closed as missing"
+else
+  fail "DISPOSITION parser: expected f9 FAIL_CLOSED missing, got: $DM_OUT"
+fi
+rm -f "$DM_FIXTURE_7"
+
+# 8. Two valid, non-fenced, column-zero markers for the SAME claim_id, even
+# agreeing on the disposition -- must still fail closed as duplicate (a
+# stricter case than fixture 2's conflicting-disposition duplicate).
+DM_FIXTURE_8="$(mktemp)"
+cat > "$DM_FIXTURE_8" <<'EOF'
+DISPOSITION f17: RESOLVED -- first occurrence, agrees
+DISPOSITION f17: RESOLVED -- second occurrence, same disposition, still a duplicate
+EOF
+DM_OUT="$(bash "$DISPOSITION_PARSER" "$DM_FIXTURE_8" f17)"
+if [ "$(dm_line_for "$DM_OUT" f17)" = "f17 FAIL_CLOSED duplicate" ]; then
+  pass "DISPOSITION parser: two agreeing markers for the same claim_id still fail closed as duplicate"
+else
+  fail "DISPOSITION parser: expected f17 FAIL_CLOSED duplicate, got: $DM_OUT"
+fi
+rm -f "$DM_FIXTURE_8"
+
+# 9. The exact same valid marker text, indented 4 spaces -- must NOT match
+# (column-zero anchoring also excludes Markdown's own indented-code-block
+# convention, which needs >=4 leading spaces).
+DM_FIXTURE_9="$(mktemp)"
+printf '    DISPOSITION f18: RESOLVED -- indented 4 spaces, must not match\n' > "$DM_FIXTURE_9"
+DM_OUT="$(bash "$DISPOSITION_PARSER" "$DM_FIXTURE_9" f18)"
+if [ "$(dm_line_for "$DM_OUT" f18)" = "f18 FAIL_CLOSED missing" ]; then
+  pass "DISPOSITION parser: a marker indented 4 spaces does not match, fails closed as missing"
+else
+  fail "DISPOSITION parser: expected f18 FAIL_CLOSED missing, got: $DM_OUT"
+fi
+rm -f "$DM_FIXTURE_9"
+
+# 10. The exact same valid marker text, inside a backtick fence with a
+# language tag -- content inside a fence is excluded entirely.
+DM_FIXTURE_10="$(mktemp)"
+cat > "$DM_FIXTURE_10" <<'EOF'
+```text
+DISPOSITION f19: RESOLVED -- inside a backtick fence with a language tag
+```
+EOF
+DM_OUT="$(bash "$DISPOSITION_PARSER" "$DM_FIXTURE_10" f19)"
+if [ "$(dm_line_for "$DM_OUT" f19)" = "f19 FAIL_CLOSED missing" ]; then
+  pass "DISPOSITION parser: a marker inside a backtick-fenced block (with language tag) is excluded, fails closed as missing"
+else
+  fail "DISPOSITION parser: expected f19 FAIL_CLOSED missing, got: $DM_OUT"
+fi
+rm -f "$DM_FIXTURE_10"
+
+# 11. The exact same valid marker text, inside a tilde fence -- content
+# inside a tilde-fenced block is excluded exactly like a backtick fence.
+DM_FIXTURE_11="$(mktemp)"
+cat > "$DM_FIXTURE_11" <<'EOF'
+~~~
+DISPOSITION f20: RESOLVED -- inside a tilde fence
+~~~
+EOF
+DM_OUT="$(bash "$DISPOSITION_PARSER" "$DM_FIXTURE_11" f20)"
+if [ "$(dm_line_for "$DM_OUT" f20)" = "f20 FAIL_CLOSED missing" ]; then
+  pass "DISPOSITION parser: a marker inside a tilde-fenced block is excluded, fails closed as missing"
+else
+  fail "DISPOSITION parser: expected f20 FAIL_CLOSED missing, got: $DM_OUT"
+fi
+rm -f "$DM_FIXTURE_11"
+
+# 12. A 4-backtick opener containing a 3-backtick line that looks like a
+# closer -- length 3 < opening length 4, so it must NOT close the block; the
+# real marker between the fake close and the real 4-backtick closer stays
+# excluded.
+DM_FIXTURE_12="$(mktemp)"
+cat > "$DM_FIXTURE_12" <<'EOF'
+````
+```
+DISPOSITION f21: RESOLVED -- between a too-short fake closer and the real closer
+````
+EOF
+DM_OUT="$(bash "$DISPOSITION_PARSER" "$DM_FIXTURE_12" f21)"
+if [ "$(dm_line_for "$DM_OUT" f21)" = "f21 FAIL_CLOSED missing" ]; then
+  pass "DISPOSITION parser: a shorter same-character line inside a longer fence does not close it, marker stays excluded"
+else
+  fail "DISPOSITION parser: expected f21 FAIL_CLOSED missing (fake short closer must not close the block), got: $DM_OUT"
+fi
+rm -f "$DM_FIXTURE_12"
+
+# 13. An opened-but-never-closed fence running to EOF, with a genuinely
+# valid marker INSIDE it -- must fail closed for ALL requested claim_ids
+# this round (not just the one inside the fence), since the whole response
+# is malformed.
+DM_FIXTURE_13="$(mktemp)"
+cat > "$DM_FIXTURE_13" <<'EOF'
+DISPOSITION f22: RESOLVED -- this one sits outside the fence, before it opens
+```
+DISPOSITION f23: RESOLVED -- this one sits inside the never-closed fence
+EOF
+DM_OUT="$(bash "$DISPOSITION_PARSER" "$DM_FIXTURE_13" f22 f23)"
+if [ "$(dm_line_for "$DM_OUT" f22)" = "f22 FAIL_CLOSED unclosed_fence" ] \
+  && [ "$(dm_line_for "$DM_OUT" f23)" = "f23 FAIL_CLOSED unclosed_fence" ]; then
+  pass "DISPOSITION parser: an unclosed fence at EOF fails closed for EVERY requested claim_id, not just the one inside it"
+else
+  fail "DISPOSITION parser: expected both f22 and f23 FAIL_CLOSED unclosed_fence, got: $DM_OUT"
+fi
+rm -f "$DM_FIXTURE_13"
+
+# 14. A real, valid, column-zero, non-fenced marker on the line immediately
+# AFTER a properly closed fence -- must still match normally (closing a
+# fence must not leak "still fenced" state past its own close line).
+DM_FIXTURE_14="$(mktemp)"
+cat > "$DM_FIXTURE_14" <<'EOF'
+```
+irrelevant fenced content
+```
+DISPOSITION f24: RESOLVED -- right after the fence closes, must match
+EOF
+DM_OUT="$(bash "$DISPOSITION_PARSER" "$DM_FIXTURE_14" f24)"
+if [ "$(dm_line_for "$DM_OUT" f24)" = "f24 RESOLVED right after the fence closes, must match" ]; then
+  pass "DISPOSITION parser: a valid marker immediately after a properly closed fence still matches"
+else
+  fail "DISPOSITION parser: expected f24 RESOLVED right after the fence closes, must match, got: $DM_OUT"
+fi
+rm -f "$DM_FIXTURE_14"
+
 # --- parallel-mode coverage merge fixtures (parallel-mode.md / SKILL.md's ---
 # --- "Round-1 N-group merge" worst-case-wins rule) ---
 # Exercises tests/fixtures/parallel-coverage-merge.jq. Pure jq over inline
@@ -1222,6 +1354,62 @@ if [ "$KEY_OUT" = "$KEY_EXPECTED" ]; then
 else
   fail "claim key join: expected $KEY_EXPECTED, got: $KEY_OUT"
 fi
+
+# --- fake-codex fixture enhancements: FAKE_CODEX_INVOCATION_LOG / ---
+# --- FAKE_CODEX_GROUP_STATE (tests/fixtures/fake-codex) ---
+# Both are purely-additive, opt-in capabilities needed by follow-up
+# scenario-building tasks. Leaving both unset changes nothing -- every
+# fixture in this entire suite, above and below, never sets either one, and
+# the whole suite passes exactly as before (its own pass/fail counts are the
+# regression check for that).
+
+# 1. FAKE_CODEX_INVOCATION_LOG: a fresh dispatch followed by a --resume
+# dispatch on the resulting thread must append exactly two lines, in
+# mode order, each carrying the actually-resolved thread id and the
+# scenario in effect.
+FC_INVOCATION_LOG="$(mktemp)"
+export FAKE_CODEX_SCENARIO=normal FAKE_CODEX_INVOCATION_LOG="$FC_INVOCATION_LOG"
+OUT="$(pd_run fresh)"
+FC_TID="$(pd_threadid "$OUT")"
+pd_run resume "$FC_TID" >/dev/null
+unset FAKE_CODEX_SCENARIO FAKE_CODEX_INVOCATION_LOG
+FC_LOG_LINE_COUNT="$(wc -l < "$FC_INVOCATION_LOG" | tr -d ' ')"
+if [ -n "$FC_TID" ] && [ "$FC_LOG_LINE_COUNT" = "2" ] \
+  && [ "$(sed -n '1p' "$FC_INVOCATION_LOG")" = "mode=fresh thread_id=$FC_TID scenario=normal" ] \
+  && [ "$(sed -n '2p' "$FC_INVOCATION_LOG")" = "mode=resume thread_id=$FC_TID scenario=normal" ]; then
+  pass "fake-codex FAKE_CODEX_INVOCATION_LOG: records mode/thread_id/scenario for a fresh dispatch then its resume, in order"
+else
+  fail "fake-codex FAKE_CODEX_INVOCATION_LOG: expected 2 lines (fresh then resume) with thread_id=$FC_TID, got: $(cat "$FC_INVOCATION_LOG")"
+fi
+rm -f "$FC_INVOCATION_LOG"
+
+# 2. FAKE_CODEX_GROUP_STATE: two separate fresh dispatches (each a genuinely
+# separate process invocation of the fixture, via pd_run) sharing the same
+# state directory must play back round-0's then round-1's pre-scripted
+# final answers, in order, and the state directory's own round counter must
+# have advanced to 2.
+FC_GROUP_STATE="$(mktemp -d)"
+cat > "$FC_GROUP_STATE/round-0-final-answer.json" <<'EOF'
+{"verdict":"CLEAN","findings":[],"summary":"round zero scripted verdict","dimensions":{"correctness":{"status":"not_applicable","evidence":"e"},"security":{"status":"not_applicable","evidence":"e"},"performance":{"status":"not_applicable","evidence":"e"},"reuse":{"status":"not_applicable","evidence":"e"},"contracts":{"status":"not_applicable","evidence":"e"},"resources_concurrency":{"status":"not_applicable","evidence":"e"},"intent":{"status":"not_applicable","evidence":"e"}}}
+EOF
+cat > "$FC_GROUP_STATE/round-1-final-answer.json" <<'EOF'
+{"verdict":"CLEAN","findings":[],"summary":"round one scripted verdict","dimensions":{"correctness":{"status":"not_applicable","evidence":"e"},"security":{"status":"not_applicable","evidence":"e"},"performance":{"status":"not_applicable","evidence":"e"},"reuse":{"status":"not_applicable","evidence":"e"},"contracts":{"status":"not_applicable","evidence":"e"},"resources_concurrency":{"status":"not_applicable","evidence":"e"},"intent":{"status":"not_applicable","evidence":"e"}}}
+EOF
+export FAKE_CODEX_SCENARIO=normal FAKE_CODEX_GROUP_STATE="$FC_GROUP_STATE"
+OUT_R0="$(pd_run fresh)"
+OUT_R1="$(pd_run fresh)"
+unset FAKE_CODEX_SCENARIO FAKE_CODEX_GROUP_STATE
+FC_R0_SUMMARY="$(printf '%s' "$OUT_R0" | tail -1 | jq -r '.verdict.summary // empty')"
+FC_R1_SUMMARY="$(printf '%s' "$OUT_R1" | tail -1 | jq -r '.verdict.summary // empty')"
+FC_ROUND_COUNTER="$(cat "$FC_GROUP_STATE/round" 2>/dev/null)"
+if [ "$FC_R0_SUMMARY" = "round zero scripted verdict" ] \
+  && [ "$FC_R1_SUMMARY" = "round one scripted verdict" ] \
+  && [ "$FC_ROUND_COUNTER" = "2" ]; then
+  pass "fake-codex FAKE_CODEX_GROUP_STATE: plays back round-0 then round-1 scripted final answers across two separate dispatches, advancing the counter"
+else
+  fail "fake-codex FAKE_CODEX_GROUP_STATE: expected round0/round1 summaries and counter=2, got round0=$FC_R0_SUMMARY round1=$FC_R1_SUMMARY counter=$FC_ROUND_COUNTER"
+fi
+rm -rf "$FC_GROUP_STATE"
 
 rm -rf "$FAKE_HOME" "$FAKE_BIN_DIR" "$PD_REPO"
 
