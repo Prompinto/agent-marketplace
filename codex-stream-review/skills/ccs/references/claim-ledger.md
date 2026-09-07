@@ -126,18 +126,55 @@ Phase 2 step 3, never "the round after."
 
 **Parsing rules — Claude's parser, applied to Codex's `summary` text every round that requested any
 dispositions:**
-- Exactly one marker per requested `claim_id`. Zero markers, or more than one marker for the same
-  `claim_id`, both fail closed for that claim.
+
+The parser processes `summary` **line by line, never as one whole-text substring/regex search.** A
+whole-text search can match a `DISPOSITION <id>: STATE -- reason`-shaped string that is NOT
+actually a control-plane marker — e.g. embedded mid-sentence in Codex's own prose ("A prior
+response said `DISPOSITION g1:f3: RESOLVED -- ...`"), inside an illustrative/quoted example, or
+inside a Markdown fenced or indented code block Codex included while explaining itself. The
+line-by-line grammar below exists specifically to exclude all of these.
+
+- **Fence exclusion.** A first pass tracks Markdown fences: a line is a fence OPENER if, ignoring
+  up to 3 leading spaces (CommonMark's own tolerance), it consists of 3-or-more of the SAME
+  character — either all backticks or all tildes — optionally followed by any trailing text
+  afterward (an info string, or anything else). **This is deliberately conservative, not literal
+  CommonMark:** real CommonMark forbids backticks inside a backtick-opener's own info string, but
+  this parser accepts any trailing text unconditionally after either fence character. Being
+  over-inclusive here can only ever cause MORE text to be treated as fenced, which can only cause a
+  real marker to be missed (fail closed) — never cause a spoofed marker to be wrongly accepted. A
+  line CLOSES that fence only if it is the SAME character, length >= the opening length, AT COLUMN
+  ZERO, with nothing but optional trailing whitespace — no leading-space tolerance on the closer
+  either, the same conservative bias applied in the other direction (harder to close means more
+  text stays fenced, never less). While inside a fence, no line is checked for a marker at all —
+  not even a line that looks like a fence of the wrong character or insufficient length (that does
+  not close the block, matching real fenced-code-block semantics). **If the text ends while still
+  inside an open fence (no matching close found before EOF): this is a malformed response for
+  marker-parsing purposes — fail closed for EVERY claim_id requested this round**, not just the
+  ones inside the fenced region.
+- **Column-zero anchoring.** Outside any fence, a line is a marker candidate only if the grammar
+  matches starting at column zero — no leading whitespace at all. This alone excludes both
+  mid-sentence/mid-prose placement and Markdown's own indented-code-block convention (which
+  requires >=4 leading spaces): a marker requiring column zero can never appear inside one.
+- **Known-id-first matching.** `<claim_id>` is matched by KNOWN-ID-FIRST literal comparison against
+  the finite set of claim_ids actually requested this round — never a generic/unbounded regex
+  trying to guess where the id ends. This is required because a parallel-mode `claim_id` itself
+  contains a colon (e.g. `g1:f3`, section 1 above), so a regex that tries to locate "the" colon
+  separating id from state is inherently ambiguous; testing each known, requested claim_id as a
+  literal prefix has no such ambiguity regardless of what characters the id contains.
+- Exactly one marker per requested `claim_id`. Zero markers, or more than one valid, non-fenced,
+  column-zero marker for the same `claim_id` — even if they agree on the disposition — both fail
+  closed for that claim.
 - Only recognizes `claim_id`s Claude actually asked about this round. An unrecognized or malformed
   `claim_id` in a marker is ignored (never invented into a new closure).
 - The reason segment must be non-empty. An empty or missing reason fails closed for that claim.
-- **Fail-closed uniformly:** absence, a duplicate, an unrecognized claim_id, or an empty reason all
-  mean the claim stays `open` for this round — no closure recorded, and that round cannot converge
-  on it. Never a silent pass-through to CLEAN.
+- **Fail-closed uniformly:** absence, a duplicate, an unrecognized claim_id, an empty reason, or an
+  unclosed fence at end-of-text (which fails closed for every requested claim_id in that round, not
+  just one) all mean the affected claim(s) stay `open` for this round — no closure recorded, and
+  that round cannot converge on it. Never a silent pass-through to CLEAN.
 
 **Why this is sufficient without a JSON output-schema change** (Codex's own conclusion after
 evaluating it directly, round 5 of the negotiation): strict cardinality (exactly one marker),
-anchored full-line matching (not substring/semantic interpretation), a fixed enumerated value set,
+anchored, column-zero, non-fenced-line matching (not substring/semantic interpretation), a fixed enumerated value set,
 and required non-empty evidence text together remove the specific ambiguity risks a
 schema-validated field would also need to guard against (an incidental mention, an ambiguous
 pronoun, a partially-addressed claim, a request silently ignored while still returning CLEAN) —
@@ -230,4 +267,4 @@ convergent), and that round unable to declare CLEAN while it remains so:
   about that round).
 - Any transition attempt other than the two legal ones (`open -> resolved`, `open -> retracted`).
 - Any `DISPOSITION` marker-parsing ambiguity described in section 4 above (missing, duplicate,
-  unrecognized claim_id, empty reason).
+  unrecognized claim_id, empty reason, unclosed fence at end-of-text).

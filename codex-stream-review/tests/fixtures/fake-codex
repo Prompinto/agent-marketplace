@@ -82,7 +82,76 @@
 #                         never emits turn.completed at all, and
 #                         no_final_answer emits its own turn.completed
 #                         separately (see below).
+#   FAKE_CODEX_INVOCATION_LOG  optional file path. When set, on EVERY
+#                         invocation of this fixture -- regardless of
+#                         scenario, including the `delete` subcommand --
+#                         appends one line recording this invocation's mode
+#                         (fresh|resume|delete), its resolved
+#                         THREAD_ID/RESUME_ID (whichever applies; empty for
+#                         a fresh dispatch under FAKE_CODEX_NO_THREAD_STARTED,
+#                         since no thread id is ever generated on that path),
+#                         and the FAKE_CODEX_SCENARIO value in effect. Lets a
+#                         scenario's own expect.sh verify this fake binary
+#                         was ACTUALLY invoked the expected number of times,
+#                         in the expected mode sequence -- catching a silent
+#                         PATH-injection failure where a scenario's setup
+#                         accidentally let a call fall through to a
+#                         different (or worse, real) `codex` binary. Appends
+#                         via a plain `>>` (no flock) -- this project's own
+#                         convention elsewhere tolerates non-atomic appends
+#                         for best-effort diagnostics. Each SEPARATE scenario
+#                         using this should point it at its own dedicated
+#                         file, not a shared one across concurrent
+#                         processes: a future parallel-mode scenario must use
+#                         one such log PER GROUP, never one shared log across
+#                         groups, to avoid any assumption of total ordering
+#                         across concurrently-dispatched processes. Unset
+#                         (default): zero behavior change, nothing written,
+#                         matches every existing test exactly.
+#   FAKE_CODEX_GROUP_STATE  optional directory path. When set, this fixture
+#                         becomes STATEFUL across invocations sharing the
+#                         same directory (every invocation is otherwise
+#                         independent/stateless -- no memory of prior
+#                         calls). On each invocation: reads an integer round
+#                         counter from "$FAKE_CODEX_GROUP_STATE/round"
+#                         (default 0 if absent); if
+#                         "$FAKE_CODEX_GROUP_STATE/round-<N>-final-answer.json"
+#                         exists for the CURRENT counter value N, its content
+#                         is used as this invocation's FAKE_CODEX_FINAL_ANSWER
+#                         instead of whatever the FAKE_CODEX_FINAL_ANSWER env
+#                         var says (that env var is still the fallback when
+#                         no per-round file exists for the current counter);
+#                         after that, the counter file is incremented by 1
+#                         for the NEXT invocation, regardless of whether a
+#                         per-round file existed for this one. This lets a
+#                         scenario's setup.sh pre-populate
+#                         round-0-final-answer.json, round-1-final-answer.json,
+#                         etc. as a full scripted transcript, played back in
+#                         order across real, separate, fresh-shell dispatch
+#                         calls -- the counter file is the only persistence
+#                         mechanism available across those separate process
+#                         invocations. A caller using this for PARALLEL-mode
+#                         testing MUST give each group its own separate
+#                         FAKE_CODEX_GROUP_STATE directory, bound per-command
+#                         (e.g. `FAKE_CODEX_GROUP_STATE="/tmp/.../g1-state"
+#                         run-ccs-review.sh ...` prefixed directly on that
+#                         group's own dispatch line), NEVER a shared `export`
+#                         mutated between concurrent group dispatches -- a
+#                         shared/exported directory would let concurrent
+#                         groups race on the same round counter. Unset
+#                         (default): zero behavior change, matches every
+#                         existing test exactly.
 set -u
+
+# Appends one line to $FAKE_CODEX_INVOCATION_LOG (if set) recording this
+# invocation -- see the env var's own doc comment above. A no-op when unset.
+log_invocation() {
+  # $1 = mode (fresh|resume|delete), $2 = resolved thread/resume id (may be
+  # empty, e.g. a fresh dispatch under FAKE_CODEX_NO_THREAD_STARTED).
+  [ -n "${FAKE_CODEX_INVOCATION_LOG:-}" ] || return 0
+  printf 'mode=%s thread_id=%s scenario=%s\n' \
+    "$1" "$2" "${FAKE_CODEX_SCENARIO:-normal}" >> "$FAKE_CODEX_INVOCATION_LOG"
+}
 
 # `codex delete --force -- <threadId>` (run-ccs-review.sh's --cleanup mode)
 # is a completely separate subcommand from `exec`/`exec resume` -- handled
@@ -98,6 +167,11 @@ set -u
 # threads[].cleanup:"deleted" in the resulting .result.json, not just the
 # always-fails path this fixture only exercised until now.
 if [ "${1:-}" = "delete" ]; then
+  # Real invocation shape is fixed (`delete --force -- <threadId>`), so the
+  # last positional argument is always the target threadId.
+  DELETE_TARGET=""
+  for ARG in "$@"; do DELETE_TARGET="$ARG"; done
+  log_invocation delete "$DELETE_TARGET"
   if [ -n "${FAKE_CODEX_CLEANUP_OK:-}" ]; then
     exit 0
   fi
@@ -132,6 +206,7 @@ done
 
 if [ "$MODE" = "resume" ]; then
   THREAD_ID="$RESUME_ID"
+  log_invocation resume "$THREAD_ID"
   # No thread.started to emit (the wrapper never polls for one on
   # --resume), but printing something distinctive still lets a
   # --capture-eventlog test confirm the eventlog holds this process's raw
@@ -141,12 +216,15 @@ else
   if [ -n "${FAKE_CODEX_NO_THREAD_STARTED:-}" ]; then
     # No thread.started line -- just outlive the wrapper's real (hardcoded,
     # not configurable) THREAD_WAIT_SECS=10s poll so its wait loop genuinely
-    # times out rather than exiting early.
+    # times out rather than exiting early. No THREAD_ID is ever generated on
+    # this path, so the invocation log records an empty thread_id.
+    log_invocation fresh ""
     sleep "${FAKE_CODEX_SLEEP_SECS:-11}"
     exit 0
   fi
   THREAD_ID="$(python3 -c 'import uuid; print(uuid.uuid4())' 2>/dev/null)"
   [ -n "$THREAD_ID" ] || THREAD_ID="fake-$$-${RANDOM}"
+  log_invocation fresh "$THREAD_ID"
   jq -nc --arg tid "$THREAD_ID" '{type: "thread.started", thread_id: $tid}'
 fi
 
@@ -165,8 +243,29 @@ if [ -n "${FAKE_CODEX_COMMANDS:-}" ]; then
   done <<< "$FAKE_CODEX_COMMANDS"
 fi
 
+# FAKE_CODEX_GROUP_STATE (see doc comment above): read the per-round
+# scripted final-answer override, if any, for the CURRENT round counter
+# value, then advance the counter for the next invocation. A no-op, byte-
+# for-byte identical to before, when unset (the default every pre-existing
+# fixture relies on).
+GROUP_STATE_OVERRIDE=""
+if [ -n "${FAKE_CODEX_GROUP_STATE:-}" ]; then
+  mkdir -p "$FAKE_CODEX_GROUP_STATE" 2>/dev/null
+  ROUND_FILE="$FAKE_CODEX_GROUP_STATE/round"
+  ROUND_N=0
+  [ -f "$ROUND_FILE" ] && ROUND_N="$(cat "$ROUND_FILE" 2>/dev/null)"
+  case "$ROUND_N" in ''|*[!0-9]*) ROUND_N=0 ;; esac
+  ROUND_ANSWER_FILE="$FAKE_CODEX_GROUP_STATE/round-${ROUND_N}-final-answer.json"
+  [ -f "$ROUND_ANSWER_FILE" ] && GROUP_STATE_OVERRIDE="$(cat "$ROUND_ANSWER_FILE")"
+  echo "$((ROUND_N + 1))" > "$ROUND_FILE"
+fi
+
 DEFAULT_VERDICT='{"verdict":"CLEAN","findings":[],"summary":null,"dimensions":{"correctness":{"status":"not_applicable","evidence":"e"},"security":{"status":"not_applicable","evidence":"e"},"performance":{"status":"not_applicable","evidence":"e"},"reuse":{"status":"not_applicable","evidence":"e"},"contracts":{"status":"not_applicable","evidence":"e"},"resources_concurrency":{"status":"not_applicable","evidence":"e"},"intent":{"status":"not_applicable","evidence":"e"}}}'
-FINAL_ANSWER="${FAKE_CODEX_FINAL_ANSWER:-$DEFAULT_VERDICT}"
+if [ -n "$GROUP_STATE_OVERRIDE" ]; then
+  FINAL_ANSWER="$GROUP_STATE_OVERRIDE"
+else
+  FINAL_ANSWER="${FAKE_CODEX_FINAL_ANSWER:-$DEFAULT_VERDICT}"
+fi
 
 # emit_turn_completed -> the one "type":"turn.completed" event every
 # reachable scenario below emits (no_task_complete is the sole exception --
