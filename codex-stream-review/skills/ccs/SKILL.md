@@ -1340,7 +1340,7 @@ described above.
   parallel mode) has reached a terminal disposition — `resolved` or
   `retracted`.** An `accept`-only claim with no closure entry does NOT satisfy this condition —
   `accept` means "valid, fix applied or pending, awaiting recheck," never "closed." Neither does a
-  claim left at `deferred`. Reconstruct each claim's current status via that reference's section 8
+  claim left at `parked`. Reconstruct each claim's current status via that reference's section 8
   reducer over EVERY PRIOR round's JSONL lines, **THEN merge in THIS round's own just-parsed,
   not-yet-appended `claim_id`/`evidence_delta`/closure judgments from step 3 above** — never
   evaluate this condition using only prior JSONL lines, since this round's own append (step 6,
