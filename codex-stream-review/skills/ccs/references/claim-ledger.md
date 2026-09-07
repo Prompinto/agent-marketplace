@@ -164,7 +164,7 @@ old one — this keeps a claim_id's own history strictly append-only and monoton
 
 An `accept`-only claim (Claude agrees it's valid, possibly fixes it) with no `claim_closures[]`
 entry does **not** satisfy CLEAN on its own — `accept` means "valid, fix applied or pending,
-awaiting recheck," never "closed." Neither does a claim left at `deferred`. Every claim_id that has
+awaiting recheck," never "closed." Neither does a claim left at `parked`. Every claim_id that has
 ever appeared this session must show up in some round's `claim_closures[]` with `disposition:
 "resolved"` or `"retracted"` before CLEAN is reachable.
 

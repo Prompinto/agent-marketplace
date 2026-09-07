@@ -12,7 +12,8 @@ Runs a Codex review as a **persisted, resumable thread** via this plugin's
 Round 1 starts the thread with `codex exec --sandbox read-only`; every
 follow-up round resumes that same thread with `codex exec resume`, so Codex
 already has the diff and prior findings in its own context — a follow-up
-round's stdin focus text should carry only the new question, never the diff again. Unlike a
+round's stdin focus text should skip re-sending the original diff or prior findings, but can
+include newly relevant context (e.g. a specific changed hunk) when needed. Unlike a
 fresh-process-per-round design, which re-runs everything from scratch each
 round and never leaves anything on disk, this plugin leaves a real thread +
 rollout file behind on purpose (that's what makes resume possible), which is
@@ -152,10 +153,7 @@ passes no `--sandbox` flag at all (`codex exec
 resume` doesn't have one) and simply inherits whatever sandbox mode the
 thread started with.
 
-There is no approval-gated write capability here, and none is coming later
-for this design: an earlier plan explored letting Codex ask before writing
-and Claude decide per-action, but headless `codex exec`/`codex exec resume`
-has no approval-request mechanism to answer on the installed CLI version at
-all — this was investigated and confirmed dropped, not merely unbuilt yet.
-Don't tell a user this plugin can grant Codex supervised write access; it
-can only ever be fully read-only or fully blocked.
+This wrapper deliberately supports read-only reviews only and has no approval flow — headless
+`codex exec`/`codex exec resume` has no approval-request mechanism to answer on the installed CLI
+version at all. Don't tell a user this plugin can grant Codex supervised write access; it can only
+ever be fully read-only or fully blocked.

@@ -3,7 +3,7 @@
 > Read this file in full because `--capture-evidence` was determined ON for this session (see
 > `SKILL.md`'s Phase 0 Step 0). Everything below is required for at least four later points in
 > this run: Phase 1 Step 0's `EVENTLOG_FILE` allocation, Step 1's `--capture-eventlog` flag, Phase
-> 2's extraction step, and the Guards section's retry-time eventlog handling in `SKILL.md`.
+> 2's extraction step, and `references/retry-guards.md`'s retry-time eventlog handling.
 
 ## Investigation evidence capture (opt-in via `--capture-evidence`)
 
@@ -35,13 +35,13 @@ trusting the claim at face value.
    `run-ccs-review.sh` invocation is its own separate `codex exec`/`codex exec resume` process
    with its own event log, whether or not the underlying Codex thread is being resumed). **This
    applies to EVERY `run-ccs-review.sh` dispatch this file ever constructs, with no exception —
-   Phase 1 Step 1's own fresh/resume examples, AND every retry variant in Guards below** (the
-   no-threadId-yet fresh retry, the resume-safe bounded retry, and the resume-retries-exhausted
-   fallback fresh retry — there is no longer a separate "non-resume-safe immediate fresh retry"
-   variant; see the Guards section's own note that only these two `threadId`-presence branches
-   remain): each is its own separate
+   Phase 1 Step 1's own fresh/resume examples, AND every retry variant in
+   `references/retry-guards.md`** (the no-threadId-yet fresh retry, the resume-safe bounded retry,
+   and the resume-retries-exhausted fallback fresh retry — there is no longer a separate
+   "non-resume-safe immediate fresh retry" variant; see that file's own note that only these two
+   `threadId`-presence branches remain): each is its own separate
    process invocation and gets its own freshly-`mktemp`'d `EVENTLOG_FILE` the same way, never the
-   original round's already-consumed one, when capture is ON — see the Guards section's
+   original round's already-consumed one, when capture is ON — see `references/retry-guards.md`'s
    resume-safe retry bullet for the one case (a genuine resume-retry succeeding) where more than
    one eventlog for the same (round, group) needs an explicit rule for which one actually gets
    extracted from.
