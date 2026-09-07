@@ -131,8 +131,9 @@ partial-content salvage is attempted.
 1. **Do not dispatch any `--resume` call this round**, for any group.
 2. **Report a new terminal status, `🛑 SNAPSHOT INTEGRITY FAILURE`** — distinct from every
    convergence-loop outcome (`✅ CLEAN`/`⚠️ NOT CONVERGED`/`⚠️ COULD NOT VERIFY`/
-   `⚠️ PARTIAL COVERAGE`). This is a Claude-side infrastructure failure, not a review-convergence
-   outcome, and is never folded into any of those four.
+   `⚠️ PARTIAL COVERAGE`/`🟡 MINOR ISSUES ACKNOWLEDGED`). This is a Claude-side infrastructure
+   failure, not a review-convergence
+   outcome, and is never folded into any of those five.
 3. **Run Phase 3 steps 1–3 exactly as for any other terminal path — unconditionally, even if
    `--keep-evidence` is ON for this session.** This is the one deliberate exception to the
    keep-evidence gate (see `SKILL.md`'s Phase 3): a normal non-CLEAN outcome under

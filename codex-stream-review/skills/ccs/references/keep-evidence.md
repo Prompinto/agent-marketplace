@@ -17,7 +17,7 @@ be ON for a session.
 
 **What it fixes:** `/ccs` normally runs `--cleanup` on every Codex thread on every terminal path,
 including a failure (`⚠️ COULD NOT VERIFY`, `⚠️ NOT CONVERGED`, `⚠️ PARTIAL COVERAGE`,
-`🛑 INPUT TOO LARGE`) — deleting
+`🟡 MINOR ISSUES ACKNOWLEDGED`, `🛑 INPUT TOO LARGE`) — deleting
 the one diagnostic artifact (the model's actual last-message output, and the live thread itself)
 that would explain what went wrong on an `invalid_json`/`schema_mismatch`/`no_final_answer`/etc.
 failure. `--keep-evidence` makes retention of a failed round's thread and last-message output an
@@ -27,7 +27,7 @@ explicit opt-in, never the unconditional default.
 kept last-message text, moved into a durable per-session directory; (2) every Codex thread that
 would otherwise have been `--cleanup`'d, left alive instead (`SKILL.md`'s Phase 3 keep-evidence
 gate — see that section, not repeated here). **This applies to `⚠️ COULD NOT VERIFY`/
-`⚠️ NOT CONVERGED`/`⚠️ PARTIAL COVERAGE`/`🛑 INPUT TOO LARGE` only — never to
+`⚠️ NOT CONVERGED`/`⚠️ PARTIAL COVERAGE`/`🟡 MINOR ISSUES ACKNOWLEDGED`/`🛑 INPUT TOO LARGE` only — never to
 `🛑 SNAPSHOT INTEGRITY FAILURE` or `🛑 REVIEW LOG INTEGRITY FAILURE`**, both of which
 always clean up regardless of `--keep-evidence` (see `references/snapshot-integrity.md`,
 `SKILL.md`'s "Review history log" section, and `SKILL.md`'s Phase 3 keep-evidence gate for why:
