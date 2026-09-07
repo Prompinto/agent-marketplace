@@ -940,6 +940,289 @@ pd_test_interrupted fresh "" "" "" check_execution
 TID="$(pd_new_tid)"
 pd_test_interrupted resume "$TID" "" "" check_execution
 
+# --- claim-ledger reducer fixtures (claim-ledger.md section 8, no real API calls) ---
+# Exercises tests/fixtures/claim-ledger-reducer.jq, the jq filter implementing
+# the deterministic claim-state reducer described in claim-ledger.md section
+# 8: reconstructing each distinct claim_id's current status/evidence_delta
+# from the append-only JSONL review-history log alone. Pure jq over
+# hand-built JSONL fixtures -- no wrapper dispatch, no fake-codex involved.
+
+CLAIM_LEDGER_JQ="$SCRIPT_DIR/fixtures/claim-ledger-reducer.jq"
+
+cl_reduce() {
+  # $1 = jsonl file; prints one compact JSON object per distinct claim_id
+  jq -n -c -f "$CLAIM_LEDGER_JQ" "$1"
+}
+cl_status_for() {
+  # $1 = reducer output (one obj per line), $2 = claim_id
+  printf '%s' "$1" | jq -c --arg id "$2" 'select(.claim_id == $id)'
+}
+
+# 1. Cleanly-closed claim: raised round 1, closed "resolved" in round 2.
+CL_FIXTURE_1="$(mktemp)"
+cat > "$CL_FIXTURE_1" <<'EOF'
+{"round":1,"claude_verification":[{"finding_id":"f1","claim_id":"f1","action":"accept","rationale":"looks right"}]}
+{"round":2,"claude_verification":[],"claim_closures":[{"claim_id":"f1","disposition":"resolved","source_round":2,"marker_reason":"fix confirmed by re-read"}]}
+EOF
+CL_OUT="$(cl_reduce "$CL_FIXTURE_1")"
+CL_ENTRY="$(cl_status_for "$CL_OUT" f1)"
+if [ "$(printf '%s' "$CL_ENTRY" | jq -r '.status')" = "resolved" ]; then
+  pass "claim-ledger reducer: a claim closed with disposition:resolved reports status=resolved"
+else
+  fail "claim-ledger reducer: expected status=resolved for f1, got: $CL_OUT"
+fi
+rm -f "$CL_FIXTURE_1"
+
+# 2. Still-open claim: raised, never closed.
+CL_FIXTURE_2="$(mktemp)"
+cat > "$CL_FIXTURE_2" <<'EOF'
+{"round":1,"claude_verification":[{"finding_id":"f2","claim_id":"f2","action":"accept","rationale":"valid, fix pending"}]}
+EOF
+CL_OUT="$(cl_reduce "$CL_FIXTURE_2")"
+CL_ENTRY="$(cl_status_for "$CL_OUT" f2)"
+if [ "$(printf '%s' "$CL_ENTRY" | jq -r '.status')" = "open" ]; then
+  pass "claim-ledger reducer: a claim with no claim_closures entry reports status=open"
+else
+  fail "claim-ledger reducer: expected status=open for f2, got: $CL_OUT"
+fi
+rm -f "$CL_FIXTURE_2"
+
+# 3. Non-consecutive oscillation: raised round 1 (first occurrence, no
+# evidence_delta), silent round 2 (no entry at all that round), reasserted
+# round 3 with evidence_delta:"none" -- exactly the gap the old "last two
+# rounds" comparison used to miss (claim-ledger.md section 7). The reducer's
+# own job is only to surface the latest evidence_delta correctly; the
+# oscillation-guard DECISION built on top of it is Claude's job per
+# SKILL.md, not tested here.
+CL_FIXTURE_3="$(mktemp)"
+cat > "$CL_FIXTURE_3" <<'EOF'
+{"round":1,"claude_verification":[{"finding_id":"f3","claim_id":"f3","action":"reject_with_rationale","rationale":"disagree"}]}
+{"round":2,"claude_verification":[]}
+{"round":3,"claude_verification":[{"finding_id":"f3","claim_id":"f3","action":"reject_with_rationale","rationale":"still disagree","evidence_delta":"none"}]}
+EOF
+CL_OUT="$(cl_reduce "$CL_FIXTURE_3")"
+CL_ENTRY="$(cl_status_for "$CL_OUT" f3)"
+if [ "$(printf '%s' "$CL_ENTRY" | jq -r '.status')" = "open" ] && [ "$(printf '%s' "$CL_ENTRY" | jq -r '.evidence_delta')" = "none" ]; then
+  pass "claim-ledger reducer: non-consecutive reassertion surfaces the LATEST evidence_delta (none) across a silent round"
+else
+  fail "claim-ledger reducer: expected status=open evidence_delta=none for f3, got: $CL_OUT"
+fi
+rm -f "$CL_FIXTURE_3"
+
+# 4. Reasserted with genuinely new evidence -- must surface "new", not stale.
+CL_FIXTURE_4="$(mktemp)"
+cat > "$CL_FIXTURE_4" <<'EOF'
+{"round":1,"claude_verification":[{"finding_id":"f4","claim_id":"f4","action":"reject_with_rationale","rationale":"disagree"}]}
+{"round":2,"claude_verification":[]}
+{"round":3,"claude_verification":[{"finding_id":"f4","claim_id":"f4","action":"reject_with_rationale","rationale":"new argument presented","evidence_delta":"new"}]}
+EOF
+CL_OUT="$(cl_reduce "$CL_FIXTURE_4")"
+CL_ENTRY="$(cl_status_for "$CL_OUT" f4)"
+if [ "$(printf '%s' "$CL_ENTRY" | jq -r '.evidence_delta')" = "new" ]; then
+  pass "claim-ledger reducer: reassertion with evidence_delta:new surfaces new, not stale"
+else
+  fail "claim-ledger reducer: expected evidence_delta=new for f4, got: $CL_OUT"
+fi
+rm -f "$CL_FIXTURE_4"
+
+# --- DISPOSITION marker parser fixtures (claim-ledger.md section 4) ---
+# Exercises tests/fixtures/parse-disposition-markers.sh against free-text
+# blobs standing in for Codex's `summary` field. Pure text parsing -- no
+# wrapper dispatch, no fake-codex involved.
+
+DISPOSITION_PARSER="$SCRIPT_DIR/fixtures/parse-disposition-markers.sh"
+
+dm_line_for() {
+  # $1 = parser output (one line per requested claim_id), $2 = claim_id
+  printf '%s\n' "$1" | grep "^$2 "
+}
+
+# 1. One valid marker of each kind (RESOLVED / RETRACTED / STILL OPEN).
+DM_FIXTURE_1="$(mktemp)"
+cat > "$DM_FIXTURE_1" <<'EOF'
+Some narration before the markers.
+DISPOSITION f1: RESOLVED -- the null check now covers the empty-array case
+DISPOSITION f2: RETRACTED -- withdrawing this, turned out to be a false positive
+DISPOSITION f3: STILL OPEN -- not yet fixed, still reproduces on the current code
+Trailing narration.
+EOF
+DM_OUT="$(bash "$DISPOSITION_PARSER" "$DM_FIXTURE_1" f1 f2 f3)"
+if [ "$(dm_line_for "$DM_OUT" f1)" = "f1 RESOLVED the null check now covers the empty-array case" ] \
+  && [ "$(dm_line_for "$DM_OUT" f2)" = "f2 RETRACTED withdrawing this, turned out to be a false positive" ] \
+  && [ "$(dm_line_for "$DM_OUT" f3)" = "f3 STILL_OPEN not yet fixed, still reproduces on the current code" ]; then
+  pass "DISPOSITION parser: one valid marker each of RESOLVED/RETRACTED/STILL OPEN parses correctly"
+else
+  fail "DISPOSITION parser: expected clean parses for f1/f2/f3, got: $DM_OUT"
+fi
+rm -f "$DM_FIXTURE_1"
+
+# 2. Duplicate marker for the same claim_id -- must fail closed.
+DM_FIXTURE_2="$(mktemp)"
+cat > "$DM_FIXTURE_2" <<'EOF'
+DISPOSITION f4: RESOLVED -- first marker for this claim
+DISPOSITION f4: RETRACTED -- a second, conflicting marker for the same claim
+EOF
+DM_OUT="$(bash "$DISPOSITION_PARSER" "$DM_FIXTURE_2" f4)"
+if [ "$(dm_line_for "$DM_OUT" f4)" = "f4 FAIL_CLOSED duplicate" ]; then
+  pass "DISPOSITION parser: a duplicate marker for the same claim_id fails closed"
+else
+  fail "DISPOSITION parser: expected f4 FAIL_CLOSED duplicate, got: $DM_OUT"
+fi
+rm -f "$DM_FIXTURE_2"
+
+# 3. Zero markers for a requested claim_id -- must fail closed as "missing".
+DM_FIXTURE_3="$(mktemp)"
+cat > "$DM_FIXTURE_3" <<'EOF'
+No markers at all in this summary text.
+EOF
+DM_OUT="$(bash "$DISPOSITION_PARSER" "$DM_FIXTURE_3" f5)"
+if [ "$(dm_line_for "$DM_OUT" f5)" = "f5 FAIL_CLOSED missing" ]; then
+  pass "DISPOSITION parser: zero markers for a requested claim_id fails closed as missing"
+else
+  fail "DISPOSITION parser: expected f5 FAIL_CLOSED missing, got: $DM_OUT"
+fi
+rm -f "$DM_FIXTURE_3"
+
+# 4. An unrecognized claim_id present in the text but never requested must
+# be ignored entirely -- never surfaced, never treated as a closure for
+# anything, and must not disturb parsing of the claim_id that WAS requested.
+DM_FIXTURE_4="$(mktemp)"
+cat > "$DM_FIXTURE_4" <<'EOF'
+DISPOSITION f6: RESOLVED -- this one was actually requested
+DISPOSITION f_never_requested: RESOLVED -- nobody asked about this claim_id
+EOF
+DM_OUT="$(bash "$DISPOSITION_PARSER" "$DM_FIXTURE_4" f6)"
+if [ "$(dm_line_for "$DM_OUT" f6)" = "f6 RESOLVED this one was actually requested" ] \
+  && ! printf '%s\n' "$DM_OUT" | grep -q "f_never_requested"; then
+  pass "DISPOSITION parser: an unrecognized/not-requested claim_id is ignored, never invented as a closure"
+else
+  fail "DISPOSITION parser: expected only f6 RESOLVED in output, got: $DM_OUT"
+fi
+rm -f "$DM_FIXTURE_4"
+
+# 5. Empty reason -- must fail closed as "empty_reason".
+DM_FIXTURE_5="$(mktemp)"
+cat > "$DM_FIXTURE_5" <<'EOF'
+DISPOSITION f7: RESOLVED --
+EOF
+DM_OUT="$(bash "$DISPOSITION_PARSER" "$DM_FIXTURE_5" f7)"
+if [ "$(dm_line_for "$DM_OUT" f7)" = "f7 FAIL_CLOSED empty_reason" ]; then
+  pass "DISPOSITION parser: an empty reason fails closed as empty_reason"
+else
+  fail "DISPOSITION parser: expected f7 FAIL_CLOSED empty_reason, got: $DM_OUT"
+fi
+rm -f "$DM_FIXTURE_5"
+
+# 6. Em dash instead of ASCII "--" -- claim-ledger.md section 4 explicitly
+# worries about exactly this: a byte-for-byte mismatched separator must
+# never match, leaving the claim un-parsed (fails closed as "missing", since
+# zero valid markers were found for it).
+DM_FIXTURE_6="$(mktemp)"
+printf 'DISPOSITION f8: RESOLVED \xe2\x80\x94 em dash used instead of two ASCII hyphens\n' > "$DM_FIXTURE_6"
+DM_OUT="$(bash "$DISPOSITION_PARSER" "$DM_FIXTURE_6" f8)"
+if [ "$(dm_line_for "$DM_OUT" f8)" = "f8 FAIL_CLOSED missing" ]; then
+  pass "DISPOSITION parser: an em dash separator never matches the ASCII '--' grammar, fails closed"
+else
+  fail "DISPOSITION parser: expected f8 FAIL_CLOSED missing (em dash must not match), got: $DM_OUT"
+fi
+rm -f "$DM_FIXTURE_6"
+
+# --- parallel-mode coverage merge fixtures (parallel-mode.md / SKILL.md's ---
+# --- "Round-1 N-group merge" worst-case-wins rule) ---
+# Exercises tests/fixtures/parallel-coverage-merge.jq. Pure jq over inline
+# JSON arrays -- no wrapper dispatch, no fake-codex involved.
+
+COVERAGE_MERGE_JQ="$SCRIPT_DIR/fixtures/parallel-coverage-merge.jq"
+
+cov_merge() {
+  # $1 = JSON array of {status, omitted} group coverage.source objects
+  printf '%s' "$1" | jq -c -f "$COVERAGE_MERGE_JQ"
+}
+
+# 1. All groups complete -> merged complete, empty omitted.
+COV_ALL_COMPLETE='[{"status":"complete","omitted":[]},{"status":"complete","omitted":[]},{"status":"complete","omitted":[]}]'
+COV_OUT="$(cov_merge "$COV_ALL_COMPLETE")"
+if [ "$COV_OUT" = '{"status":"complete","omitted":[]}' ]; then
+  pass "coverage merge: all groups complete merges to complete with empty omitted"
+else
+  fail "coverage merge: expected complete/empty, got: $COV_OUT"
+fi
+
+# 2. One partial among otherwise-complete groups -> merged partial, carrying
+# that group's own omitted list.
+COV_ONE_PARTIAL='[{"status":"complete","omitted":[]},{"status":"partial","omitted":[{"path":"a.bin","reason":"binary_file"}]},{"status":"complete","omitted":[]}]'
+COV_OUT="$(cov_merge "$COV_ONE_PARTIAL")"
+COV_EXPECTED='{"status":"partial","omitted":[{"path":"a.bin","reason":"binary_file"}]}'
+if [ "$COV_OUT" = "$COV_EXPECTED" ]; then
+  pass "coverage merge: one partial group among complete ones merges to partial, carrying its omitted list"
+else
+  fail "coverage merge: expected $COV_EXPECTED, got: $COV_OUT"
+fi
+
+# 3. Two partial groups with an overlapping (path, reason) pair -> merged
+# omitted has that pair only once (deduplicated), since every group reviews
+# the identical full diff and would otherwise report the same skipped file
+# once PER GROUP.
+COV_TWO_PARTIAL_OVERLAP='[{"status":"partial","omitted":[{"path":"a.bin","reason":"binary_file"}]},{"status":"partial","omitted":[{"path":"a.bin","reason":"binary_file"},{"path":"b.bin","reason":"too_large"}]}]'
+COV_OUT="$(cov_merge "$COV_TWO_PARTIAL_OVERLAP")"
+COV_A_COUNT="$(printf '%s' "$COV_OUT" | jq '[.omitted[] | select(.path == "a.bin" and .reason == "binary_file")] | length')"
+COV_B_COUNT="$(printf '%s' "$COV_OUT" | jq '[.omitted[] | select(.path == "b.bin" and .reason == "too_large")] | length')"
+if [ "$(printf '%s' "$COV_OUT" | jq -r '.status')" = "partial" ] && [ "$COV_A_COUNT" = "1" ] && [ "$COV_B_COUNT" = "1" ]; then
+  pass "coverage merge: an overlapping (path, reason) pair across two partial groups is deduplicated to one entry"
+else
+  fail "coverage merge: expected exactly one a.bin/binary_file entry and one b.bin/too_large entry, got: $COV_OUT"
+fi
+
+# 4. A mix of complete and unknown, with no partial present at all -> per
+# the documented precedence ("'partial' ... if any group reported 'partial',
+# else the 'unknown' sentinel if the rest reported 'unknown'"), this merges
+# to unknown, not complete -- "complete" requires EVERY group to be complete.
+COV_MIX_UNKNOWN='[{"status":"complete","omitted":[]},{"status":"unknown","omitted":[]}]'
+COV_OUT="$(cov_merge "$COV_MIX_UNKNOWN")"
+if [ "$(printf '%s' "$COV_OUT" | jq -r '.status')" = "unknown" ]; then
+  pass "coverage merge: a complete+unknown mix with no partial group merges to unknown per the documented precedence"
+else
+  fail "coverage merge: expected status=unknown, got: $COV_OUT"
+fi
+
+# --- aggregated findings[] group-tagging + claim_id join-key fixtures ---
+# (parallel-mode.md's groups[] JSONL section + SKILL.md's Phase 3 "claims"
+# join-key expression). Exercises tests/fixtures/aggregate-findings-groups.jq
+# and tests/fixtures/claim-key-from-finding.jq. Pure jq over inline JSON --
+# no wrapper dispatch, no fake-codex involved.
+
+AGGREGATE_JQ="$SCRIPT_DIR/fixtures/aggregate-findings-groups.jq"
+CLAIM_KEY_JQ="$SCRIPT_DIR/fixtures/claim-key-from-finding.jq"
+
+# 1. Two groups, two findings each -> 4 tagged items with correct "group"
+# field, then correctly-prefixed join keys (g1:f1, g1:f2, g2:f1, g2:f2).
+AGG_INPUT='[{"group":"g1","codex_review":{"findings":[{"id":"f1"},{"id":"f2"}]}},{"group":"g2","codex_review":{"findings":[{"id":"f1"},{"id":"f2"}]}}]'
+AGG_OUT="$(printf '%s' "$AGG_INPUT" | jq -c -f "$AGGREGATE_JQ")"
+AGG_EXPECTED='[{"id":"f1","group":"g1"},{"id":"f2","group":"g1"},{"id":"f1","group":"g2"},{"id":"f2","group":"g2"}]'
+if [ "$AGG_OUT" = "$AGG_EXPECTED" ]; then
+  pass "aggregate findings: two groups' findings are concatenated, each tagged with its source group"
+else
+  fail "aggregate findings: expected $AGG_EXPECTED, got: $AGG_OUT"
+fi
+KEY_OUT="$(printf '%s' "$AGG_OUT" | jq -c -f "$CLAIM_KEY_JQ")"
+KEY_EXPECTED='["g1:f1","g1:f2","g2:f1","g2:f2"]'
+if [ "$KEY_OUT" = "$KEY_EXPECTED" ]; then
+  pass "claim key join: group-tagged findings produce group-prefixed claim_id keys"
+else
+  fail "claim key join: expected $KEY_EXPECTED, got: $KEY_OUT"
+fi
+
+# 2. Single-reviewer shape (no "group" field anywhere) -> keys fall through
+# to the bare id, unifying both shapes in one expression.
+SINGLE_REVIEWER_FINDINGS='[{"id":"f1"},{"id":"f2"}]'
+KEY_OUT="$(printf '%s' "$SINGLE_REVIEWER_FINDINGS" | jq -c -f "$CLAIM_KEY_JQ")"
+KEY_EXPECTED='["f1","f2"]'
+if [ "$KEY_OUT" = "$KEY_EXPECTED" ]; then
+  pass "claim key join: single-reviewer findings (no group field) fall through to the bare id"
+else
+  fail "claim key join: expected $KEY_EXPECTED, got: $KEY_OUT"
+fi
+
 rm -rf "$FAKE_HOME" "$FAKE_BIN_DIR" "$PD_REPO"
 
 echo ""

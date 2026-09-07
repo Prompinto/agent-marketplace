@@ -966,6 +966,25 @@ CLOSED (Phase 4 Item 2, headless CI entry point, merged and validated).
   project's own recurring practice of running `/ccs` adversarially against its own changes — the
   most rigorous validation achievable for natural-language-interpreted control flow with current
   tooling. A separate deterministic test harness for LLM-interpreted prose is out of scope.
+
+  **Update (2026-09-07):** two concrete additions were made on top of this conclusion, neither of
+  which reverses it. **Tier 1** extracted the reference docs' own deterministic algorithms — the
+  claim-ledger reducer, the `DISPOSITION` marker parser, the parallel-mode coverage/findings merges
+  (`references/claim-ledger.md`, `references/parallel-mode.md`) — into real, fixture-tested `jq`
+  filters alongside `tests/test-run-ccs-review.sh`'s existing suite (see that file); these were
+  never genuine LLM judgment to begin with, just prose descriptions of pure functions Claude was
+  already instructed to compute mechanically, so extracting them is a pure extension of the
+  existing pattern, not new coverage of the orchestration prose itself. **Tier 2** added
+  `codex-stream-review/evals/` — a suite of on-demand eval scenarios, each a crafted fixture plus a
+  real, live `/ccs`-equivalent session plus a structural checker (`check-result.sh`) against the
+  durable `.result.json` artifact (`schemas/interactive-result.schema.json`) that session produces.
+  This DOES exercise genuine LLM judgment (retry-decision-tree branches, convergence, parallel-mode
+  dispatch/aggregation) — but it is a repeatable real-scenario-plus-structural-check asset, not a
+  deterministic unit test; the underlying conclusion above (no deterministic harness can validate
+  LLM-interpreted prose the way `bash -n`/ShellCheck/the fixture suite validate real code) still
+  stands exactly as written. See `codex-stream-review/evals/README.md` for the full scenario index,
+  which scenarios are actually built and verified versus merely specified, and why this harness is
+  intentionally kept out of push/PR-triggered CI.
 - **#6** (`kill_process_group`'s `kill -TERM/-KILL -"$pid"` assumes Codex never `setsid()`s a child
   out of its process group; unverified) — **CLOSED, verified live 2026-09-06**. A real
   `codex exec --sandbox read-only` dispatch was launched using `set -m` (monitor mode) with the
