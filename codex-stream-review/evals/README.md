@@ -163,6 +163,19 @@ problem a different way: asserting only that a genuine semantic terminal state w
 an exact round count or finding wording), which is stable across repeated real runs even though the
 exact path to get there is not.
 
+For someone who still wants to check consistency across several repeated live runs of one of these
+two scenarios, `check-consistency.sh` is the recommended tool: it wraps `check-result.sh` per file
+and reports a bucketed breakdown plus a `consistency_rate` across however many `.result.json` files
+you hand it, e.g.:
+
+```bash
+bash codex-stream-review/evals/check-consistency.sh claim-ledger-live-acceptance run1.result.json run2.result.json run3.result.json
+```
+
+It is NOT useful for any of the other 30 scripted (fake-codex-driven) scenarios in this harness --
+those each have exactly one structurally forced outcome already, so there is no consistency question
+to ask of them.
+
 ## Why this is NOT part of push/PR-triggered CI
 
 `.github/workflows/codex-stream-review-ci.yml` is a bare shell-script CI runner (ShellCheck,
@@ -171,11 +184,21 @@ Claude Code agent in the loop. Running one of these eval scenarios means actuall
 `codex-stream-review:ccs` skill through a real multi-round Claude+Codex conversation -- an LLM
 agent interpreting `SKILL.md`'s prose and making the same judgment calls a real run makes. A plain
 `bash` CI step structurally cannot do that on its own; it would need a headless
-`claude -p`-style invocation with API credentials wired into CI as repo secrets, which was checked
-during implementation and is not currently configured for this repo. So: this directory is the
-on-demand form only (`run-evals.sh`, invoked by a human or an agent before a release, after any
-`SKILL.md`/reference-file change, or for a health check) -- not wired into any CI trigger, manual
-`workflow_dispatch` or otherwise, at this time.
+`claude -p`-style invocation with API credentials wired into CI as repo secrets.
+
+Re-verification of this decision was ATTEMPTED on 2026-09-07 but could not be completed in this
+environment (the `gh` CLI is unauthenticated here, so this repo's Settings > Secrets and variables >
+Actions could not be inspected). The original decision therefore stands UNCHALLENGED, not
+reconfirmed, pending someone with actual repo admin access checking directly.
+
+For this to become buildable, all of the following would need to be true: a headless-capable
+credential (e.g. an API-key-based, non-interactive Claude Code invocation) stored as a repo secret,
+plus a `workflow_dispatch` job that runs a scenario's `setup.sh`, feeds its printed instructions to
+that headless invocation, and runs `check-result.sh` on the resulting artifact.
+
+So: this directory is the on-demand form only (`run-evals.sh`, invoked by a human or an agent before
+a release, after any `SKILL.md`/reference-file change, or for a health check) -- not wired into any
+CI trigger, manual `workflow_dispatch` or otherwise, at this time.
 
 This is the concrete answer to gap #5's disposition in
 `docs/2026-09-05-codex-stream-review-improvement-roadmap-design.md`: that document's original
@@ -210,12 +233,27 @@ evals/
   README.md              -- this file
   run-evals.sh            -- two-phase convenience runner (see above)
   check-result.sh         -- schema + scenario-specific validator for a .result.json
+  check-consistency.sh    -- aggregates check-result.sh outcomes across N repeated .result.json files
   lib/
     common.sh             -- shared setup.sh helpers (fixture repos, fake-codex injection, install-path resolution)
     schema-check.jq       -- structural validator for schemas/interactive-result.schema.json
+    check-thread-cleanup.sh -- confirms a "deleted" thread left no trace under ~/.codex/sessions/
   scenarios/
     <name>/
       setup.sh            -- creates the fixture, prints run instructions
       expect.sh            -- scenario-specific assertions on a .result.json (checked by check-result.sh)
       README.md            -- what it targets, how to run it, expected result
 ```
+
+### `lib/check-thread-cleanup.sh`
+
+Usage: `check-thread-cleanup.sh <result.json>`. For every `threads[]` entry in the given result with
+`cleanup:"deleted"`, this searches `~/.codex/sessions/` recursively for a filename containing that
+entry's `thread_id` -- a real match means the thread was reported deleted but its session file is
+still there, a genuine leak. Entries with `cleanup:"failed"` or `"retained"` are only reported
+informationally (already known-not-deleted by design, never counted as leaks).
+
+This only means something for a scenario that dispatched to a REAL `codex` CLI (currently:
+`parallel-live-acceptance`, `claim-ledger-live-acceptance`). For a fake-`codex`-driven scenario,
+`threads[]` entries never correspond to a real `~/.codex/sessions/` file at all, so this check is
+trivially a no-op pass for those, by design -- not a gap.

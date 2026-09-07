@@ -1413,6 +1413,54 @@ rm -rf "$FC_GROUP_STATE"
 
 rm -rf "$FAKE_HOME" "$FAKE_BIN_DIR" "$PD_REPO"
 
+# --- check-result.sh contract fixtures (schema-check.jq + a real scenario's ---
+# --- own expect.sh, exercised together) ---
+# Proves the FULL check-result.sh contract, not just schema-check.jq alone:
+# every case below passes the scenario name "clean-basic" (never omitted),
+# so a mutation that schema-check.jq would miss but clean-basic/expect.sh
+# would catch (or vice versa) is still caught here.
+
+CHECK_RESULT_SH="$SCRIPT_DIR/../evals/check-result.sh"
+
+# A single canned-valid result.json, simultaneously valid per
+# schemas/interactive-result.schema.json (via lib/schema-check.jq) and per
+# scenarios/clean-basic/expect.sh's own assertions (exit_state CLEAN,
+# round_count 1, one thread kind:current cleanup:deleted).
+CB_VALID_JSON='{"session_id":"cb-fixture-session","target":{"repo":"/tmp/cb-fixture-repo","scope":"uncommitted"},"exit_state":"CLEAN","round_count":1,"threads":[{"group":"main","thread_id":"cb-fixture-thread","kind":"current","cleanup":"deleted"}],"claims":[],"coverage":{"status":"complete","reviewed_file_count":0,"omitted":[]},"input_errors":null}'
+
+CB_VALID_FILE="$(mktemp)"
+printf '%s' "$CB_VALID_JSON" > "$CB_VALID_FILE"
+if bash "$CHECK_RESULT_SH" "$CB_VALID_FILE" clean-basic >/dev/null 2>&1; then
+  pass "check-result.sh contract: unmodified canned-valid clean-basic fixture PASSES"
+else
+  fail "check-result.sh contract: unmodified canned-valid clean-basic fixture should PASS, but failed"
+fi
+
+cb_mutation_should_fail() {
+  local label="$1" jq_filter="$2" mutated_file
+  mutated_file="$(mktemp)"
+  printf '%s' "$CB_VALID_JSON" | jq -c "$jq_filter" > "$mutated_file"
+  if bash "$CHECK_RESULT_SH" "$mutated_file" clean-basic >/dev/null 2>&1; then
+    fail "check-result.sh contract: $label should FAIL, but PASSED"
+  else
+    pass "check-result.sh contract: $label FAILS as expected"
+  fi
+  rm -f "$mutated_file"
+}
+
+cb_mutation_should_fail "exit_state set to a value outside the 7-value enum" \
+  '.exit_state = "BOGUS_STATE"'
+cb_mutation_should_fail "a required top-level field (session_id) deleted" \
+  'del(.session_id)'
+cb_mutation_should_fail "threads[0].cleanup set to a value outside deleted|failed|retained" \
+  '.threads[0].cleanup = "bogus"'
+cb_mutation_should_fail "round_count changed from a number to a string" \
+  '.round_count = "1"'
+cb_mutation_should_fail "round_count changed to a schema-valid but scenario-wrong value (2 instead of 1) -- fails clean-basic/expect.sh specifically, not schema-check.jq" \
+  '.round_count = 2'
+
+rm -f "$CB_VALID_FILE"
+
 echo ""
 if [ "$FAILURES" -eq 0 ]; then
   echo "All fixtures passed."
