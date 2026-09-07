@@ -44,7 +44,7 @@ parallel group just the same.
 (the same diff, but a different `--focus` per group), so ONE group can hit
 `run-ccs-review.sh`'s own `PROMPT_SIZE_LIMIT_BYTES` while another group has already dispatched
 successfully or even completed. `artifact_too_large` is classified as never-retried FOR THAT
-GROUP, exactly as it is for a single-reviewer round (see `SKILL.md`'s own Guards section). At the
+GROUP, exactly as it is for a single-reviewer round (see `references/retry-guards.md`). At the
 round level, this is just one more `ok:false` reason the existing "if ANY dispatched group returns
 `ok:false`, the round is not eligible for CLEAN, worst-case-wins" rule above already covers — no
 new round-level rule is needed, except: (a) other groups that already dispatched successfully this
@@ -139,7 +139,7 @@ and never exits the loop on its own separate cadence.
   here is a mechanical non-`"CLEAN"` placeholder value only, never a claim that real code defects
   were found — the actual reason (a group's review never completed) lives in that group's own raw
   `groups[]` entry, and the round as a whole is never eligible for `✅ CLEAN` in this state anyway
-  (it is `⚠️ COULD NOT VERIFY` once retries are exhausted, per `SKILL.md`'s own Guards section)
+  (it is `⚠️ COULD NOT VERIFY` once retries are exhausted, per `references/retry-guards.md`)
   regardless of what this aggregate field says.
   **`investigation_evidence`, when capture-evidence is ON for this session, is still a single
   top-level sibling field on the round's line — never nested per-group inside `groups[]` itself.**
