@@ -1,0 +1,93 @@
+name: codex-stream-review live eval (manual)
+
+# A prepared, honestly-incomplete skeleton for driving one
+# codex-stream-review/evals/ scenario on demand -- see
+# codex-stream-review/evals/README.md's "Why this is NOT part of
+# push/PR-triggered CI" section for the full context.
+#
+# workflow_dispatch ONLY, deliberately -- never push/pull_request. Every
+# dispatch always runs the chosen scenario's real setup.sh (needs no
+# credentials: setup.sh only creates local fixture repos/artifacts and
+# prints instructions, confirmed by reading the actual scenario setup.sh
+# files), so this workflow is genuinely exercised on every run, not just
+# theoretically wired. It stops short of actually DRIVING a live
+# codex-stream-review:ccs session against that fixture -- see the final step
+# below for exactly what is (and isn't) wired up.
+on:
+  workflow_dispatch:
+    inputs:
+      scenario:
+        description: 'Scenario directory name under codex-stream-review/evals/scenarios/'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  run-scenario:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate scenario against the real scenario directory allow-list
+        id: validate
+        env:
+          # Passed as a real environment variable, never interpolated directly into the
+          # script body -- a raw `${{ inputs.scenario }}` inside `run:` is substituted into
+          # the script's SOURCE TEXT before the shell ever runs it, so a value like
+          # `"; malicious; #` would execute as injected shell code before the allow-list
+          # check below ever gets a chance to reject it. Reading it back as $SCENARIO_INPUT
+          # closes that expression-injection boundary entirely.
+          SCENARIO_INPUT: ${{ inputs.scenario }}
+        run: |
+          SCENARIO="$SCENARIO_INPUT"
+          mapfile -t VALID_SCENARIOS < <(find codex-stream-review/evals/scenarios -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort)
+          MATCH=""
+          for s in "${VALID_SCENARIOS[@]}"; do
+            if [ "$SCENARIO" = "$s" ]; then
+              MATCH="$s"
+              break
+            fi
+          done
+          if [ -z "$MATCH" ]; then
+            echo "::error::Invalid scenario '${SCENARIO}'. Valid scenarios are:"
+            printf '  - %s\n' "${VALID_SCENARIOS[@]}"
+            exit 1
+          fi
+          # $MATCH is one of the enumerated directory basenames itself, never
+          # the raw input re-used verbatim -- this is what keeps an empty
+          # string, ".", "..", or a value containing "/" from ever reaching
+          # the setup.sh path below: none of those can equal a real
+          # directory basename returned by `find -mindepth 1 -type d`.
+          echo "scenario=$MATCH" >> "$GITHUB_OUTPUT"
+
+      - name: Run the validated scenario's setup.sh
+        id: setup
+        env:
+          # Same expression-injection avoidance as the validate step above -- also structurally
+          # safe on its own merits here (this value is one of the real directory basenames
+          # `find` just enumerated from the actual repo filesystem, never attacker-controlled
+          # free text), but routed through env: for the same defense-in-depth consistency.
+          VALIDATED_SCENARIO: ${{ steps.validate.outputs.scenario }}
+        run: |
+          # set -o pipefail is required: without it, `bash setup.sh | tee ...` reports tee's
+          # own exit status (almost always 0), silently masking a real setup.sh failure and
+          # letting the workflow finish "successfully" without ever having created a valid
+          # fixture -- confirmed directly (`false | tee /dev/null` exits 0 without pipefail,
+          # 1 with it).
+          set -o pipefail
+          bash "codex-stream-review/evals/scenarios/${VALIDATED_SCENARIO}/setup.sh" | tee /tmp/setup-output.txt
+
+      - name: Attempt the live headless eval
+        env:
+          CCS_HEADLESS_AGENT_CREDENTIAL: ${{ secrets.CCS_HEADLESS_AGENT_CREDENTIAL }}
+        run: |
+          if [ -z "$CCS_HEADLESS_AGENT_CREDENTIAL" ]; then
+            echo "This workflow is a prepared skeleton -- the CCS_HEADLESS_AGENT_CREDENTIAL secret is not configured, so no live eval can run. See codex-stream-review/evals/README.md's 'what would need to be true' section for exactly what's needed."
+            exit 0
+          fi
+          echo "=== scenario setup.sh output ==="
+          cat /tmp/setup-output.txt
+          echo "=== end scenario setup.sh output ==="
+          echo "CCS_HEADLESS_AGENT_CREDENTIAL is configured, but no headless-agent-driving mechanism exists yet to consume the output above and actually drive a live codex-stream-review:ccs session against it. Building that mechanism is out of scope for this workflow."

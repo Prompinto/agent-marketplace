@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# git pre-push hook -- ADVISORY ONLY, never real enforcement.
+#
+# This is trivially bypassable (`git push --no-verify`, or simply never
+# opting in via `git config core.hooksPath`) and never runs in CI or any
+# server-side context -- it only exists to remind a local, opted-in
+# developer to confirm that a push touching codex-stream-review's core
+# orchestration files was actually reviewed via codex-stream-review:ccs.
+#
+# Opt in with:
+#   git config core.hooksPath codex-stream-review/scripts/hooks
+set -u
+
+ZERO_SHA="0000000000000000000000000000000000000000"
+CORE_PATH_PATTERN='^codex-stream-review/(skills|scripts|schemas)/'
+EMPTY_TREE=""
+TOUCHED_FILES=""
+
+# git's pre-push hook contract: one line per pushed ref on THIS hook's own
+# stdin, `<local ref> <local sha> <remote ref> <remote sha>`. The `|| [ -n
+# "$local_ref" ]` guard (matching this project's own run-ccs-review.sh
+# read-loop convention) tolerates a final line with no trailing newline.
+# shellcheck disable=SC2034 # remote_ref is part of the pre-push line shape, unused by name
+while read -r local_ref local_sha remote_ref remote_sha || [ -n "${local_ref:-}" ]; do
+  [ -z "${local_sha:-}" ] && continue
+  # Deleting a ref pushes nothing to diff.
+  [ "$local_sha" = "$ZERO_SHA" ] && continue
+  if [ "$remote_sha" = "$ZERO_SHA" ]; then
+    # New branch/ref with no remote history yet -- diff against the empty
+    # tree instead, same pattern skills/ccs/SKILL.md already uses for the
+    # unborn-HEAD case.
+    [ -n "$EMPTY_TREE" ] || EMPTY_TREE="$(git hash-object -t tree /dev/null)"
+    base="$EMPTY_TREE"
+  else
+    base="$remote_sha"
+  fi
+  if files="$(git diff --name-only "$base" "$local_sha" -- 2>/dev/null)"; then
+    [ -z "$files" ] && continue
+    matched="$(printf '%s\n' "$files" | grep -E "$CORE_PATH_PATTERN")"
+    [ -n "$matched" ] && TOUCHED_FILES="${TOUCHED_FILES}${matched}
+"
+  else
+    # git diff itself failed (e.g. $base is a remote SHA not available locally, such as a
+    # force-updated remote branch that was never fetched) -- fail closed toward warning
+    # rather than silently treating an undiffable push as "no core files touched."
+    TOUCHED_FILES="${TOUCHED_FILES}(could not diff against ${base} -- treating conservatively as a possible core-path change)
+"
+  fi
+done
+
+[ -z "$TOUCHED_FILES" ] && exit 0
+
+echo "Push touches codex-stream-review core files:" >&2
+printf '%s' "$TOUCHED_FILES" | sed 's/^/  - /' >&2
+
+# The `{ exec 3<>/dev/tty; } 2>/dev/null` compound-command form is
+# REQUIRED -- a bare `exec 3<>/dev/tty 2>/dev/null` (no `{ }` grouping)
+# permanently redirects this WHOLE SCRIPT's stderr to /dev/null for the
+# rest of its execution once the exec succeeds, silently swallowing the
+# "Push aborted" message below. The `{ }` form scopes the stderr
+# suppression to only the exec attempt itself.
+if { exec 3<>/dev/tty; } 2>/dev/null; then
+  printf 'Push touches codex-stream-review core files. Confirm this was reviewed via codex-stream-review:ccs before pushing? [y/N] ' >&2
+  read -r CONFIRM <&3 || CONFIRM=""
+  exec 3<&-
+  case "$CONFIRM" in
+    y|Y) : ;;
+    # A read failure/EOF on an ALREADY-OPENED /dev/tty (e.g. Ctrl-D at the
+    # prompt) defaults to abort, same as any other non-"y" answer -- only
+    # /dev/tty's own OPEN failure (no controlling terminal at all) fails
+    # open, in the branch below.
+    *) echo "Push aborted: no confirmation given for a core codex-stream-review change." >&2; exit 1 ;;
+  esac
+else
+  echo "WARNING: pushing core codex-stream-review changes without an interactive confirmation (no controlling terminal available). Proceeding." >&2
+fi
+
+exit 0

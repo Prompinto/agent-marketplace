@@ -218,14 +218,34 @@ environment (the `gh` CLI is unauthenticated here, so this repo's Settings > Sec
 Actions could not be inspected). The original decision therefore stands UNCHALLENGED, not
 reconfirmed, pending someone with actual repo admin access checking directly.
 
-For this to become buildable, all of the following would need to be true: a headless-capable
-credential (e.g. an API-key-based, non-interactive Claude Code invocation) stored as a repo secret,
-plus a `workflow_dispatch` job that runs a scenario's `setup.sh`, feeds its printed instructions to
-that headless invocation, and runs `check-result.sh` on the resulting artifact.
+`.github/workflows/codex-stream-review-live-eval.yml` (added since the paragraph above) is a
+`workflow_dispatch`-only skeleton for exactly this gap -- it takes a `scenario` input, validates it
+against a real allow-list (the actual scenario directory basenames under `scenarios/`, not a
+hand-maintained list), and always runs that scenario's own `setup.sh` on every manual dispatch, so
+the skeleton is genuinely exercised (not just theoretically wired) every time it runs. Its current
+honest state: wired through the real `setup.sh` path, blocked only on a `CCS_HEADLESS_AGENT_CREDENTIAL`
+repo secret (not configured; the workflow prints a clear message and exits 0 when it's absent) plus a
+headless-agent-driving mechanism BUILT FOR THIS SHAPE, which does not exist yet -- something that
+would take a scenario's own printed task text and `FAKE_CODEX`/`PATH`-injection instructions, drive a
+live `codex-stream-review:ccs` session against them non-interactively, and validate the resulting
+`.result.json` via `check-result.sh`.
+
+This is a related but DISTINCT gap from `scripts/run-ccs-ci.sh` / `.github/workflows/ccs-ci-review.yml`
+(Phase 4 Item 2, already built and PR-triggered): that mechanism headlessly drives `claude -p` through
+the same unmodified `codex-stream-review:ccs` skill, but for a completely different job -- reviewing a
+real PR's own diff against its base branch and emitting `schemas/ci-result.schema.json` (a CI-specific
+pass/fail mapping), never a scenario's `FAKE_CODEX`-scripted fixture, and never
+`schemas/interactive-result.schema.json` (what `check-result.sh` here actually validates). Pointing
+`codex-stream-review-live-eval.yml` at `run-ccs-ci.sh` as-is would not produce a `check-result.sh`-
+validatable artifact at all -- a genuine adapter (or a new, eval-shaped sibling script) would still
+need to be built. So: a headless-capable credential exists in principle (this repo's CI already uses
+`ANTHROPIC_API_KEY`/`OPENAI_API_KEY` for the PR-review pipeline), but no mechanism yet drives an eval
+*scenario* specifically, which is what `CCS_HEADLESS_AGENT_CREDENTIAL` stands in for above as a
+placeholder pending that design work.
 
 So: this directory is the on-demand form only (`run-evals.sh`, invoked by a human or an agent before
 a release, after any `SKILL.md`/reference-file change, or for a health check) -- not wired into any
-CI trigger, manual `workflow_dispatch` or otherwise, at this time.
+CI trigger that runs unattended end-to-end, manual `workflow_dispatch` or otherwise, at this time.
 
 This is the concrete answer to gap #5's disposition in
 `docs/2026-09-05-codex-stream-review-improvement-roadmap-design.md`: that document's original
@@ -284,3 +304,17 @@ This only means something for a scenario that dispatched to a REAL `codex` CLI (
 `parallel-live-acceptance`, `claim-ledger-live-acceptance`). For a fake-`codex`-driven scenario,
 `threads[]` entries never correspond to a real `~/.codex/sessions/` file at all, so this check is
 trivially a no-op pass for those, by design -- not a gap.
+
+## Development
+
+`scripts/hooks/pre-push` is an ADVISORY-only git pre-push hook -- never real enforcement (trivially
+bypassed by `git push --no-verify`, or by simply not opting in), and it never runs in CI or any
+server-side context. It warns and asks for interactive confirmation only when a push touches
+codex-stream-review's core orchestration files (`skills/`, `scripts/`, `schemas/`), as a reminder to
+have run those changes through `codex-stream-review:ccs` first.
+
+Opt in with:
+
+```bash
+git config core.hooksPath codex-stream-review/scripts/hooks
+```
