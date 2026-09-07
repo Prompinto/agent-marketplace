@@ -32,6 +32,13 @@
 #                         can detect "dispatch genuinely began" (needed for
 #                         --resume, which has no thread.started event to
 #                         poll for)
+#   FAKE_CODEX_CLEANUP_OK  when set (any value), `codex delete --force --
+#                         <threadId>` (the wrapper's --cleanup mode) exits 0
+#                         instead of its default failing behavior. Unset
+#                         (default): unchanged, always fails -- every
+#                         existing test-run-ccs-review.sh --cleanup fixture
+#                         relies on this default and passes a deliberately
+#                         nonexistent threadId.
 #   FAKE_CODEX_COMMANDS   newline-separated shell command strings (blank
 #                         lines skipped). When set, emits one
 #                         {"type":"item.completed","item":{"type":"command_execution",...}}
@@ -80,11 +87,20 @@ set -u
 # `codex delete --force -- <threadId>` (run-ccs-review.sh's --cleanup mode)
 # is a completely separate subcommand from `exec`/`exec resume` -- handled
 # here, first, so this fixture is a full drop-in for every way the wrapper
-# ever invokes `codex`, not just its exec paths. Always fails (nonzero
-# exit): every caller of --cleanup in this test suite passes a
+# ever invokes `codex`, not just its exec paths. Fails (nonzero exit) by
+# default: every caller of --cleanup in tests/test-run-ccs-review.sh passes a
 # deliberately nonexistent threadId, so "delete failed" is the realistic,
-# correct simulated outcome, not a special case invented for this fixture.
+# correct simulated outcome there, not a special case invented for this
+# fixture. FAKE_CODEX_CLEANUP_OK (unset by default, so every existing test
+# above is byte-for-byte unaffected) opts into the opposite, successful
+# outcome instead -- needed by codex-stream-review/evals/, which drives a
+# real end-to-end /ccs session and needs to observe genuine
+# threads[].cleanup:"deleted" in the resulting .result.json, not just the
+# always-fails path this fixture only exercised until now.
 if [ "${1:-}" = "delete" ]; then
+  if [ -n "${FAKE_CODEX_CLEANUP_OK:-}" ]; then
+    exit 0
+  fi
   echo "fake-codex: no such thread" >&2
   exit 1
 fi

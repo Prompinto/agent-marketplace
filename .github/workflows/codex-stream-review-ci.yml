@@ -31,12 +31,19 @@ jobs:
             codex-stream-review/scripts/run-ccs-review.sh \
             codex-stream-review/scripts/lib/git-safe.sh \
             codex-stream-review/scripts/run-stream-review.sh
+          # Lint-only, not executed here: codex-stream-review/evals/ scenario
+          # scripts need a live agent to actually run (see its own README),
+          # but their shell syntax/quoting can still be checked cheaply.
+          find codex-stream-review/evals -name '*.sh' -print0 \
+            | xargs -0 shellcheck --severity=warning
 
       - name: bash -n syntax check
         run: |
           bash -n codex-stream-review/scripts/run-ccs-review.sh
           bash -n codex-stream-review/scripts/lib/git-safe.sh
           bash -n codex-stream-review/scripts/run-stream-review.sh
+          find codex-stream-review/evals -name '*.sh' -print0 \
+            | xargs -0 -n1 bash -n
 
       - name: Fixture suite
         run: bash codex-stream-review/tests/test-run-ccs-review.sh

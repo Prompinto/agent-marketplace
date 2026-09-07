@@ -170,8 +170,11 @@ cat > "$FOCUS_RECEIVED_FILE"
 # run-ccs-review.sh's own `_focus_is_empty()` semantics exactly. The
 # stripped copy is only ever used for this check; the real content sent to
 # `codex exec` still comes from $FOCUS_RECEIVED_FILE's own unmodified bytes.
-FOCUS_STRIPPED="$(cat "$FOCUS_RECEIVED_FILE")"
-FOCUS_STRIPPED="${FOCUS_STRIPPED//[[:space:]]/}"
+# Stripped via `tr -d`, never bash's own `${var//pattern/}` substitution --
+# confirmed directly that the bash form is catastrophically superlinear on
+# this input shape (a ~6KB whitespace-heavy file measured at ~13s), while
+# `tr -d` handles the same input in well under a second.
+FOCUS_STRIPPED="$(tr -d '[:space:]' < "$FOCUS_RECEIVED_FILE")"
 if [ -z "$FOCUS_STRIPPED" ]; then
   printf '{"ok":false,"reason":"bad_args","detail":"require non-empty (non-whitespace-only) focus text on stdin"}\n'
   exit 1

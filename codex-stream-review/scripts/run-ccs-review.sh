@@ -128,15 +128,18 @@ build_execution_json() {
 # missing, empty, or whitespace-only. Shared by every caller that branches
 # on "was real context supplied" so they all use the identical definition
 # -- a plain `[ -s "$FOCUS_RECEIVED_FILE" ]` would treat a whitespace-only
-# file as non-empty. Reads via a plain command substitution (which strips
-# trailing newlines) -- fine here, since an emptiness check strips ALL
-# whitespace anyway; this is never used to recover the actual focus text
+# file as non-empty. This is never used to recover the actual focus text
 # (see build_review_prompt(), which reads $FOCUS_RECEIVED_FILE directly,
 # byte-for-byte, never through this function).
+#
+# Strips whitespace via `tr -d`, never bash's own `${var//pattern/}`
+# substitution -- confirmed directly that the bash form is catastrophically
+# superlinear on this input shape (a ~6KB whitespace-heavy file measured at
+# ~13s; near PROMPT_SIZE_LIMIT_BYTES's 131072-byte ceiling this would hang
+# for hours), while `tr -d` handles the same input in well under a second.
 _focus_is_empty() {
   local stripped
-  stripped="$(cat "$FOCUS_RECEIVED_FILE" 2>/dev/null)"
-  stripped="${stripped//[[:space:]]/}"
+  stripped="$(tr -d '[:space:]' < "$FOCUS_RECEIVED_FILE" 2>/dev/null)"
   [ -z "$stripped" ]
 }
 
