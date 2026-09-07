@@ -25,9 +25,12 @@
 #
 # There is no "run everything" mode and no --repeat flag here, for the same
 # structural reason: neither can be scripted without a live agent driving
-# each individual run. See codex-stream-review/evals/README.md for the full
-# scenario index, the PATH-per-call mechanical caveat every scenario's own
-# README repeats, and why this harness is not part of push/PR-triggered CI.
+# each individual run. For aggregating a consistency rate across N such
+# already-produced .result.json files from repeated manual/live runs, see
+# check-consistency.sh instead. See codex-stream-review/evals/README.md for
+# the full scenario index, the PATH-per-call mechanical caveat every
+# scenario's own README repeats, and why this harness is not part of
+# push/PR-triggered CI.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
