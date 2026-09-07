@@ -22,8 +22,8 @@ def base_violations:
       then "target must be an object with repo/scope" else empty end),
     (if (.target.scope as $s | ["uncommitted","base","commit"] | index($s)) == null
       then "target.scope must be one of uncommitted|base|commit" else empty end),
-    (if (.exit_state as $e | ["CLEAN","NOT_CONVERGED","COULD_NOT_VERIFY","PARTIAL_COVERAGE","SNAPSHOT_INTEGRITY_FAILURE","REVIEW_LOG_INTEGRITY_FAILURE","INPUT_TOO_LARGE"] | index($e)) == null
-      then "exit_state must be one of the 7 documented values" else empty end),
+    (if (.exit_state as $e | ["CLEAN","NOT_CONVERGED","COULD_NOT_VERIFY","PARTIAL_COVERAGE","MINOR_ISSUES_ACKNOWLEDGED","SNAPSHOT_INTEGRITY_FAILURE","REVIEW_LOG_INTEGRITY_FAILURE","INPUT_TOO_LARGE"] | index($e)) == null
+      then "exit_state must be one of the 8 documented values" else empty end),
     (if (.round_count | type) != "number" or .round_count < 0
       then "round_count must be a non-negative integer" else empty end),
     (if (.threads | type) != "array"

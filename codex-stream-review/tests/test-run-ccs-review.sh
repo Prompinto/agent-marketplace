@@ -1025,6 +1025,176 @@ else
 fi
 rm -f "$CL_FIXTURE_4"
 
+# --- quick-mode canonical-severity/MINOR_ISSUES_ACKNOWLEDGED decision fixtures ---
+# (SKILL.md's Guards section, "Quick-mode early stop -- MINOR ISSUES ACKNOWLEDGED")
+# Exercises tests/fixtures/quick-mode-decision.jq, the jq filter implementing the
+# canonical-current-severity lookup (most-recent occurrence, not origin) plus the
+# MINOR_ISSUES_ACKNOWLEDGED eligibility decision. Pure jq over hand-built JSONL fixtures -- no
+# wrapper dispatch, no fake-codex involved. This is also the ONLY coverage for two severity
+# values (`critical`, and an unparseable string) that CANNOT be driven through a live dispatch at
+# all: `scripts/run-ccs-review.sh`'s own semantic-verdict check rejects any severity outside
+# low/medium/high/null as schema_mismatch before a finding ever reaches Phase 2 -- see
+# evals/scenarios/quick-mode-escalation-critical/README.md and
+# evals/scenarios/quick-mode-unparseable-severity-fail-closed/README.md for the full evidence
+# chain and why those two are documentation-only stubs, not live Tier 2 scenarios.
+
+QUICK_DECISION_JQ="$SCRIPT_DIR/fixtures/quick-mode-decision.jq"
+
+qd_decide() {
+  # $1 = jsonl file; prints one compact JSON object per distinct claim_id, then one final
+  # aggregate decision line.
+  jq -n -c -f "$QUICK_DECISION_JQ" "$1"
+}
+qd_decision_line() {
+  # $1 = qd_decide output (one obj per line) -- the aggregate decision is always the LAST line.
+  printf '%s\n' "$1" | tail -1
+}
+
+# 1. Sole open claim's latest severity is "medium" -> MINOR_ISSUES_ACKNOWLEDGED.
+QD_FIXTURE_1="$(mktemp)"
+cat > "$QD_FIXTURE_1" <<'EOF'
+{"round":1,"codex_review":{"findings":[{"id":"f1","severity":"medium"}]},"claude_verification":[{"finding_id":"f1","claim_id":"f1","action":"reject_with_rationale"}]}
+{"round":2,"codex_review":{"findings":[{"id":"f1","severity":"medium"}]},"claude_verification":[{"finding_id":"f1","claim_id":"f1","action":"reject_with_rationale","evidence_delta":"new"}]}
+EOF
+QD_OUT="$(qd_decide "$QD_FIXTURE_1")"
+QD_DECISION="$(qd_decision_line "$QD_OUT")"
+if [ "$(printf '%s' "$QD_DECISION" | jq -r '.decision')" = "MINOR_ISSUES_ACKNOWLEDGED" ] && [ "$(printf '%s' "$QD_DECISION" | jq -r '.open_count')" = "1" ]; then
+  pass "quick-mode decision: sole open claim with canonical severity medium -> MINOR_ISSUES_ACKNOWLEDGED"
+else
+  fail "quick-mode decision: expected MINOR_ISSUES_ACKNOWLEDGED open_count=1, got: $QD_OUT"
+fi
+rm -f "$QD_FIXTURE_1"
+
+# 2. Sole open claim's latest severity is "critical" -- structurally unreachable via a real
+# dispatch (schema_mismatch would fire first), but this filter must still correctly reject it as
+# NOT eligible for MINOR_ISSUES_ACKNOWLEDGED, AND -- separately -- must set escalated:true.
+# Asserting BOTH matters: a bug that only checks HIGH (never CRITICAL) for the ESCALATED/MAX_ROUNDS
+# rule would still produce NOT_ELIGIBLE here for an unrelated reason (critical isn't LOW/MEDIUM
+# either way), so the decision field ALONE cannot distinguish "escalation correctly includes
+# CRITICAL" from "escalation only checks HIGH" -- escalated must be asserted directly.
+QD_FIXTURE_2="$(mktemp)"
+cat > "$QD_FIXTURE_2" <<'EOF'
+{"round":1,"codex_review":{"findings":[{"id":"f2","severity":"critical"}]},"claude_verification":[{"finding_id":"f2","claim_id":"f2","action":"reject_with_rationale"}]}
+EOF
+QD_OUT="$(qd_decide "$QD_FIXTURE_2")"
+QD_DECISION="$(qd_decision_line "$QD_OUT")"
+if [ "$(printf '%s' "$QD_DECISION" | jq -r '.decision')" = "NOT_ELIGIBLE" ] && [ "$(printf '%s' "$QD_DECISION" | jq -r '.escalated')" = "true" ]; then
+  pass "quick-mode decision: sole open claim with canonical severity CRITICAL is NOT eligible for MINOR_ISSUES_ACKNOWLEDGED, AND sets escalated:true"
+else
+  fail "quick-mode decision: expected NOT_ELIGIBLE + escalated:true for a CRITICAL-severity open claim, got: $QD_OUT"
+fi
+rm -f "$QD_FIXTURE_2"
+
+# 3. Sole open claim's latest severity is an unparseable string ("SEV-2") -- also structurally
+# unreachable via a real dispatch, must fail closed to NOT_ELIGIBLE, never treated as minor and
+# never treated as a third "ambiguous" category.
+QD_FIXTURE_3="$(mktemp)"
+cat > "$QD_FIXTURE_3" <<'EOF'
+{"round":1,"codex_review":{"findings":[{"id":"f3","severity":"SEV-2"}]},"claude_verification":[{"finding_id":"f3","claim_id":"f3","action":"reject_with_rationale"}]}
+EOF
+QD_OUT="$(qd_decide "$QD_FIXTURE_3")"
+QD_DECISION="$(qd_decision_line "$QD_OUT")"
+if [ "$(printf '%s' "$QD_DECISION" | jq -r '.decision')" = "NOT_ELIGIBLE" ]; then
+  pass "quick-mode decision: sole open claim with an unparseable severity string fails closed to NOT_ELIGIBLE"
+else
+  fail "quick-mode decision: expected NOT_ELIGIBLE for an unparseable-severity open claim, got: $QD_OUT"
+fi
+rm -f "$QD_FIXTURE_3"
+
+# 4. Sole open claim's severity was never recorded (null on its only occurrence) -- the MISSING
+# fail-closed subcase must never be treated as "no data, so pass."
+QD_FIXTURE_4="$(mktemp)"
+cat > "$QD_FIXTURE_4" <<'EOF'
+{"round":1,"codex_review":{"findings":[{"id":"f4","severity":null}]},"claude_verification":[{"finding_id":"f4","claim_id":"f4","action":"reject_with_rationale"}]}
+EOF
+QD_OUT="$(qd_decide "$QD_FIXTURE_4")"
+QD_DECISION="$(qd_decision_line "$QD_OUT")"
+if [ "$(printf '%s' "$QD_DECISION" | jq -r '.decision')" = "NOT_ELIGIBLE" ]; then
+  pass "quick-mode decision: sole open claim with a MISSING (null) severity fails closed to NOT_ELIGIBLE"
+else
+  fail "quick-mode decision: expected NOT_ELIGIBLE for a MISSING-severity open claim, got: $QD_OUT"
+fi
+rm -f "$QD_FIXTURE_4"
+
+# 5. Most-recent-occurrence wins, not origin: severity starts "high" round 1, downgraded to
+# "medium" by its latest occurrence round 2 -> canonical severity must be "medium" (eligible),
+# proving this lookup is NOT the same as Phase 3's own origin-severity claims[] join.
+QD_FIXTURE_5="$(mktemp)"
+cat > "$QD_FIXTURE_5" <<'EOF'
+{"round":1,"codex_review":{"findings":[{"id":"f5","severity":"high"}]},"claude_verification":[{"finding_id":"f5","claim_id":"f5","action":"reject_with_rationale"}]}
+{"round":2,"codex_review":{"findings":[{"id":"f5","severity":"medium"}]},"claude_verification":[{"finding_id":"f5","claim_id":"f5","action":"reject_with_rationale","evidence_delta":"new"}]}
+EOF
+QD_OUT="$(qd_decide "$QD_FIXTURE_5")"
+QD_DECISION="$(qd_decision_line "$QD_OUT")"
+QD_ENTRY="$(printf '%s\n' "$QD_OUT" | jq -c --arg id f5 'select(.claim_id == $id)')"
+if [ "$(printf '%s' "$QD_ENTRY" | jq -r '.canonical_severity')" = "medium" ] && [ "$(printf '%s' "$QD_DECISION" | jq -r '.decision')" = "MINOR_ISSUES_ACKNOWLEDGED" ]; then
+  pass "quick-mode decision: canonical severity uses the MOST RECENT occurrence (medium), not the origin (high)"
+else
+  fail "quick-mode decision: expected canonical_severity=medium (most-recent, not origin high), got: $QD_OUT"
+fi
+rm -f "$QD_FIXTURE_5"
+
+# 6. No open claims at all (K=0, the sole claim already resolved) -- never eligible regardless of
+# its last-known severity.
+QD_FIXTURE_6="$(mktemp)"
+cat > "$QD_FIXTURE_6" <<'EOF'
+{"round":1,"codex_review":{"findings":[{"id":"f6","severity":"medium"}]},"claude_verification":[{"finding_id":"f6","claim_id":"f6","action":"accept"}]}
+{"round":2,"claim_closures":[{"claim_id":"f6","disposition":"resolved","source_round":2,"marker_reason":"fixed"}]}
+EOF
+QD_OUT="$(qd_decide "$QD_FIXTURE_6")"
+QD_DECISION="$(qd_decision_line "$QD_OUT")"
+if [ "$(printf '%s' "$QD_DECISION" | jq -r '.decision')" = "NOT_ELIGIBLE" ] && [ "$(printf '%s' "$QD_DECISION" | jq -r '.open_count')" = "0" ]; then
+  pass "quick-mode decision: zero open claims (K=0) is never eligible for MINOR_ISSUES_ACKNOWLEDGED"
+else
+  fail "quick-mode decision: expected NOT_ELIGIBLE open_count=0, got: $QD_OUT"
+fi
+rm -f "$QD_FIXTURE_6"
+
+# 7. A genuine RE-RAISE: the claim's ORIGIN finding_id (f7, round 1, severity medium) differs from
+# its most-recent occurrence's OWN finding_id (f8, round 2, severity null -- claude_verification
+# maps f8's claim_id back to f7). The canonical-severity lookup must follow f8 (the actual most
+# recent occurrence's own finding_id), never fall back to matching against the claim_id (f7)
+# itself -- that exact confusion was a real bug found and fixed via adversarial review: matching
+# findings by claim_id instead of by the latest verification's own finding_id silently returns the
+# ORIGIN severity for any re-raise, exactly backwards from the "most recent occurrence" rule this
+# filter exists to implement.
+QD_FIXTURE_7="$(mktemp)"
+cat > "$QD_FIXTURE_7" <<'EOF'
+{"round":1,"codex_review":{"findings":[{"id":"f7","severity":"medium"}]},"claude_verification":[{"finding_id":"f7","claim_id":"f7","action":"reject_with_rationale"}]}
+{"round":2,"codex_review":{"findings":[{"id":"f8","severity":null}]},"claude_verification":[{"finding_id":"f8","claim_id":"f7","action":"reject_with_rationale","evidence_delta":"new"}]}
+EOF
+QD_OUT="$(qd_decide "$QD_FIXTURE_7")"
+QD_DECISION="$(qd_decision_line "$QD_OUT")"
+QD_ENTRY="$(printf '%s\n' "$QD_OUT" | jq -c --arg id f7 'select(.claim_id == $id)')"
+if [ "$(printf '%s' "$QD_ENTRY" | jq -r '.canonical_severity')" = "null" ] && [ "$(printf '%s' "$QD_DECISION" | jq -r '.decision')" = "NOT_ELIGIBLE" ]; then
+  pass "quick-mode decision: a re-raise's canonical severity follows its own most-recent finding_id (null), never the claim_id's origin finding (medium)"
+else
+  fail "quick-mode decision: expected canonical_severity=null via the re-raise's own finding_id f8 (not medium via claim_id f7), got: $QD_OUT"
+fi
+rm -f "$QD_FIXTURE_7"
+
+# 8. Parallel-mode: a real aggregated finding keeps "id" and "group" as SEPARATE fields (never a
+# raw finding whose own "id" already IS the group-prefixed string) -- the filter must compute the
+# exact same join key documented in SKILL.md's Phase 3 "claims" construction and already extracted
+# in tests/fixtures/claim-key-from-finding.jq: `group + ":" + id`. claude_verification's own
+# claim_id/finding_id values ARE already group-prefixed strings (per claim-ledger.md section 9),
+# so this fixture uses the real documented shape on both sides: a finding {id:"f1",group:"g1"}
+# joined against a claim_id/finding_id of "g1:f1" -- a naive lookup assuming raw findings already
+# carry a combined "g1:f1" id (an earlier, incorrect draft of this fixture did exactly that,
+# masking this bug) would silently fail to match and wrongly fall through to NOT_ELIGIBLE.
+QD_FIXTURE_8="$(mktemp)"
+cat > "$QD_FIXTURE_8" <<'EOF'
+{"round":1,"codex_review":{"findings":[{"id":"f1","group":"g1","severity":"medium"}]},"claude_verification":[{"finding_id":"g1:f1","claim_id":"g1:f1","action":"reject_with_rationale"}]}
+EOF
+QD_OUT="$(qd_decide "$QD_FIXTURE_8")"
+QD_DECISION="$(qd_decision_line "$QD_OUT")"
+if [ "$(printf '%s' "$QD_DECISION" | jq -r '.decision')" = "MINOR_ISSUES_ACKNOWLEDGED" ]; then
+  pass "quick-mode decision: a parallel-mode finding ({id,group} separate fields) joins correctly via group+\":\"+id, not a raw group-prefixed id"
+else
+  fail "quick-mode decision: expected MINOR_ISSUES_ACKNOWLEDGED for a {id:f1,group:g1} finding joined against claim g1:f1, got: $QD_OUT"
+fi
+rm -f "$QD_FIXTURE_8"
+
 # --- DISPOSITION marker parser fixtures (claim-ledger.md section 4) ---
 # Exercises tests/fixtures/parse-disposition-markers.sh against free-text
 # blobs standing in for Codex's `summary` field. Pure text parsing -- no
@@ -1448,7 +1618,7 @@ cb_mutation_should_fail() {
   rm -f "$mutated_file"
 }
 
-cb_mutation_should_fail "exit_state set to a value outside the 7-value enum" \
+cb_mutation_should_fail "exit_state set to a value outside the 8-value enum" \
   '.exit_state = "BOGUS_STATE"'
 cb_mutation_should_fail "a required top-level field (session_id) deleted" \
   'del(.session_id)'

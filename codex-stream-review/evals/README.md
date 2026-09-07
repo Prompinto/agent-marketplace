@@ -8,7 +8,9 @@ checking the durable `.result.json` artifact it produces.
 This complements, and does not replace, `../tests/` (`tests/test-run-ccs-review.sh`), which covers
 only the **deterministic** `.sh`/`.py` code layer -- the fake-`codex`-driven wrapper fixture suite,
 plus (as of the sibling Tier 1 work) extracted-and-unit-tested versions of the claim-ledger
-reducer, the `DISPOSITION` marker parser, and the parallel-mode coverage/findings merges. Neither
+reducer, the `DISPOSITION` marker parser, the parallel-mode coverage/findings merges, and (as of
+`--quick`) the canonical-current-severity lookup + `MINOR_ISSUES_ACKNOWLEDGED` eligibility
+decision (`tests/fixtures/quick-mode-decision.jq`). Neither
 of those can exercise whether an LLM actually follows `SKILL.md`'s prose correctly in a live,
 multi-round session -- retry-by-failure-reason decision trees, convergence judgment, parallel-mode
 dispatch/aggregation. That is what this directory is for.
@@ -52,7 +54,8 @@ Each scenario also documents its own expected result and any scenario-specific n
 
 ## Scenario index
 
-**Every scenario in every group below is now `built + verified`** -- all 32 (28 from the original
+**Every scenario in every group below (Groups A-F) is `built + verified`** -- all 32 (28 from the
+original
 planning matrix, plus a 3-way split of the original single `review-log-integrity-failure` entry
 into two distinct scenarios per a negotiated planning refinement, plus one net-new scenario,
 `near-limit-whitespace-performance`, added after a real production bug was found while building
@@ -60,6 +63,15 @@ this harness -- see "A real bug this harness already found" below) were actually
 driven live end-to-end (via the Skill tool or a faithful manual execution of `SKILL.md`'s own
 documented Phase 0-3 procedure), and confirmed passing via `check-result.sh` against a real
 `.result.json`. Every Codex/fake-codex thread created along the way was cleaned up.
+
+**Group G (below), added for `--quick`, adds 3 more `built + verified` live scenarios (35 total)
+plus 2 documentation-only stubs** -- `quick-mode-escalation-critical` and
+`quick-mode-unparseable-severity-fail-closed` are directories with a `README.md` only, no
+`setup.sh`/`expect.sh`, since the case each would need to drive (a `CRITICAL` or otherwise
+non-enum `severity` value reaching a live finding) cannot be produced through any real or
+faithfully-scripted dispatch at all -- see each one's own `README.md` for the full evidence chain.
+Their coverage lives instead as Tier 1 unit tests in `tests/test-run-ccs-review.sh` against
+`tests/fixtures/quick-mode-decision.jq`.
 
 ### Group A — one scenario per terminal status (7 named entries; `review-log-integrity-failure`
 was split into 2 distinct scenarios per its two distinct real triggers, for 8 built)
@@ -140,6 +152,21 @@ Confirm `target.scope` is recorded correctly and coverage semantics differ corre
 | `claim-retraction` | Raise → rebut → `DISPOSITION RETRACTED` | **built + verified** |
 | `claim-oscillation-nonconsecutive` | Raised round 1, silent round 2, reasserted with no new evidence round 3 -- confirm NOT CONVERGED fires, not silently missed the way the old adjacent-round-only guard would have | **built + verified** |
 | `claim-still-open-marker` | A claim explicitly marked `STILL OPEN` with a reason, confirm it stays `open`, not silently treated as resolved | **built + verified** |
+
+### Group G — quick mode (`--quick`; 3 built + 2 documentation-only stubs)
+
+| Scenario | Targets | Status |
+|---|---|---|
+| `quick-mode-minor-acknowledged` | A `--quick` session hitting round 5 (the quick cap) with the sole open claim's canonical current severity cleanly `medium` -- confirms `exit_state == "MINOR_ISSUES_ACKNOWLEDGED"`, `round_count == 5` | **built + verified** |
+| `quick-mode-escalation-high` | A `--quick` session where round 1's finding is `HIGH` severity -- confirms `MAX_ROUNDS` is permanently escalated to `20` (proven by the loop genuinely reaching round 6, via a deliberate oscillation-guard trip at that round), and `exit_state` is never `MINOR_ISSUES_ACKNOWLEDGED` | **built + verified** |
+| `quick-mode-missing-severity-fail-closed` | A `--quick` session hitting round 5 where the sole open claim's severity was never recorded (`null` throughout) -- confirms this MISSING case fails closed to `NOT_CONVERGED`, never treated as "no data, so pass" | **built + verified** |
+| `quick-mode-escalation-critical` | Would confirm the escalation predicate's `CRITICAL` half is never accidentally treated as minor -- **documentation-only stub**: `severity:"critical"` cannot reach a live finding at all (`run-ccs-review.sh`'s own schema check rejects it as `schema_mismatch` before dispatch). Coverage lives as a Tier 1 unit test instead | **documented, not a live scenario** |
+| `quick-mode-unparseable-severity-fail-closed` | Would confirm an unparseable severity string (e.g. `"SEV-2"`) fails closed to `NOT_CONVERGED` -- **documentation-only stub**, same structural reason as `-escalation-critical` above. Coverage lives as a Tier 1 unit test instead | **documented, not a live scenario** |
+
+`quick-mode-escalation-high`'s own oscillation-guard-based proof technique, and the full evidence
+chain for why the two stub scenarios cannot be driven live, are explained in each scenario's own
+`README.md` -- read those before assuming either stub represents a gap in coverage rather than a
+structural impossibility.
 
 ### Secondary tier — live-Codex acceptance (2, built after the 8 scripted scenarios above)
 
