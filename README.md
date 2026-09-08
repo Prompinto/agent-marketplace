@@ -90,6 +90,73 @@ you automatically (see below).
   resumable thread), non-repo-artifact reviews via a throwaway isolated repo, and opt-in
   investigation-evidence capture.
 
+### visual-verify
+
+Detects a web project's own dev tooling at runtime, starts (or reuses) its dev server, drives a
+real Chromium browser via that project's own installed Playwright to perform a described
+interaction, and captures a screenshot — for **any** web stack: React/Vue/Next/Vite/plain static,
+npm/pnpm/yarn, monorepo or not. Nothing about a specific company's auth SDK, mocking library, or
+port convention is hardcoded.
+
+**Why:** verifying that a UI change actually renders correctly normally means manually starting a
+dev server, opening a browser, navigating, and eyeballing it. This plugin automates that loop
+end-to-end — detection, start-or-reuse, capture, cleanup — while staying honest about what it
+can't do: it has no way to defeat an authentication system, no concept of any specific mock-server's
+variant-switching API, and no PR/MR comment-posting step.
+
+#### Install
+
+```
+/plugin marketplace add Prompinto/agent-marketplace
+/plugin install visual-verify
+```
+
+#### Usage
+
+```
+visual-verify:verify <what to verify>
+```
+
+Give it a route/page/component and, optionally, a plain-English interaction to perform first (e.g.
+`visual-verify:verify go to /settings, toggle dark mode, and confirm the page background changes`).
+Leaving the task text empty does **not** default to "review recent work" (unlike `/ccs`) — the
+skill asks you directly what to verify instead, since a wrong guess here means driving a real
+browser against the wrong target.
+
+#### How it works
+
+- `scripts/detect-env.sh` — read-only detection: package manager/lockfile, monorepo shape, the
+  dev-server script and its port/host (parsed from the command's own flags, else a best-effort
+  framework-default guess — never assumed correct until a real health-check confirms it), an
+  auxiliary mock/API service if the repo's own scripts imply one, whether `@playwright/test`/
+  `playwright` is installed and where, whether a matching Chromium build is cached, and a generic
+  (disclosure-only) auth-gate heuristic. Never writes, installs, or starts anything.
+- `scripts/lifecycle.sh` — starts a detected dev command via `nohup`/`disown` with its PID written
+  to a session-scoped file immediately, health-checks a host:port with a bounded polling loop (no
+  fixed `sleep`), and stops a service by reading back that same PID file — **never** by
+  `lsof -ti:<port> | xargs kill`, which risks killing an unrelated process on the same port. A
+  service this run didn't start (the "reuse an already-running server" path) has no PID file for
+  this run, so `stop` correctly leaves it alone.
+- `skills/verify/SKILL.md` — the `visual-verify:verify` skill: five phases (resolve task → detect
+  → start/reuse → drive browser & capture → report & clean up). Claude writes the actual Playwright
+  interaction code per run directly from the task description's prose — no fixed scenario grammar
+  to learn or maintain.
+- `schemas/verify-result.schema.json` — the structured result artifact written to
+  `~/.claude/plugins/data/visual-verify/logs/<repo-slug>/<session_id>.result.json` after every run:
+  target, detection findings, server reuse/start mode + PIDs, the scenario used, screenshot path,
+  outcome, and cleanup status.
+
+#### Out of scope (by design, not an oversight)
+
+- **No auth-bypass.** If a target route is gated behind login/permissions, the captured screenshot
+  may show a login/forbidden page — the auth-gate heuristic only discloses this, never bypasses it.
+- **No mock-server variant switching** or fixture patching for any specific mocking library.
+- **No GitHub/GitLab/any VCS comment posting.** Capture and report stay local.
+- **No custom scenario DSL.** Interactions are described in prose in the task text; there's no fixed
+  syntax to learn.
+- **macOS-only auto-open** of the captured screenshot (`open <path>`) — other OSes get the path
+  printed instead, not an auto-open attempt.
+
 ## Contributing
 
 `main` is protected — changes go through a pull request.
