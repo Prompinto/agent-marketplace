@@ -25,7 +25,6 @@ EXPECTED_EXIT_CODE = {
     "COULD_NOT_VERIFY": 3,
     "PARTIAL_COVERAGE": 4,
     "INFRASTRUCTURE_FAILURE": 5,
-    "INPUT_TOO_LARGE": 6,
 }
 EXPECTED_VERDICT = {
     "CLEAN": "CLEAN",
@@ -34,7 +33,6 @@ EXPECTED_VERDICT = {
     "COULD_NOT_VERIFY": "UNAVAILABLE",
     "PARTIAL_COVERAGE": "ISSUES",
     "INFRASTRUCTURE_FAILURE": "UNAVAILABLE",
-    "INPUT_TOO_LARGE": "UNAVAILABLE",
 }
 
 
@@ -46,13 +44,6 @@ FINDING_KEYS = {"file", "line", "severity", "summary", "evidence", "verification
 OMITTED_KEYS = {"path", "reason"}
 COVERAGE_KEYS = {"status", "reviewed_file_count", "omitted"}
 INFRA_KEYS = {"message", "detail"}
-INPUT_ERROR_KEYS = {"group", "actual_bytes", "limit_bytes"}
-# Matches run-ccs-review.sh's own PROMPT_SIZE_LIMIT_BYTES constant exactly -- a
-# fixed, documented operational policy, not a value the producer may vary
-# per-report. limit_bytes must equal this exact figure (never just "some
-# number smaller than actual_bytes"), or a fabricated pair like
-# actual_bytes=1/limit_bytes=0 would otherwise satisfy a relative-only check.
-PROMPT_SIZE_LIMIT_BYTES = 131072
 
 
 def _is_int(v):
@@ -115,32 +106,16 @@ def _valid_infra(infra):
     return detail is None or isinstance(detail, str)
 
 
-def _valid_input_error_item(item):
-    if not isinstance(item, dict) or set(item.keys()) != INPUT_ERROR_KEYS:
-        return False
-    if not isinstance(item.get("group"), str):
-        return False
-    actual = item.get("actual_bytes")
-    limit = item.get("limit_bytes")
-    if limit != PROMPT_SIZE_LIMIT_BYTES:
-        return False
-    if not (_is_int(actual) and actual > PROMPT_SIZE_LIMIT_BYTES):
-        return False
-    return True
-
-
 def _valid_input_errors(input_errors):
-    """input_errors may be null (every exit_state except INPUT_TOO_LARGE); when
-    present it must be a non-empty array of valid {group, actual_bytes,
-    limit_bytes} items with actual_bytes > limit_bytes -- the caller's own
-    exit_state branch enforces non-emptiness/nullness, this only checks shape."""
-    if input_errors is None:
-        return True
-    return isinstance(input_errors, list) and all(_valid_input_error_item(i) for i in input_errors)
+    """input_errors is always null now -- the former INPUT_TOO_LARGE outcome
+    that was the only thing allowed to populate it was removed (a self-imposed
+    pre-dispatch byte-size guard, not a real model limit). The field itself is
+    kept for schema/CI-contract compatibility."""
+    return input_errors is None
 
 
 def explicit_validate(doc):
-    """Mirrors ci-result.schema.json's seven allOf/if/then branches by hand,
+    """Mirrors ci-result.schema.json's six allOf/if/then branches by hand,
     including the constraints those branches inherit from the top-level
     `properties`/`additionalProperties: false` (coverage/findings/
     infrastructure_error/input_errors item shapes, the exact top-level key
@@ -177,7 +152,7 @@ def explicit_validate(doc):
         if not isinstance(findings, list) or not all(_valid_finding_item(f) for f in findings):
             return False, "findings must be null or an array of valid finding objects"
     if not _valid_input_errors(input_errors):
-        return False, "input_errors must be null or a non-empty array of valid {group, actual_bytes, limit_bytes} items with actual_bytes > limit_bytes"
+        return False, "input_errors must be null (the array shape it used to carry was removed along with the INPUT_TOO_LARGE outcome)"
 
     if st == "CLEAN":
         if findings != []:
@@ -222,15 +197,6 @@ def explicit_validate(doc):
             return False, "INFRASTRUCTURE_FAILURE requires a valid {message, detail} infrastructure_error object"
         if input_errors is not None:
             return False, "INFRASTRUCTURE_FAILURE requires input_errors == null"
-    elif st == "INPUT_TOO_LARGE":
-        if findings is not None:
-            return False, "INPUT_TOO_LARGE requires findings == null"
-        if coverage is not None:
-            return False, "INPUT_TOO_LARGE requires coverage == null"
-        if infra is not None:
-            return False, "INPUT_TOO_LARGE requires infrastructure_error == null"
-        if not isinstance(input_errors, list) or len(input_errors) < 1:
-            return False, "INPUT_TOO_LARGE requires a non-empty input_errors array"
 
     if not isinstance(doc.get("workflow_run_id"), str) or not doc["workflow_run_id"]:
         return False, "workflow_run_id must be a non-empty string"
@@ -297,37 +263,7 @@ def _selftest():
                 "infrastructure_error": {"message": "m", "detail": None}}),
         (False, {**base, "exit_state": "INFRASTRUCTURE_FAILURE", "exit_code": 5, "verdict": "UNAVAILABLE",
                  "findings": None, "coverage": None, "infrastructure_error": None}),
-        (True, {**base, "exit_state": "INPUT_TOO_LARGE", "exit_code": 6, "verdict": "UNAVAILABLE",
-                "findings": None, "coverage": None, "infrastructure_error": None,
-                "input_errors": [{"group": "main", "actual_bytes": 200000, "limit_bytes": 131072}]}),
     ]
-
-    # Phase 5 Item A/B: INPUT_TOO_LARGE-specific counterexamples -- this project
-    # found and fixed the identical "if/then + properties without required"
-    # authoring bug twice before (see ci-result.schema.json's own history), so
-    # both the "missing input_errors" and the "wrong-shape item" variants of
-    # this exact new branch get an explicit, permanent regression case here.
-    input_too_large_missing_input_errors = {**base, "exit_state": "INPUT_TOO_LARGE", "exit_code": 6,
-                                             "verdict": "UNAVAILABLE", "findings": None, "coverage": None,
-                                             "infrastructure_error": None}  # input_errors stays null -- must be REJECTED
-    cases.append((False, input_too_large_missing_input_errors))
-
-    cases.append((False, {**base, "exit_state": "INPUT_TOO_LARGE", "exit_code": 6, "verdict": "UNAVAILABLE",
-                           "findings": None, "coverage": None, "infrastructure_error": None,
-                           "input_errors": [{"group": "main", "actual_bytes": 100, "limit_bytes": 131072}]}))  # actual_bytes <= limit_bytes
-
-    # Round-1 implementation-review counterexample (live-reproduced by Codex): a
-    # relative-only "actual_bytes > limit_bytes" check accepts ANY fabricated
-    # pair, e.g. actual_bytes=1/limit_bytes=0, even though neither figure
-    # reflects the real, fixed 131072-byte policy -- limit_bytes must equal
-    # PROMPT_SIZE_LIMIT_BYTES exactly, never just "some smaller number."
-    cases.append((False, {**base, "exit_state": "INPUT_TOO_LARGE", "exit_code": 6, "verdict": "UNAVAILABLE",
-                           "findings": None, "coverage": None, "infrastructure_error": None,
-                           "input_errors": [{"group": "main", "actual_bytes": 1, "limit_bytes": 0}]}))  # fabricated pair, wrong limit_bytes
-
-    cases.append((False, {**base, "exit_state": "INPUT_TOO_LARGE", "exit_code": 6, "verdict": "UNAVAILABLE",
-                           "findings": None, "coverage": None, "infrastructure_error": None,
-                           "input_errors": [{"group": "main", "actual_bytes": 200000, "limit_bytes": 100000}]}))  # actual_bytes > limit_bytes but limit_bytes isn't the real 131072
 
     # Counterexamples live-reproduced by Codex against the pre-fix validator
     # (both the jq validator in run-ccs-ci.sh and this file's own

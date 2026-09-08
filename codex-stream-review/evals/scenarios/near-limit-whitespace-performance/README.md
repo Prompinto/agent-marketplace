@@ -5,21 +5,21 @@
 `_focus_is_empty()` (`scripts/run-ccs-review.sh`/`scripts/run-stream-review.sh`) -- see this
 directory's own `README.md`, "A real bug this harness already found (and fixed)".
 
-**Targets:** a real terminal status reached quickly on a deliberately whitespace-dense,
-near-(but-safely-under)-limit `--focus` text -- the exact input shape the old
-`${var//[[:space:]]/}` bash substitution choked on (confirmed ~6KB took ~13s; near
-`PROMPT_SIZE_LIMIT_BYTES`'s 131072-byte ceiling this would have hung for hours). The fix (`tr -d
+**Targets:** a real terminal status reached quickly on a deliberately whitespace-dense
+`--focus` text -- the exact input shape the old
+`${var//[[:space:]]/}` bash substitution choked on (confirmed ~6KB took ~13s; a larger
+whitespace-heavy focus file would have hung for hours). The fix (`tr -d
 '[:space:]'`) is already merged -- this scenario is the regression guard confirming it stays fixed.
+(The wrapper's own pre-dispatch prompt byte-size preflight that this fixture's size was originally
+sized relative to has since been removed entirely; this scenario's target is independent of that
+and unaffected by its removal.)
 
 ## The fixture
 
 `setup.sh` generates a ~90000-byte focus reference text: a short real Why/Scope preamble, then
 dense whitespace filler (long runs of spaces/tabs/newlines with sparse real words interspersed, so
-it's never mistaken for empty/whitespace-only). Comfortably under `PROMPT_SIZE_LIMIT_BYTES`
-(131072) even after the wrapper's own template/boundary-notice text and the fixture's own tiny diff
-are added -- this is a test of the input SHAPE the old bug choked on, not of the exact size
-boundary (`input-too-large` already covers that, via an oversized diff, for the reasons documented
-there).
+it's never mistaken for empty/whitespace-only) -- this is a test of the input SHAPE the old bug
+choked on, not of any byte-size boundary (there is no size preflight left to test a boundary of).
 
 ## Mechanical setup
 

@@ -22,8 +22,8 @@ def base_violations:
       then "target must be an object with repo/scope" else empty end),
     (if (.target.scope as $s | ["uncommitted","base","commit"] | index($s)) == null
       then "target.scope must be one of uncommitted|base|commit" else empty end),
-    (if (.exit_state as $e | ["CLEAN","NOT_CONVERGED","COULD_NOT_VERIFY","PARTIAL_COVERAGE","MINOR_ISSUES_ACKNOWLEDGED","SNAPSHOT_INTEGRITY_FAILURE","REVIEW_LOG_INTEGRITY_FAILURE","INPUT_TOO_LARGE"] | index($e)) == null
-      then "exit_state must be one of the 8 documented values" else empty end),
+    (if (.exit_state as $e | ["CLEAN","NOT_CONVERGED","COULD_NOT_VERIFY","PARTIAL_COVERAGE","MINOR_ISSUES_ACKNOWLEDGED","SNAPSHOT_INTEGRITY_FAILURE","REVIEW_LOG_INTEGRITY_FAILURE"] | index($e)) == null
+      then "exit_state must be one of the 7 documented values" else empty end),
     (if (.round_count | type) != "number" or .round_count < 0
       then "round_count must be a non-negative integer" else empty end),
     (if (.threads | type) != "array"
@@ -43,20 +43,16 @@ def thread_violations:
 def snapshot_or_reviewlog_conditional:
   if (.exit_state as $e | ["SNAPSHOT_INTEGRITY_FAILURE","REVIEW_LOG_INTEGRITY_FAILURE"] | index($e)) != null
   then
-    [ (if .claims != null then "exit_state=\(.exit_state) requires claims:null" else empty end),
-      (if .input_errors != null then "exit_state=\(.exit_state) requires input_errors:null" else empty end) ]
+    [ (if .claims != null then "exit_state=\(.exit_state) requires claims:null" else empty end) ]
   else
     [ (if (.claims | type) != "array" then "exit_state=\(.exit_state) requires claims to be an array (not null)" else empty end) ]
   end;
 
-def input_too_large_conditional:
-  if .exit_state == "INPUT_TOO_LARGE"
-  then
-    [ (if (.input_errors | type) != "array" or (.input_errors | length) < 1
-        then "exit_state=INPUT_TOO_LARGE requires a non-empty input_errors array" else empty end) ]
-  else
-    [ (if .input_errors != null then "exit_state != INPUT_TOO_LARGE requires input_errors:null" else empty end) ]
-  end;
+def input_errors_conditional:
+  # input_errors is always null now -- no exit_state populates it (the only
+  # outcome that did, INPUT_TOO_LARGE, a self-imposed pre-dispatch prompt
+  # byte-size guard, was removed). Field kept for result-contract compatibility.
+  [ (if .input_errors != null then "input_errors must always be null" else empty end) ];
 
 def coverage_conditional:
   if .target.scope == "uncommitted"
@@ -68,6 +64,6 @@ def coverage_conditional:
   else []
   end;
 
-(base_violations + thread_violations + snapshot_or_reviewlog_conditional + input_too_large_conditional + coverage_conditional)
+(base_violations + thread_violations + snapshot_or_reviewlog_conditional + input_errors_conditional + coverage_conditional)
 | map(select(. != null and . != ""))
 | .[]

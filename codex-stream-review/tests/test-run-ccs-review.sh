@@ -255,6 +255,23 @@ else
 fi
 unset FAKE_CODEX_SCENARIO
 
+# --- size-limit removal regression: the wrapper used to reject any round
+# whose rendered prompt exceeded a self-imposed PROMPT_SIZE_LIMIT_BYTES
+# (131072 bytes) with {"ok":false,"reason":"artifact_too_large",...},
+# before ever launching codex exec. That preflight has been removed
+# entirely -- a prompt this large must now reach a real dispatch instead.
+# 200000 bytes of focus text alone (well over the old 131072-byte ceiling)
+# piped directly, bypassing pd_run's hardcoded single-byte "x" focus.
+export FAKE_CODEX_SCENARIO=normal
+PD_OVERSIZED_FOCUS="$(python3 -c 'print("y" * 200000)')"
+OUT="$(printf '%s' "$PD_OVERSIZED_FOCUS" | PATH="$FAKE_BIN_DIR:$PATH" HOME="$FAKE_HOME" "$WRAPPER" --cwd "$PD_REPO" --uncommitted 2>&1)"
+if [ "$(printf '%s' "$OUT" | tail -1 | jq -r '.ok')" = "true" ]; then
+  pass "size-limit removal: a >131072-byte focus text now reaches real dispatch (ok:true), never rejected as artifact_too_large"
+else
+  fail "size-limit removal: a >131072-byte focus text should reach real dispatch, got: $OUT"
+fi
+unset FAKE_CODEX_SCENARIO
+
 # --- interrupted: the WRAPPER's own signal trap, not anything fake-codex
 # does -- fake-codex just hangs (FAKE_CODEX_SCENARIO=hang) so there's a
 # real window to send SIGTERM to the wrapper's own process into.
@@ -417,59 +434,6 @@ else
   fail "no_thread_started (fresh): expected a real coverage.source.status, got: $OUT"
 fi
 unset FAKE_CODEX_NO_THREAD_STARTED
-
-# --- artifact_too_large: a PRE-dispatch preflight (Phase 5 Item A) -- unlike
-# every fixture above/below in this section, fake-codex is never even
-# invoked here (the check fires before `codex exec`/`codex exec resume` is
-# ever launched), so no FAKE_CODEX_SCENARIO is needed. A ~200KB focus text
-# comfortably exceeds the wrapper's own 131072-byte PROMPT_SIZE_LIMIT_BYTES.
-ATL_BIG_FOCUS="$(python3 -c "print('x' * 200000)" 2>/dev/null || perl -e 'print "x" x 200000')"
-
-OUT="$(printf '%s' "$ATL_BIG_FOCUS" | PATH="$FAKE_BIN_DIR:$PATH" HOME="$FAKE_HOME" "$WRAPPER" --cwd "$PD_REPO" --uncommitted 2>&1)"
-pd_assert_reason "$OUT" "artifact_too_large" "artifact_too_large (fresh, real diff present)"
-if printf '%s' "$OUT" | tail -1 | jq -e 'has("threadId") | not' >/dev/null 2>&1; then
-  pass "artifact_too_large (fresh, real diff present): no threadId (never dispatched)"
-else
-  fail "artifact_too_large (fresh, real diff present): should carry no threadId, got: $OUT"
-fi
-COV_STATUS="$(printf '%s' "$OUT" | tail -1 | jq -r '.coverage.source.status // empty')"
-if [ "$COV_STATUS" = "complete" ] || [ "$COV_STATUS" = "partial" ]; then
-  pass "artifact_too_large (fresh, real diff present): coverage.source is spliced in (status=$COV_STATUS)"
-else
-  fail "artifact_too_large (fresh, real diff present): expected a real coverage.source.status, got: $OUT"
-fi
-
-ATL_TID="$(pd_new_tid)"
-OUT="$(printf '%s' "$ATL_BIG_FOCUS" | PATH="$FAKE_BIN_DIR:$PATH" HOME="$FAKE_HOME" "$WRAPPER" --cwd "$PD_REPO" --resume "$ATL_TID" 2>&1)"
-pd_assert_reason "$OUT" "artifact_too_large" "artifact_too_large (resume)"
-pd_assert_threadid_present "$OUT" "artifact_too_large (resume)"
-if [ "$(pd_threadid "$OUT")" = "$ATL_TID" ]; then
-  pass "artifact_too_large (resume): threadId echoes the resumed thread, not a new one"
-else
-  fail "artifact_too_large (resume): threadId should echo $ATL_TID, got: $OUT"
-fi
-if printf '%s' "$OUT" | tail -1 | jq -e 'has("coverage") | not' >/dev/null 2>&1; then
-  pass "artifact_too_large (resume): no coverage.source (a --resume round never carries one)"
-else
-  fail "artifact_too_large (resume): should carry no coverage, got: $OUT"
-fi
-
-# Non-repo-artifact variant: a freshly-init'd, zero-file repo has an empty
-# diff, so the oversized focus text is the SOLE content -- the wrapper's own
-# CLEAN_REPO_DIR-shaped case (see run-ccs-review.sh's artifact_too_large
-# branch and SKILL.md's non-repo-artifact.md).
-ATL_EMPTY_REPO="$(mktemp -d)"
-must git -C "$ATL_EMPTY_REPO" init -q
-OUT="$(printf '%s' "$ATL_BIG_FOCUS" | PATH="$FAKE_BIN_DIR:$PATH" HOME="$FAKE_HOME" "$WRAPPER" --cwd "$ATL_EMPTY_REPO" --uncommitted 2>&1)"
-pd_assert_reason "$OUT" "artifact_too_large" "artifact_too_large (fresh, non-repo-artifact / empty diff)"
-DETAIL="$(printf '%s' "$OUT" | tail -1 | jq -r '.detail // empty')"
-if printf '%s' "$DETAIL" | grep -q 'pasted artifact'; then
-  pass "artifact_too_large (fresh, non-repo-artifact / empty diff): detail names the pasted artifact, not the diff"
-else
-  fail "artifact_too_large (fresh, non-repo-artifact / empty diff): detail should name the pasted artifact, got: $OUT"
-fi
-rm -rf "$ATL_EMPTY_REPO"
-unset ATL_BIG_FOCUS ATL_TID ATL_EMPTY_REPO
 
 # --- nonzero_exit: codex exec/exec resume itself exits nonzero.
 for CODE in 1 3; do
@@ -1618,7 +1582,7 @@ cb_mutation_should_fail() {
   rm -f "$mutated_file"
 }
 
-cb_mutation_should_fail "exit_state set to a value outside the 8-value enum" \
+cb_mutation_should_fail "exit_state set to a value outside the 7-value enum" \
   '.exit_state = "BOGUS_STATE"'
 cb_mutation_should_fail "a required top-level field (session_id) deleted" \
   'del(.session_id)'

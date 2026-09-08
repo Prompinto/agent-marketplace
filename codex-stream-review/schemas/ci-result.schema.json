@@ -5,11 +5,11 @@
   "properties": {
     "exit_state": {
       "type": "string",
-      "enum": ["CLEAN", "CONFIRMED_ISSUES", "NOT_CONVERGED", "COULD_NOT_VERIFY", "PARTIAL_COVERAGE", "INFRASTRUCTURE_FAILURE", "INPUT_TOO_LARGE"]
+      "enum": ["CLEAN", "CONFIRMED_ISSUES", "NOT_CONVERGED", "COULD_NOT_VERIFY", "PARTIAL_COVERAGE", "INFRASTRUCTURE_FAILURE"]
     },
     "exit_code": {
       "type": "integer",
-      "enum": [0, 1, 2, 3, 4, 5, 6]
+      "enum": [0, 1, 2, 3, 4, 5]
     },
     "verdict": {
       "type": "string",
@@ -63,17 +63,8 @@
       "additionalProperties": false
     },
     "input_errors": {
-      "type": ["array", "null"],
-      "items": {
-        "type": "object",
-        "properties": {
-          "group": { "type": "string" },
-          "actual_bytes": { "type": "integer", "exclusiveMinimum": 131072 },
-          "limit_bytes": { "type": "integer", "const": 131072 }
-        },
-        "required": ["group", "actual_bytes", "limit_bytes"],
-        "additionalProperties": false
-      }
+      "description": "Always null. Retained for CI-contract compatibility with older consumers -- the only outcome that ever populated this (a self-imposed pre-dispatch prompt byte-size guard) was removed; a real oversized prompt now simply surfaces as a normal dispatch failure.",
+      "type": "null"
     },
     "workflow_run_id": { "type": "string", "minLength": 1 },
     "head_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
@@ -177,20 +168,6 @@
           "coverage": { "type": "null" },
           "infrastructure_error": { "type": "object" },
           "input_errors": { "type": "null" }
-        },
-        "required": ["exit_code", "verdict", "findings", "coverage", "infrastructure_error", "input_errors"]
-      }
-    },
-    {
-      "if": { "properties": { "exit_state": { "const": "INPUT_TOO_LARGE" } }, "required": ["exit_state"] },
-      "then": {
-        "properties": {
-          "exit_code": { "const": 6 },
-          "verdict": { "const": "UNAVAILABLE" },
-          "findings": { "type": "null" },
-          "coverage": { "type": "null" },
-          "infrastructure_error": { "type": "null" },
-          "input_errors": { "type": "array", "minItems": 1 }
         },
         "required": ["exit_code", "verdict", "findings", "coverage", "infrastructure_error", "input_errors"]
       }

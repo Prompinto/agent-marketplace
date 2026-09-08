@@ -69,4 +69,4 @@ bash codex-stream-review/evals/check-result.sh <result.json> could-not-verify-ex
   `references/retry-guards.md`'s "Round 1 only -- capture coverage from the failing attempt
   BEFORE retrying" note (`nonzero_exit` is one of the 7 reasons that unconditionally carries
   `coverage.source` on a fresh `--uncommitted` dispatch)
-- `input_errors`: `null` (this is not an `INPUT_TOO_LARGE` outcome)
+- `input_errors`: `null` (always null -- no outcome ever populates it)
