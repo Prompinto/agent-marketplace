@@ -29,11 +29,6 @@ persist. Each scenario's own `README.md` repeats this explicitly, plus any `FAKE
 that scenario's own fixture behavior depends on (also re-set on every relevant call, for the same
 reason).
 
-One scenario in the matrix below (`input-too-large`) is a confirmed exception -- its own
-`setup.sh`/`README.md` explain exactly why, verified by reading `scripts/run-ccs-review.sh`
-directly and by an actual live run: the size-limit preflight it targets fires before the wrapper
-ever invokes a `codex` binary at all, so no PATH injection is needed there.
-
 ## How to run a scenario
 
 ```bash
@@ -54,17 +49,18 @@ Each scenario also documents its own expected result and any scenario-specific n
 
 ## Scenario index
 
-**Every scenario in every group below (Groups A-F) is `built + verified`** -- all 32 (28 from the
+**Every scenario in every group below (Groups A-F) is `built + verified`** -- all 29 (28 from the
 original
-planning matrix, plus a 3-way split of the original single `review-log-integrity-failure` entry
-into two distinct scenarios per a negotiated planning refinement, plus one net-new scenario,
+planning matrix, plus a split of the original single `review-log-integrity-failure` entry
+into two distinct scenarios (a net +1) per a negotiated planning refinement, plus one net-new scenario,
 `near-limit-whitespace-performance`, added after a real production bug was found while building
-this harness -- see "A real bug this harness already found" below) were actually built, actually
-driven live end-to-end (via the Skill tool or a faithful manual execution of `SKILL.md`'s own
-documented Phase 0-3 procedure), and confirmed passing via `check-result.sh` against a real
+this harness -- see "A real bug this harness already found" below -- minus the since-removed
+`input-too-large` scenario, whose target preflight was removed entirely) were actually built,
+actually driven live end-to-end (via the Skill tool or a faithful manual execution of `SKILL.md`'s
+own documented Phase 0-3 procedure), and confirmed passing via `check-result.sh` against a real
 `.result.json`. Every Codex/fake-codex thread created along the way was cleaned up.
 
-**Group G (below), added for `--quick`, adds 3 more `built + verified` live scenarios (35 total)
+**Group G (below), added for `--quick`, adds 3 more `built + verified` live scenarios (34 total)
 plus 2 documentation-only stubs** -- `quick-mode-escalation-critical` and
 `quick-mode-unparseable-severity-fail-closed` are directories with a `README.md` only, no
 `setup.sh`/`expect.sh`, since the case each would need to drive (a `CRITICAL` or otherwise
@@ -73,8 +69,10 @@ faithfully-scripted dispatch at all -- see each one's own `README.md` for the fu
 Their coverage lives instead as Tier 1 unit tests in `tests/test-run-ccs-review.sh` against
 `tests/fixtures/quick-mode-decision.jq`.
 
-### Group A — one scenario per terminal status (7 named entries; `review-log-integrity-failure`
-was split into 2 distinct scenarios per its two distinct real triggers, for 8 built)
+### Group A — one scenario per terminal status (6 named entries; `review-log-integrity-failure`
+was split into 2 distinct scenarios per its two distinct real triggers, for 7 status-derived
+scenarios, plus the `near-limit-whitespace-performance` regression guard below (not tied to any
+terminal status), for 8 built)
 
 | Scenario | Targets | Status |
 |---|---|---|
@@ -82,7 +80,6 @@ was split into 2 distinct scenarios per its two distinct real triggers, for 8 bu
 | `not-converged-cap` | Force disagreement to hit the 20-round cap -- a real 20-round loop, scripted per-round evidence text (`FAKE_CODEX_GROUP_STATE`) genuinely judged as `evidence_delta:"new"` each round | **built + verified** |
 | `could-not-verify-exhausted` | Force every retry to fail | **built + verified** |
 | `partial-coverage` | A real oversized untracked file, genuinely omitted by the collector (reason code `over_size_limit`) | **built + verified** |
-| `input-too-large` | Oversized combined prompt (diff and/or focus/context text) rejected by the wrapper's own preflight | **built + verified** |
 | `snapshot-integrity-failure` | A real deleted `SNAPSHOT_FILE` before round 2's revalidation, confirmed unconditional hard stop + cleanup | **built + verified** |
 | `review-log-integrity-failure-corrupt-append` | A real permission-denied JSONL append (the wrapper's own append-then-verify hard stop) | **built + verified** |
 | `review-log-integrity-failure-stale-schema` | A hand-built legacy session log (no/old `schema_version`), `--resume` refused per `claim-ledger.md` section 10 -- distinct trigger from the corrupt-append case, same `exit_state` | **built + verified** |
@@ -168,7 +165,7 @@ chain for why the two stub scenarios cannot be driven live, are explained in eac
 `README.md` -- read those before assuming either stub represents a gap in coverage rather than a
 structural impossibility.
 
-### Secondary tier — live-Codex acceptance (2, built after the 8 scripted scenarios above)
+### Secondary tier — live-Codex acceptance (2, built after the 32 scripted scenarios above)
 
 | Scenario | Targets | Status |
 |---|---|---|
@@ -182,7 +179,7 @@ actually built: every one of them drives real dispatch calls through the determi
 fixture with a scripted `FAKE_CODEX_GROUP_STATE`/`FAKE_CODEX_SCENARIO` transcript (per-round for
 single-reviewer scenarios, per-group-and-per-round for parallel ones), so the ORCHESTRATOR's own
 control-flow/parsing/merge logic is what's under test, not a live Codex judgment call -- their
-outcome is exactly as structurally forced as `clean-basic`/`input-too-large`/
+outcome is exactly as structurally forced as `clean-basic`/
 `could-not-verify-exhausted`. The two secondary-tier live-Codex scenarios
 (`parallel-live-acceptance`, `claim-ledger-live-acceptance`) are the only ones that exercise a real,
 unscripted Codex judgment call -- rather than `--repeat N`, their own `expect.sh` files avoid the
@@ -199,7 +196,7 @@ you hand it, e.g.:
 bash codex-stream-review/evals/check-consistency.sh claim-ledger-live-acceptance run1.result.json run2.result.json run3.result.json
 ```
 
-It is NOT useful for any of the other 30 scripted (fake-codex-driven) scenarios in this harness --
+It is NOT useful for any of the other 32 scripted (fake-codex-driven) scenarios in this harness --
 those each have exactly one structurally forced outcome already, so there is no consistency question
 to ask of them.
 
@@ -256,22 +253,23 @@ conclusion. See that document's own updated gap #5 section for the short pointer
 
 ## A real bug this harness already found (and fixed)
 
-Building `input-too-large` surfaced a genuine, independent performance bug in
-`scripts/run-ccs-review.sh`: `_focus_is_empty()` stripped whitespace from the caller's ENTIRE focus
-text via a bash `${var//[[:space:]]/}` global substitution, which is catastrophically superlinear
-for large inputs (confirmed by isolated benchmark: ~6KB took ~13s; extrapolated, an input near
-`PROMPT_SIZE_LIMIT_BYTES`, 131072 bytes, would have taken on the order of hours) -- exactly the
-input size needed to exercise the `INPUT_TOO_LARGE` terminal status via an oversized focus text, as
+Building the now-removed `input-too-large` scenario (it targeted a pre-dispatch prompt byte-size
+preflight in `scripts/run-ccs-review.sh` that has since been removed entirely -- see
+`near-limit-whitespace-performance`'s own README for why its removal doesn't affect what follows)
+surfaced a genuine, independent performance bug in the same script: `_focus_is_empty()` stripped
+whitespace from the caller's ENTIRE focus text via a bash `${var//[[:space:]]/}` global
+substitution, which is catastrophically superlinear for large inputs (confirmed by isolated
+benchmark: ~6KB took ~13s; a larger whitespace-heavy input would have taken on the order of hours)
+-- exactly the input size needed to exercise that former preflight via an oversized focus text, as
 originally planned, would have made the wrapper hang for a wildly impractical time on this one
-early check, well before ever reaching the size-limit check it's nominally guarding. The identical
-pattern was also found in `scripts/run-stream-review.sh`'s own focus-emptiness check.
+early check, well before ever reaching the check it was nominally guarding. The identical pattern
+was also found in `scripts/run-stream-review.sh`'s own focus-emptiness check.
 
 **Both are now fixed** (replaced with `tr -d '[:space:]'`, confirmed correct and ~340x faster on
 the same 6KB benchmark, full `tests/test-run-ccs-review.sh` suite re-run clean afterward).
-`scenarios/input-too-large/`'s own `setup.sh`/`README.md` still route around the (now-fixed) slow
-path by using an oversized DIFF rather than an oversized focus text, since that's a more direct way
-to exercise the wrapper's real `PROMPT_SIZE_LIMIT_BYTES` check regardless. This is exactly the kind
-of thing a real, live eval harness is for: it would not have been caught by only reading the prose.
+`near-limit-whitespace-performance` remains as the regression guard for this fix, independent of
+the now-removed preflight. This is exactly the kind of thing a real, live eval harness is for: it
+would not have been caught by only reading the prose.
 
 ## Layout
 

@@ -5,9 +5,9 @@
 #
 # Asserts, per this scenario's README:
 #   - exit_state is a real terminal status (CLEAN, since fake-codex's
-#     default scripted verdict has no findings) -- never COULD_NOT_VERIFY,
-#     which would mean the retry path was never actually exercised
-#     successfully
+#     default scripted verdict has no findings) -- never COULD_NOT_VERIFY or
+#     an integrity-failure status, any of which would mean the retry path
+#     was never actually exercised successfully
 #   - threads has exactly one entry, kind:"current", cleanup:"deleted" --
 #     no "leaked" entry, since the failing first attempt never obtained a
 #     threadId at all (no_thread_started never carries one)
@@ -28,7 +28,7 @@ check() {
 }
 
 EXIT_STATE="$(jq -r '.exit_state' "$RESULT_FILE")"
-if [ "$EXIT_STATE" = "COULD_NOT_VERIFY" ] || [ "$EXIT_STATE" = "INPUT_TOO_LARGE" ] || [ "$EXIT_STATE" = "SNAPSHOT_INTEGRITY_FAILURE" ] || [ "$EXIT_STATE" = "REVIEW_LOG_INTEGRITY_FAILURE" ]; then
+if [ "$EXIT_STATE" = "COULD_NOT_VERIFY" ] || [ "$EXIT_STATE" = "SNAPSHOT_INTEGRITY_FAILURE" ] || [ "$EXIT_STATE" = "REVIEW_LOG_INTEGRITY_FAILURE" ]; then
   echo "retry-no-threadid-fresh: FAIL -- exit_state [$EXIT_STATE] means the retry path never reached a real reviewed verdict" >&2
   FAIL=1
 fi

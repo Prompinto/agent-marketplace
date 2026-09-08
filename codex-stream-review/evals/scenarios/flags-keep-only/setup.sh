@@ -46,8 +46,8 @@ is resume-safe" branch exactly, same sequence as could-not-verify-exhausted:
 Per retry-guards.md's "Multi-attempt kept-evidence handling": only the LAST
 attempt's (step 4's, thread B's) own --keep-last-message file is a candidate
 for keeping -- rm -f the earlier 3 attempts' own files without moving them.
-Since --keep-evidence is ON and this round's outcome is ok:false (not
-artifact_too_large), move step 4's own kept file into the durable
+Since --keep-evidence is ON and this round's outcome is ok:false, move
+step 4's own kept file into the durable
 `<session-id>-kept-evidence/round-1-main-lastmsg.txt` path (see
 references/keep-evidence.md's "Directory and file naming") and record
 kept_last_message_path on round 1's own JSONL line.

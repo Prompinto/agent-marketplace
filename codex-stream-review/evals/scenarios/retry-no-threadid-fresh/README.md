@@ -71,7 +71,7 @@ bash codex-stream-review/evals/check-result.sh <result.json> retry-no-threadid-f
 ## Expected result
 
 - `exit_state`: `"CLEAN"` (a real terminal status reached via the retry path -- never
-  `COULD_NOT_VERIFY`, `INPUT_TOO_LARGE`, or an integrity-failure status, any of which would mean the
+  `COULD_NOT_VERIFY` or an integrity-failure status, either of which would mean the
   retry never actually reached a real reviewed verdict)
 - `threads`: exactly one entry, `kind:"current"`, `cleanup:"deleted"` -- no `"leaked"` entry, since
   the failing first attempt never obtained a `threadId` at all (`no_thread_started` never carries

@@ -40,21 +40,6 @@ Do not reach for parallel mode to cope with diff size or context exhaustion — 
 reads the identical full diff (see above), so a single reviewer's exhaustion on it recurs in every
 parallel group just the same.
 
-**Diff/artifact-size preflight interaction (Phase 5 Item A).** Each group renders its OWN prompt
-(the same diff, but a different `--focus` per group), so ONE group can hit
-`run-ccs-review.sh`'s own `PROMPT_SIZE_LIMIT_BYTES` while another group has already dispatched
-successfully or even completed. `artifact_too_large` is classified as never-retried FOR THAT
-GROUP, exactly as it is for a single-reviewer round (see `references/retry-guards.md`). At the
-round level, this is just one more `ok:false` reason the existing "if ANY dispatched group returns
-`ok:false`, the round is not eligible for CLEAN, worst-case-wins" rule above already covers — no
-new round-level rule is needed, except: (a) other groups that already dispatched successfully this
-round are NOT aborted mid-flight, and their threads are cleaned up normally at the SAME terminal
-path, applied uniformly to ALL groups' threads together (never a partial keep where some groups'
-threads are retained under `--keep-evidence` and others are not); and (b) their real findings are
-NEVER used to construct a partial/degraded CLEAN — the round-level terminal status is
-`🛑 INPUT TOO LARGE` regardless of what any other group found. No automatic whole-round retry with
-smaller input is attempted — a human must start a fresh `codex-stream-review:ccs` invocation.
-
 **How to split:** group BY REVIEW DIMENSION/CONCERN — one group's `--focus` emphasizes
 correctness, another's security, another's performance/reuse, another's path correctness or
 workflow consistency for a doc/skill review, etc. (every group still calls `run-ccs-review.sh` with
