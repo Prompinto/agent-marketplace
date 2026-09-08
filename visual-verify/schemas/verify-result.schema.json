@@ -19,10 +19,27 @@
       "properties": {
         "dev_command_found": { "type": "boolean" },
         "playwright_status": { "type": "string", "enum": ["available", "missing", "install_declined"] },
-        "auth_gate_heuristic_fired": { "type": "boolean" }
+        "auth_gate_heuristic_fired": { "type": "boolean" },
+        "auth_stub": { "type": "string", "enum": ["invalid_config", "applied"] },
+        "auth_stub_detail": { "type": "string" },
+        "permission_key_match": { "type": "string", "enum": ["exact", "fallback"] }
       },
       "required": ["dev_command_found", "playwright_status", "auth_gate_heuristic_fired"],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": { "properties": { "auth_stub": { "const": "invalid_config" } }, "required": ["auth_stub"] },
+          "then": { "required": ["auth_stub_detail"], "not": { "required": ["permission_key_match"] } }
+        },
+        {
+          "if": { "properties": { "auth_stub": { "const": "applied" } }, "required": ["auth_stub"] },
+          "then": { "required": ["permission_key_match"], "not": { "required": ["auth_stub_detail"] } }
+        },
+        {
+          "if": { "anyOf": [{ "required": ["auth_stub_detail"] }, { "required": ["permission_key_match"] }] },
+          "then": { "required": ["auth_stub"] }
+        }
+      ]
     },
     "server": {
       "type": "object",

@@ -1,0 +1,10 @@
+{
+  "_comment": "Documentation-only example. Not a real profile -- method names below are fake placeholders. See README.md in this directory.",
+  "profile": "example-sdk-v1",
+  "required_methods": {
+    "exampleAsyncMethod": { "allowed_types": ["async_const"] },
+    "examplePermissionMethod": { "allowed_types": ["async_const"], "value_must_resolve_placeholder": "$PERMISSION_KEYS" },
+    "exampleNoopMethod": { "allowed_types": ["noop"] },
+    "exampleNoopReturnMethod": { "allowed_types": ["noop_return"] }
+  }
+}

@@ -101,8 +101,10 @@ port convention is hardcoded.
 **Why:** verifying that a UI change actually renders correctly normally means manually starting a
 dev server, opening a browser, navigating, and eyeballing it. This plugin automates that loop
 end-to-end — detection, start-or-reuse, capture, cleanup — while staying honest about what it
-can't do: it has no way to defeat an authentication system, no concept of any specific mock-server's
-variant-switching API, and no PR/MR comment-posting step.
+can't do by default: it has no *built-in* knowledge of any authentication system (an opt-in,
+config-driven exception exists — see "Auth-stub injection" below — but it only ever activates when
+the target repo itself contains a config file the project owner authored), no concept of any
+specific mock-server's variant-switching API, and no PR/MR comment-posting step.
 
 #### Install
 
@@ -130,7 +132,9 @@ browser against the wrong target.
   framework-default guess — never assumed correct until a real health-check confirms it), an
   auxiliary mock/API service if the repo's own scripts imply one, whether `@playwright/test`/
   `playwright` is installed and where, whether a matching Chromium build is cached, and a generic
-  (disclosure-only) auth-gate heuristic. Never writes, installs, or starts anything.
+  (disclosure-only) auth-gate heuristic, and — opt-in only, see below — discovery/validation of a
+  repo-authored auth-stub config via `scripts/auth-stub.sh`. Never writes, installs, or starts
+  anything.
 - `scripts/lifecycle.sh` — starts a detected dev command via `nohup`/`disown` with its PID written
   to a session-scoped file immediately, health-checks a host:port with a bounded polling loop (no
   fixed `sleep`), and stops a service by reading back that same PID file — **never** by
@@ -146,10 +150,22 @@ browser against the wrong target.
   target, detection findings, server reuse/start mode + PIDs, the scenario used, screenshot path,
   outcome, and cleanup status.
 
+#### Auth-stub injection (opt-in, off by default)
+
+If a target repo contains its own `.claude/visual-verify.auth-stub.json` (schema, validation layers,
+and the two-location profile lookup are documented in `skills/verify/SKILL.md`), this skill can stub
+a specific auth/permission SDK's global object so a gated route renders its real UI. **This plugin
+ships no real SDK profiles** — a profile's required-method list can be identifying to one company's
+internal SDK — see `visual-verify/profiles/README.md`. Create your own privately at
+`~/.claude/plugins/data/visual-verify/profiles/<name>.json` (never committed), or contribute a
+genuinely generic/sanitized one via PR to `visual-verify/profiles/`. Absent a config file, behavior
+is completely unchanged from the disclosure-only heuristic below.
+
 #### Out of scope (by design, not an oversight)
 
-- **No auth-bypass.** If a target route is gated behind login/permissions, the captured screenshot
-  may show a login/forbidden page — the auth-gate heuristic only discloses this, never bypasses it.
+- **No auth-bypass by default.** If a target route is gated behind login/permissions, the captured
+  screenshot may show a login/forbidden page — the auth-gate heuristic only discloses this, never
+  bypasses it, unless the repo owner has opted in via the auth-stub config above.
 - **No mock-server variant switching** or fixture patching for any specific mocking library.
 - **No GitHub/GitLab/any VCS comment posting.** Capture and report stay local.
 - **No custom scenario DSL.** Interactions are described in prose in the task text; there's no fixed
