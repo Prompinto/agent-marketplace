@@ -1,6 +1,6 @@
 ---
 name: verify
-description: Detects a web project's own dev tooling (any stack — React/Vue/Next/Vite/plain static, npm/pnpm/yarn, monorepo or not), starts or reuses its dev server, drives a real Chromium browser via the project's own installed Playwright to perform a described interaction and capture a screenshot, shows it to the user, and cleans up. No auth-bypass, no mock-server variant switching, no MR/PR comment posting, no custom scenario DSL — Claude authors the Playwright actions directly from the task description each run.
+description: Detects a web project's own dev tooling (any stack — React/Vue/Next/Vite/plain static, npm/pnpm/yarn, monorepo or not), starts or reuses its dev server, drives a real Chromium browser via the project's own installed Playwright to perform a described interaction and capture a screenshot, shows it to the user, and cleans up. No auth-bypass by default (an opt-in, config-driven exception exists — see "Auth-stub injection" below), no mock-server variant switching, no MR/PR comment posting, no custom scenario DSL — Claude authors the Playwright actions directly from the task description each run.
 ---
 
 # visual-verify:verify — stack-agnostic visual verification
@@ -24,9 +24,12 @@ state across invocations.
 
 ## Explicitly out of scope (do not attempt any of this)
 
-- **No auth-bypass stub injection.** This skill has no built-in way to defeat any authentication or
-  permission system. If Phase 1's auth-gate heuristic fires, disclose it (Phase 1 outcomes, Phase 3,
-  Phase 4) — never attempt to inject a bypass, stub, or token for any specific SDK.
+- **No auth-bypass by default, and never automatically.** This skill has no *built-in* knowledge of
+  any authentication or permission system. If Phase 1's auth-gate heuristic fires, disclose it
+  (Phase 1 outcomes, Phase 3, Phase 4). The one exception is the opt-in, config-driven auth-stub
+  injection feature described below — it only ever activates when the target repo itself contains a
+  `.claude/visual-verify.auth-stub.json` file the *project owner* authored and that passes strict
+  validation; absent that file, behavior is unchanged and no bypass is attempted for any SDK.
 - **No mock-server variant switching or fixture patching.** A second/auxiliary service is detected
   generically (Phase 1 item 4) and started if present, but this skill has no concept of a mocking
   library's own variant-switching API and never attempts to drive one.
@@ -114,6 +117,114 @@ prints one JSON object:
   is **disclosure only** — see "Explicitly out of scope" above. Never treat a `false` here as proof
   the target has no auth; it only means the grep found nothing, which can also mean the auth is
   server-side/proxy-level and invisible to a static grep.
+- `stub_config` — **omitted entirely** when no candidate config file was found (byte-for-byte
+  identical Phase 1 output to a project that never touches this feature). Present only when a
+  candidate file was found; see "Auth-stub injection (opt-in)" below for its shape.
+
+### Auth-stub injection (opt-in)
+
+A repo owner can opt in to having this skill stub out a specific auth/permission SDK's global
+object during Phase 3, so a gated route renders its real UI instead of a login/forbidden screen.
+This is **off by default** and only ever activates when the target repo contains its own valid
+config file — this skill never guesses at, generates, or ships one.
+
+**Config file location & discovery.** `detect-env.sh` calls `scripts/auth-stub.sh validate` which
+looks for `.claude/visual-verify.auth-stub.json`, checked at both the resolved app directory (in a
+monorepo, when distinct from the repo root) and the repo root, in that priority order. Walking
+stops at the first candidate that *exists* — a config file that exists but is unreadable or invalid
+is never silently skipped in favor of a lower-priority candidate (that would hide a real problem);
+only a missing file continues the walk. If every candidate is missing, the feature is inert and
+`stub_config` is omitted from Phase 1's JSON entirely.
+
+**Config schema** (`$schema_version: 1`):
+```json
+{
+  "$schema_version": 1,
+  "profile": "my-sdk-v1",
+  "intercept": {"url_pattern": "**/libs/some-sdk*", "content_type": "application/javascript"},
+  "global_object_path": ["window", "someSdk"],
+  "factory_method": "createSomeSdk",
+  "stub": {
+    "exampleTokenMethod": {"type": "async_const", "value": "fake-token"},
+    "examplePermissionMethod": {"type": "async_const", "value": "$PERMISSION_KEYS"},
+    "exampleMountMethod": {"type": "noop"},
+    "exampleLanguageMethod": {"type": "noop_return", "value": null}
+  },
+  "permission_keys_by_route": {
+    "/admin/example": ["example-permission-key"],
+    "*": []
+  }
+}
+```
+- `profile`: which required-method contract this config targets (see "Profile lookup" below). Must
+  match `^[A-Za-z_$][A-Za-z0-9_$-]*$` — anything else (including a `/`, `\`, or `.`) fails validation
+  before any filesystem lookup ever happens.
+- `global_object_path` / `factory_method` / every `stub` key: each a single JS identifier
+  (`^[A-Za-z_$][A-Za-z0-9_$]*$`), additionally denylisted against `__proto__`, `constructor`,
+  `prototype` (defense against prototype pollution), and `__visualVerifyPermissionKeyMatch` (the
+  well-known property the injected init script itself uses to record the route-match outcome —
+  reserved so a `factory_method` of that exact name can never collide with it and have its own
+  factory function silently overwritten by the route-match marker). These are the only values ever
+  used to index a live JS object (via safe `globalThis[seg]` property-path traversal) — never
+  string-built, never `eval`/`new Function`.
+- `stub.<name>.type` ∈ `async_const` | `noop` | `noop_return`. `noop` takes no `value` at all.
+  `async_const`/`noop_return` require a `value` that is a JSON scalar (string/number/boolean/null —
+  a number must be finite, not negative zero in any spelling (`-0`, `-0.0`, `-0e-324`, ...), not a
+  nonzero magnitude below the smallest representable positive double (`5e-324`), and — for whole
+  numbers — within `Number.MAX_SAFE_INTEGER`, so the value survives an IEEE-754 double round-trip
+  unchanged; enforced via a python3 delegate rather than jq's own comparisons, which lose precision
+  at these extreme magnitudes) or a
+  plain object/array nested only of those — **and no
+  object at any nesting depth may have an own key of `__proto__`, `constructor`, `prototype`, or
+  `__visualVerifyPermissionKeyMatch`.** This applies even though `value` is
+  delivered as inert structured-clone data, never as an identifier: the value is ultimately embedded
+  as a JS object-literal in the generated driver script, and object-literal syntax specifically
+  (unlike `JSON.parse()`) treats an own `__proto__` key as a prototype-setting directive rather than
+  a normal property, silently discarding whatever the config actually configured there. A string
+  value may be exactly `$PERMISSION_KEYS` or `$ORIGIN_PATHNAME` (whole-string match only) to be
+  resolved at injection time; any other string is used as a literal.
+- `permission_keys_by_route`: object keyed by route path, must include a `"*"` fallback; every value
+  must be an array of non-empty strings, but the array itself MAY be empty (as the `"*"` fallback in
+  the example above is — "no permission keys required/known for this route" is a valid, common case,
+  not a validation failure).
+
+**Validation — three layers, all must pass, in order** (anything short of all three passing is
+treated identically to "absent" for Phase 3, with the specific violation disclosed):
+1. `$schema_version` must be exactly `1`.
+2. `profile` passes the identifier grammar and structural validation passes for every field above.
+3. **Completeness**: every method name the resolved profile's `required_methods` declares must have
+   a matching `stub` entry, whose `type` is one of that method's `allowed_types`, and whose `value`
+   is exactly the declared placeholder when the profile requires one. This is the check that catches
+   the historical failure mode this feature exists to prevent — a config that stubs *most* but not
+   *all* required methods, silently leaving the app to call through to the real (blocked) SDK for
+   whatever was missed.
+
+**Profile lookup (two locations, private first).** `profile` resolves to `<name>.json`, checked in:
+1. `~/.claude/plugins/data/visual-verify/profiles/<name>.json` — private, machine-local, never
+   committed to this or any repo.
+2. `<this plugin's install dir>/profiles/<name>.json` — bundled fallback. **This plugin ships no
+   real profiles here** (a profile's required-method list can be specific/identifying to one
+   company's internal SDK) — see `profiles/README.md`. Contribute a genuinely generic one via PR if
+   you want it shipped.
+
+Both locations get the same safe-lookup treatment: the resolved profile name must independently
+pass the identifier-plus-hyphen grammar above, and the resolved absolute file path must be confirmed
+(via realpath comparison) to be a direct child of whichever profiles directory is being checked —
+before it is ever opened. Neither location having a valid file for the requested name is
+`stub_config.status: "unrecognized_profile"` (nested under `stub_config`, not a flat
+`stub_config_status` field — matches `auth-stub.sh`'s own `{"status":"unrecognized_profile"}`
+output, which `detect-env.sh` nests as `stub_config` in its own JSON).
+
+**Trade-offs, stated plainly:**
+1. A profile's required-method list is specific to one SDK's shape; a different SDK needs its own
+   profile file — zero changes to `auth-stub.sh` or the render script.
+2. The `stub` type vocabulary (`async_const`/`noop`/`noop_return`) is deliberately narrow and may not
+   cover every SDK's method shapes.
+3. Requires manually authoring one config file per project that wants this.
+4. **No client-side SPA route-transition support.** The route match (exact vs. `*` fallback) is
+   resolved inside the injected init script at *its own* runtime, which only re-fires on a genuine
+   new-document navigation (including after a server redirect) — never on
+   `history.pushState`/`replaceState`-based client-side route changes.
 
 **Multiple candidate apps in a monorepo:** if `apps[]` has more than one entry with a resolved
 `dev_script_name`, and the task text doesn't already name which app, ask the user (via
@@ -215,22 +326,98 @@ test -d "<playwright.resolved_path from Phase 1>" && echo present
 ```
 If it's gone, stop, go to Phase 5 cleanup, and record `outcome: "failed_env_detection"`.
 
-Write a session-scoped driver script to `/tmp/vv-${SESSION_ID}-driver.js` that:
+### Symlink-safe temp file creation
+
+Both the driver script and the screenshot land at predictable, guessable paths under `/tmp`
+(`SESSION_ID` is only a timestamp + PID, same as the log/pid files `lifecycle.sh`'s own
+`safe_create_file` helper already protects in Phase 2). **Before writing to EITHER path for the
+first time this run**, create it safely first, so the real content-write that follows (the Write
+tool for the driver script; Playwright's own `page.screenshot({path: ...})` for the screenshot)
+lands in an already-safely-created regular file, rather than itself being the first thing to touch
+that path and risk creating-through or following a pre-planted symlink there:
+```bash
+"$INSTALL_PATH/scripts/lifecycle.sh" touch-safe "/tmp/vv-${SESSION_ID}-driver.js"
+"$INSTALL_PATH/scripts/lifecycle.sh" touch-safe "/tmp/vv-${SESSION_ID}-screenshot.png"
+```
+Confirm each reports `{"created":true,...}` before proceeding — an `{"error":...}` here means the
+path could not be safely claimed (see `lifecycle.sh`'s own `safe_create_file` comments for why) and
+should be treated the same as any other Phase 3 setup failure. Call `touch-safe` on each of these two
+paths **exactly once** per run, immediately before that path's one content-write step — never call it
+a second time on a path this run already used, since a second call atomically recreates (and so
+empties) whatever content is already there.
+
+Write a session-scoped driver script to `/tmp/vv-${SESSION_ID}-driver.js` (already safely created
+above) that:
+
+The whole script body (steps 2-8 below) must run inside a single async context — `page.route`/
+`page.addInitScript` (step 3) and `page.evaluate` (step 5) are all awaited. Wrap steps 2-8 in an
+async IIFE at the top level of the file:
+```js
+(async () => {
+  // steps 2-8 go here
+})();
+```
+
 1. `require()`s Chromium from the **project's own resolved Playwright path** from Phase 1 — never a
-   hardcoded `node_modules/@playwright/test`, never a globally-installed copy:
+   hardcoded `node_modules/@playwright/test`, never a globally-installed copy. **Never splice the raw
+   path string directly into the `require('...')` call itself** — build it the same safe way the
+   "Auth-stub injection" section below already builds every config-controlled value reaching this
+   file: assign `JSON.stringify(<the resolved_path string value>)` to a local variable first, then
+   reference that variable in the `require(...)` call. A path containing a single quote (a real, if
+   unusual, possibility — e.g. a directory someone created with one in its name) would otherwise
+   break out of a raw single-quoted string literal and let injected JS run in the driver script;
+   `JSON.stringify()` always produces a syntactically valid, self-contained JS string literal (every
+   quote/backslash/control character correctly escaped), closing that off:
    ```js
-   const { chromium } = require('<playwright.resolved_path from Phase 1>');
+   const __vvPlaywrightPath = <JSON.stringify'd resolved_path value from Phase 1>;
+   const { chromium } = require(__vvPlaywrightPath);
    ```
-2. Launches Chromium (`chromium.launch()`), opens a page, and navigates to the resolved URL
-   (`http://<host>:<port><path from task text, default "/">`).
-3. **Performs the interaction scenario described in the task text, written directly as Playwright
+2. Launches Chromium (`chromium.launch()`) and opens a page.
+3. **If Phase 1's `stub_config.status == "valid"`**, inject the auth stub *before navigating*
+   (`page.addInitScript` re-fires on every real navigation, so registering it before the first
+   `page.goto` is what makes it apply there too):
+   ```bash
+   node "$INSTALL_PATH/scripts/render-auth-stub-snippet.js" <(printf '%s' "$STUB_CONFIG_JSON" | jq -c '.config')
+   ```
+   Paste the printed snippet verbatim into the driver script at this point (inside the async IIFE
+   above) — `fn` (the function passed to `addInitScript`) is fixed, hardcoded source that never
+   changes across configs; only the DATA reaching it varies. That data (the `dataArg` object, and
+   separately `intercept.url_pattern`/`intercept.content_type`) reaches the generated driver script
+   the same way for both: as a `JSON.stringify()`-produced literal assigned to a local variable,
+   which the fixed `page.route(...)`/`page.addInitScript(fn, ...)` call sites then reference by
+   name — never spliced into `fn`'s own function body (the actual in-page code), which is what
+   actually prevents a config value from ever executing as arbitrary code, in-page or in the driver
+   process itself. The rendered snippet itself `await`s both `page.route(...)` and
+   `page.addInitScript(...)` — which is why this whole step must run inside the async IIFE framing
+   above, so both registrations are guaranteed to actually complete before step 4's `page.goto`
+   begins. See "Auth-stub injection (opt-in)" above for what it does. If `stub_config.status` is
+   anything other than `"valid"` (including `"absent"`), skip this step entirely — Phase 3's
+   existing behavior is unchanged.
+4. Navigates to the resolved URL (`http://<host>:<port><path from task text, default "/">`).
+5. **If the auth stub was injected in step 3**, read back the route-match outcome right after
+   navigation completes (safe — traverses `globalThis` via the same validated `global_object_path`
+   array passed as data, never a string-built expression):
+   ```js
+   const permissionKeyMatch = await page.evaluate((segs) => {
+     let t = globalThis;
+     for (const s of segs) t = t && t[s];
+     return t ? t.__visualVerifyPermissionKeyMatch : null;
+   }, <global_object_path array from stub_config.config>);
+   ```
+   Keep this value for Phase 4's `permission_key_match` result field.
+6. **Performs the interaction scenario described in the task text, written directly as Playwright
    actions for this one run** — there is no DSL to parse; read the prose and write the corresponding
    `page.click(...)`/`page.fill(...)`/`page.waitForSelector(...)`/etc. calls yourself. If the task
    text names no interaction (just "verify this page renders"), skip straight to the screenshot.
-4. Screenshots to `/tmp/vv-${SESSION_ID}-screenshot.png` — session-scoped, so concurrent runs never
-   collide on a shared fixed path.
-5. Closes the browser and exits 0; on any thrown error, `console.error` it and exit 1 so the
+7. Screenshots to `/tmp/vv-${SESSION_ID}-screenshot.png` (already safely created above via
+   `touch-safe`) — session-scoped, so concurrent runs never collide on a shared fixed path.
+8. Closes the browser and exits 0; on any thrown error, `console.error` it and exit 1 so the
    failure is visible in the command's own output rather than silently producing no screenshot.
+
+**If `stub_config.status` is anything other than `"valid"` or `"absent"`** (i.e. `"unreadable"`,
+`"unsupported_schema_version"`, `"unrecognized_profile"`, or `"invalid"`) — disclose the specific
+`detail` string to the user in Phase 4 and proceed exactly as if no config had been found (no stub
+injected). A broken config is never a reason to stop the whole run.
 
 Run it with the repo's own Node:
 ```bash
@@ -252,9 +439,12 @@ and retry once if they agree.
   "failed_capture"` (screenshot step itself failed) as appropriate — whichever step in the driver
   script actually threw.
 
-**No auth-bypass attempt here, ever.** If Phase 1's auth-gate heuristic fired, the captured
-screenshot may show a login/forbidden page instead of the intended UI — that is expected and must be
-disclosed in Phase 4, not silently worked around.
+**No auth-bypass attempt beyond the opt-in stub injection above.** If Phase 1's auth-gate heuristic
+fired but step 3 above found no valid `stub_config` to inject (or none was ever present), the
+captured screenshot may show a login/forbidden page instead of the intended UI — that is expected
+and must be disclosed in Phase 4, not silently worked around. This skill never attempts any OTHER
+bypass — no built-in knowledge of any auth system, no guessing, no fallback heuristic beyond exactly
+the config-driven injection already described in step 3.
 
 ---
 
@@ -277,6 +467,8 @@ Report to the user, in plain text:
 - Whether the server was reused or started fresh by this run (and the aux service, if any).
 - The screenshot path.
 - The auth-gate disclosure from Phase 1, if it fired.
+- Whether an auth stub was applied (and the route-match outcome), or the specific reason a found
+  `stub_config` was rejected, if `stub_config` was present at all.
 
 Write the structured result artifact:
 ```bash
@@ -288,7 +480,10 @@ marketplace key per-repo log directories). Write
 `schemas/verify-result.schema.json` — fields:
 - `session_id`, `target` (`repo`, `app`, `url`)
 - `env_detection` (`dev_command_found`, `playwright_status`: `available`|`missing`|
-  `install_declined`, `auth_gate_heuristic_fired`)
+  `install_declined`, `auth_gate_heuristic_fired`, and — only when Phase 1 found a `stub_config`
+  candidate at all — `auth_stub`: `"invalid_config"` (+ sibling `auth_stub_detail` naming the
+  reason) or `"applied"` (+ sibling `permission_key_match`: `"exact"`|`"fallback"`). Omitted
+  entirely for a project that never touches the auth-stub feature.)
 - `server` (`mode`: `reused`|`started`|`not_applicable`, `pids`: array of the PID(s) this run
   itself started — empty when reused)
 - `scenario` (the task text actually used)

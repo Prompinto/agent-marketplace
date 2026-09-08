@@ -15,12 +15,75 @@ Usage:
   lifecycle.sh start <cwd> <command> <pid_file> <log_file>
   lifecycle.sh wait-healthy <host> <port> <timeout_secs> <log_file>
   lifecycle.sh stop <pid_file>
+  lifecycle.sh touch-safe <path>
 EOF
 }
 
 MODE="${1:-}"
 [ -n "$MODE" ] || { usage; exit 1; }
 shift || true
+
+# safe_create_file <path> -- atomically create a fresh, empty regular file at
+# <path>, refusing to ever touch a pre-existing symlink no matter who put it
+# there or what it points to.
+#
+# Needed because SESSION_ID (and therefore this exact log/pid path) is only a
+# timestamp + PID -- guessable -- and /tmp (or /private/tmp it points to) is
+# typically sticky-bit world-writable (drwxrwxrwt): ANY local user can CREATE
+# a file there, but in a sticky directory only the OWNER of an existing entry
+# can REMOVE it. A different local user pre-creating a symlink at this exact
+# path therefore makes a plain `rm -f` on it fail with a permission error --
+# silently, since `-f` suppresses the message -- after which the following
+# `: > "$path"` / nohup redirect follows that still-present, attacker-chosen
+# symlink to wherever it points, completely unaffected by the failed rm.
+#
+# O_EXCL|O_NOFOLLOW closes this in one atomic syscall: O_EXCL fails the open
+# if ANYTHING already exists at that name (no check-then-create race window),
+# and O_NOFOLLOW fails it outright if that something is a symlink, regardless
+# of where it points or who owns it. The only expected benign reason
+# something would already be there is a leftover regular file from this same
+# script's own prior run at this exact path (SESSION_ID collisions are
+# assumed not to happen per invocation, same assumption the PID-fingerprint
+# design elsewhere in this script already relies on) -- so on a first
+# failure, try exactly one unlink + retry for that case. If the retry ALSO
+# fails -- e.g. the unlink itself is refused with EACCES because a different
+# user owns the entry in a sticky dir, which is the real attacker case this
+# whole function defends against -- give up loudly. Never fall through to a
+# plain truncating open on repeated failure.
+safe_create_file() {
+  python3 -c '
+import os, sys, errno
+
+path = sys.argv[1]
+flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+if hasattr(os, "O_NOFOLLOW"):
+    flags |= os.O_NOFOLLOW
+
+def try_create():
+    # 0o600 (owner read/write only), never 0o644 -- these predictable /tmp
+    # paths hold real content (driver-script source with config data baked
+    # in, or the captured screenshot itself, potentially showing sensitive
+    # UI) and /tmp is shared across every local account on the machine. The
+    # requested mode is a CEILING the umask can only narrow further, never
+    # widen, so 0o600 here guarantees group/other never get read access no
+    # matter what the umask is set to (confirmed live: the previous 0o644
+    # request produced real mode 644 under a normal 022 umask, exactly as
+    # world-readable as it looks).
+    fd = os.open(path, flags, 0o600)
+    os.close(fd)
+
+try:
+    try_create()
+except OSError as e:
+    if e.errno not in (errno.EEXIST, errno.ELOOP):
+        sys.exit(1)
+    try:
+        os.unlink(path)
+        try_create()
+    except OSError:
+        sys.exit(1)
+' "$1" 2>/dev/null
+}
 
 case "$MODE" in
   health)
@@ -49,8 +112,19 @@ case "$MODE" in
       exit 1
     fi
     [ -d "$CWD" ] || { jq -n --arg cwd "$CWD" '{"error":"cwd is not a directory", "cwd":$cwd}'; exit 1; }
-    : > "$LOG_FILE"
-    rm -f "$PID_FILE"
+    # Atomic, symlink-proof creation for both files -- see safe_create_file
+    # above for why a plain `rm -f` + truncating `>`/nohup-redirect is not
+    # sufficient in a sticky-bit shared /tmp.
+    safe_create_file "$LOG_FILE" || {
+      jq -n --arg log_file "$LOG_FILE" \
+        '{"error":"could not safely create log file -- possible symlink/ownership conflict at this path", "log_file":$log_file}'
+      exit 1
+    }
+    safe_create_file "$PID_FILE" || {
+      jq -n --arg pid_file "$PID_FILE" \
+        '{"error":"could not safely create pid file -- possible symlink/ownership conflict at this path", "pid_file":$pid_file}'
+      exit 1
+    }
     (
       cd "$CWD" || exit 127
       # `set -m` turns on job control in this subshell, which makes the
@@ -208,6 +282,27 @@ case "$MODE" in
       exit 1
     fi
     jq -n --argjson pid "$PID" '{stopped:true, pid:$pid}'
+    exit 0
+    ;;
+
+  touch-safe)
+    # touch-safe <path> -- exposes safe_create_file (defined above, already
+    # shared by `start`'s LOG_FILE/PID_FILE creation) as its own subcommand,
+    # so a caller writing a session-scoped file elsewhere (e.g. SKILL.md's
+    # Phase 3 driver-script and screenshot paths, both predictable
+    # timestamp+PID-based /tmp paths just like SESSION_ID's log/pid files
+    # already are) can get the same atomic, symlink-proof creation BEFORE the
+    # real content write, instead of that content write itself being the
+    # first thing to touch the path and risk creating-through or following a
+    # pre-planted symlink there.
+    TOUCH_PATH="${1:-}"
+    [ -n "$TOUCH_PATH" ] || { jq -n '{"error":"touch-safe requires: path"}'; exit 1; }
+    safe_create_file "$TOUCH_PATH" || {
+      jq -n --arg path "$TOUCH_PATH" \
+        '{"error":"could not safely create file -- possible symlink/ownership conflict at this path", "path":$path}'
+      exit 1
+    }
+    jq -n --arg path "$TOUCH_PATH" '{created:true, path:$path}'
     exit 0
     ;;
 
