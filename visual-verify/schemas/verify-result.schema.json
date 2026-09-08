@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "visual-verify result",
+  "type": "object",
+  "properties": {
+    "session_id": { "type": "string", "minLength": 1 },
+    "target": {
+      "type": "object",
+      "properties": {
+        "repo": { "type": "string" },
+        "app": { "type": ["string", "null"] },
+        "url": { "type": ["string", "null"] }
+      },
+      "required": ["repo", "app", "url"],
+      "additionalProperties": false
+    },
+    "env_detection": {
+      "type": "object",
+      "properties": {
+        "dev_command_found": { "type": "boolean" },
+        "playwright_status": { "type": "string", "enum": ["available", "missing", "install_declined"] },
+        "auth_gate_heuristic_fired": { "type": "boolean" }
+      },
+      "required": ["dev_command_found", "playwright_status", "auth_gate_heuristic_fired"],
+      "additionalProperties": false
+    },
+    "server": {
+      "type": "object",
+      "properties": {
+        "mode": { "type": "string", "enum": ["reused", "started", "not_applicable"] },
+        "pids": {
+          "type": "array",
+          "items": { "type": "integer", "minimum": 1 }
+        }
+      },
+      "required": ["mode", "pids"],
+      "additionalProperties": false
+    },
+    "scenario": { "type": "string" },
+    "screenshot_path": { "type": ["string", "null"] },
+    "outcome": {
+      "type": "string",
+      "enum": ["captured", "failed_env_detection", "failed_start", "failed_navigation", "failed_capture"]
+    },
+    "cleanup": { "type": "string", "enum": ["killed", "left_running", "not_applicable"] }
+  },
+  "required": ["session_id", "target", "env_detection", "server", "scenario", "screenshot_path", "outcome", "cleanup"],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": { "properties": { "outcome": { "const": "captured" } }, "required": ["outcome"] },
+      "then": { "properties": { "screenshot_path": { "type": "string", "minLength": 1 } }, "required": ["screenshot_path"] }
+    },
+    {
+      "if": { "properties": { "outcome": { "not": { "const": "captured" } } }, "required": ["outcome"] },
+      "then": { "properties": { "screenshot_path": { "type": "null" } } }
+    }
+  ]
+}

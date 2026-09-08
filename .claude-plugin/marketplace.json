@@ -18,6 +18,12 @@
       "description": "Claude+Codex adversarial cross-review on a resumable Codex thread — multi-round follow-up via codex exec resume, no diff re-send after round 1.",
       "source": "./codex-stream-review",
       "category": "productivity"
+    },
+    {
+      "name": "visual-verify",
+      "description": "Detects a web project's own dev tooling, starts/reuses its dev server, drives a real browser with Playwright to capture a screenshot of the target UI, then cleans up — stack-agnostic, no auth-bypass or mock-variant switching built in.",
+      "source": "./visual-verify",
+      "category": "productivity"
     }
   ]
 }
