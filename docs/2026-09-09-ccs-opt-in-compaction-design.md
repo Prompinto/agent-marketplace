@@ -462,10 +462,30 @@ isolation from the round loop" below.
    the OS level, e.g. macOS's own ordinary `/tmp` → `/private/tmp`, which is normal and not a
    pollution signal); and (5) `git rev-parse --show-toplevel` output EQUALS `CLEAN_REPO_DIR`'s own
    canonical path exactly, confirming it is the genuine ROOT of its own independent repository, never
-   merely nested inside something else. Cleanliness means ALL FIVE checks pass — a bare,
-   freshly-`git init`'d, genuinely-independent, non-symlinked git repo directory with no files and no
-   commits — never inferred from the absence of DIFFS, never from a `git rev-parse` failure whose
-   EXACT cause was never actually confirmed, and never from mere membership in SOME working tree. **A
+   merely nested inside something else.
+
+   **A SIXTH check is still needed — `.git` itself must be a genuine, self-contained directory, never
+   a gitfile/symlink borrowing metadata from elsewhere (new — closes a real gap found during design
+   review, confirmed live via TWO separate reproductions: (a) a linked git WORKTREE's own
+   `--show-toplevel` returns that worktree's OWN local root — satisfying check (5) — even though its
+   `--git-dir`/`--git-common-dir` point OUTSIDE it, into a completely different repository's shared
+   metadata; (b) an ordinary empty, non-symlink directory, paired via `--git-dir=`/`--work-tree=` with
+   a DIFFERENT, already-existing unborn git directory, was independently confirmed to satisfy ALL
+   FIVE checks above simultaneously — `is-inside-work-tree=true`, its own correct top-level path, a
+   failing/unborn `HEAD` lookup, no symlink, and (trivially) no stray entries. In BOTH cases, the
+   directory's identity checks all pass while the git METADATA governing what `--uncommitted` actually
+   collects is silently borrowed from somewhere else entirely — check (1)'s own exemption for an entry
+   literally named `.git` never verified what that entry actually IS.)** Fixed: `CLEAN_REPO_DIR/.git`
+   must itself be a real, ordinary DIRECTORY — never a plain file (the standard git-worktree gitfile
+   format, `gitdir: <path>`) and never a symlink (`[ -d "$CLEAN_REPO_DIR/.git" ] && [ ! -L
+   "$CLEAN_REPO_DIR/.git" ]`) — ruling out the entire linked-worktree/external-git-dir redirection
+   mechanism that both live reproductions exploited, since that mechanism structurally requires `.git`
+   to be something OTHER than an ordinary self-contained directory. Cleanliness means ALL SIX checks
+   pass — a bare, freshly-`git init`'d, genuinely-independent, non-symlinked, self-contained git repo
+   directory with no files and no commits — never inferred from the absence of DIFFS, never from a
+   `git rev-parse` failure whose EXACT cause was never actually confirmed, never from mere membership
+   in SOME working tree, and never from identity checks alone without confirming the git metadata
+   itself is genuinely local and self-contained. **A
    residual, disclosed risk this does not close: `references/snapshot-integrity.md`'s own
    `scripts/lib/git-safe.sh` sanitization (e.g. neutralizing a repo-local `core.fsmonitor` hook that
    could otherwise execute a command) protects the WRAPPER's own git invocations specifically — it
@@ -473,6 +493,21 @@ isolation from the round loop" below.
    `.git/config` during its own investigation of this same CWD. Hardening Codex's own sandboxed
    behavior against a hypothetically malicious `.git` directory is a base-sandbox-model concern well
    beyond this design's own scope — disclosed, not solved, here.**
+
+   **A second residual, disclosed risk: a check-then-use race remains between these six checks
+   completing and the wrapper's own LATER, separate use of the same `$CWD` pathname (new — closes a
+   real gap found during design review: these checks all resolve the pathname locally, then dispatch
+   happens afterward — the wrapper itself independently re-resolves `$CWD` twice more, once for its
+   own `git -C "$CWD"` calls and once for its `cd "$CWD"` launch step. If `CLEAN_REPO_DIR` were
+   replaced or swapped for a symlink in the narrow window between these checks finishing and either of
+   those later resolutions, none of the six checks would have observed it.)** This is inherent to any
+   "verify a pathname locally, then hand it to a separately-invoked process" pattern and cannot be
+   fully closed without a mechanism this design does not have available (e.g. resolving to a file
+   descriptor and passing THAT to the wrapper, rather than a re-resolvable pathname — a change to the
+   wrapper's own invocation contract, out of scope here). Accepted as a narrow, low-probability,
+   disclosed residual window — the six checks close every gap that persists BETWEEN separate,
+   independent uses of the same session-lived pathname (the realistic threat this design addresses),
+   not a race against a change happening in the same instant as dispatch itself.
 
    **Corrects a false claim made while fixing this: there is no "original round-1 creation-time
    check" for this addition to also apply to (new — closes a real gap found during design review: an
@@ -492,7 +527,7 @@ isolation from the round loop" below.
    would mean adding a new check to the base skill's own Phase 0/Phase 1 setup, which this document
    does not own).
 
-   If any of the five checks is not clean, this is
+   If any of the six checks is not clean, this is
    treated exactly like any other compaction failure (log the narration, fall through to the normal
    `--resume` fallback) — never dispatch against a `CLEAN_REPO_DIR` whose emptiness wasn't just
    reconfirmed. Only once this check passes does the `--uncommitted` dispatch against `CLEAN_REPO_DIR`
@@ -1325,8 +1360,10 @@ isolation from the round loop" below.
         retry-then-succeed round too" above (A's own resume retry-then-succeed, A's own no-threadId
         fresh-retry success, or A-exhausted-then-B-succeeds): ADD `compaction_attempt_failed_thread`
         (the array covering whichever earlier sub-attempt(s) were GENUINELY abandoned before this
-        round's real success — correctly EMPTY/absent for the no-threadId-fresh-retry-success
-        sub-case specifically, since bullet 2's own retry never captures anything to abandon),
+        round's real success — correctly EMPTY/absent for BOTH the resume-retry-then-succeed AND the
+        no-threadId-fresh-retry-success sub-cases, since in EITHER, the SAME thread that had the
+        earlier failed response is what goes on to succeed — nothing was ever abandoned in either
+        case, only in the A-exhausted-then-B-succeeds sub-case),
         `compaction_attempt_execution` whenever the underlying earlier failed response(s) actually
         carried it, and `compaction_attempt_coverage` ONLY for whichever of those earlier failed
         response(s) was itself a fresh `--uncommitted` dispatch — never for a failed `--resume` call
@@ -1909,7 +1946,19 @@ whose real outcome is a success (any of the three sub-cases above — A's own re
 retry-then-succeed, A's own bullet-2 no-threadId fresh-retry success, or A exhausted then B
 succeeded), "Round R's compaction restart succeeded after an earlier attempt used
 `<input>`/`<output>` tokens (`<elapsed>`s)" — in both cases reporting each preserved sub-attempt's own
-figures, never conflated with the round's own real dispatch numbers.
+figures, never conflated with the round's own real dispatch numbers. **Both templates must also
+handle a preserved `execution` entry that has NO `usage` object at all, not just no tokens (new —
+closes a real gap found during design review: `references/execution-telemetry.md`'s own established
+contract allows an `execution` object to legitimately carry only `elapsed_seconds` with `usage`
+entirely absent when usage is unavailable — that same reference's own required final-report fallback
+for this exact situation is the literal wording "usage unavailable." Both templates above
+unconditionally interpolate `<input>`/`<output>`, which cannot be satisfied for such an entry without
+fabricating numbers or leaving a broken placeholder.)** Fixed: whenever a preserved
+`compaction_attempt_execution` entry lacks a `usage` object, both templates substitute
+`references/execution-telemetry.md`'s own established "usage unavailable" wording in place of the
+`<input>`/`<output>` tokens portion, reusing that EXACT existing fallback rather than inventing a
+new one — e.g. "Round R also attempted a compaction restart that failed after `<elapsed>`s (usage
+unavailable) before falling back."
 
 ### A failed compaction attempt is a superseded attempt, not a novel evidence-lifecycle case (new — closes a real gap found during design review)
 
@@ -2111,20 +2160,31 @@ own first response failed with no threadId, and its ONE allowed no-threadId fres
 succeeded — still "A," no abandoned thread, but a real earlier failed response to preserve (bullet
 2); or (iii) a genuinely abandoned thread (thread A, exhausted, per "Reconciling with
 `references/retry-guards.md`'s OWN full escalation topology" above) preceded thread B's own eventual
-success within that SAME round. **Sub-cases (i) and (iii) populate `compaction_attempt_failed_thread`
-(a real thread was abandoned); sub-case (ii) does NOT (no thread was ever abandoned — bullet 2's own
-retry never captured one to abandon) — but all three populate `compaction_attempt_execution`/
-`compaction_attempt_coverage` (per the earlier failed response's own telemetry/coverage, per "Applies
-to a retry-then-succeed round too" above). These populate DIFFERENT fields, never conflated
-(corrected — closes a real gap found during design review: an
+success within that SAME round. **ONLY sub-case (iii) ever populates `compaction_attempt_failed_thread`
+— corrected here (closes a real, direct self-contradiction found during design review: an earlier
+revision of this exact summary said "sub-cases (i) and (iii)" populate this field — but that directly
+contradicts the very correction stated immediately below in this same paragraph, that a thread
+succeeding via its own resume is NOT abandoned. Sub-case (i) IS exactly "a resume retry succeeding
+for that same thread" — so it can NEVER populate `compaction_attempt_failed_thread` either, for the
+identical reason sub-case (ii) does not.)** Neither sub-case (i) NOR sub-case (ii) ever populates
+`compaction_attempt_failed_thread` — in both, the SAME thread that had an earlier failed response is
+what goes on to succeed, so nothing was ever abandoned. Only sub-case (iii) populates it (a real
+thread, A, was genuinely abandoned before B succeeded). **All three sub-cases MAY populate
+`compaction_attempt_execution`/`compaction_attempt_coverage` — conditionally, never unconditionally
+(corrected — closes a related overstatement in the same pass: "all three populate" overstates it;
+`compaction_attempt_execution` is present only when the earlier failed response actually carried an
+`execution` object, and `compaction_attempt_coverage` only when that earlier failed response was
+itself a fresh `--uncommitted` dispatch — see immediately below).** These populate DIFFERENT fields,
+never conflated (corrected — closes a real gap found during design review: an
 earlier revision here said a "resume retry" succeeding populates `compaction_attempt_failed_thread`
 for that SAME thread — but a thread that itself goes on to succeed via its own resume is NOT
 abandoned at all, per `references/retry-guards.md`'s own explicit "that existing thread is untouched,
 not abandoned" language — recording it here would cause it to be double-cleaned, or falsely reported
 as leaked, despite being the round's own real, live, active thread).**
 `compaction_attempt_execution` records ANY earlier failed RESPONSE's own telemetry regardless of
-whose thread it belongs to (pure audit of real cost incurred, per "Preserving failed-attempt
-telemetry" and "Applies to a retry-then-succeed round too" above); `compaction_attempt_coverage`
+whose thread it belongs to, WHEN that response actually carried one (pure audit of real cost
+incurred, per "Preserving failed-attempt telemetry" and "Applies to a retry-then-succeed round too"
+above); `compaction_attempt_coverage`
 records the SAME, but ONLY for whichever of those earlier failed responses was itself a fresh
 `--uncommitted` dispatch — never for a failed `--resume` call, which never carries coverage at all
 regardless of the round's overall scope (see "Scoped to a failed FRESH `--uncommitted` dispatch
