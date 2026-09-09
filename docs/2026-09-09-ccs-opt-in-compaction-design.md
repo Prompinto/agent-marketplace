@@ -405,7 +405,23 @@ isolation from the round loop" below.
    artifact-only review, breaking the isolation this whole mechanism exists to guarantee).** Fixed:
    immediately before this dispatch, re-run the same cleanliness check `CLEAN_REPO_DIR` was created
    to satisfy (`git status --short --untracked-files=all` reporting nothing, through the same
-   anchored/sanitized invocation used elsewhere) — confirm it is STILL empty. If it is not, this is
+   anchored/sanitized invocation used elsewhere) — confirm it is STILL empty.
+
+   **This check must ALSO cover git-ignored content, not just tracked/untracked-unignored files (new
+   — closes a real gap found during design review, confirmed live: `git status --short
+   --untracked-files=all` genuinely omits ignored paths — running it against this very repository
+   shows nothing, while adding `--ignored=matching` additionally reveals real, present files like
+   `.DS_Store` and a worktrees directory. Since Codex's own investigation during a turn can see
+   whatever actually sits in its CWD regardless of what git status flags, an ignored-but-present file
+   would silently defeat this whole cleanliness guarantee even though the check reports success.)**
+   Fixed: the cleanliness check additionally passes `--ignored=matching` (`git status --short
+   --untracked-files=all --ignored=matching`, same anchored/sanitized invocation) — cleanliness means
+   the directory holds NOTHING beyond its own `.git` metadata, ignored or not, never merely "nothing
+   git would normally flag." This same addition applies everywhere else this design or the base
+   `references/non-repo-artifact.md` mechanism performs this identical check (the original round-1
+   creation-time check included), not only here.
+
+   If either check is not clean, this is
    treated exactly like any other compaction failure (log the narration, fall through to the normal
    `--resume` fallback) — never dispatch against a `CLEAN_REPO_DIR` whose emptiness wasn't just
    reconfirmed. Only once this check passes does the `--uncommitted` dispatch against `CLEAN_REPO_DIR`
@@ -456,13 +472,25 @@ isolation from the round loop" below.
    chain).** Fixed: this recheck is a mandatory precondition of EVERY dispatch — fresh or resumed —
    that is part of compaction's own attempt sequence for a non-repo-artifact session: candidate A's
    own dispatch and every one of its resume-retries, the no-threadId fresh retry, thread B's own
-   dispatch, the fallback dispatch, and any retry of the fallback itself. The SAME "log and continue,
-   never hard-stop" treatment as the fallback's own recheck above applies to every one of these
-   intermediate resumes too, since none of them has anywhere further to fall back to on failure of
-   this specific recheck — only the ORIGINAL fresh dispatches (candidate A's first attempt, the
-   no-threadId retry, thread B) retain their existing hard "fall through to the normal compaction
-   failure path" behavior when THIS recheck itself fails, since those genuinely do have somewhere
-   else to go.
+   dispatch, the fallback dispatch, and any retry of the fallback itself.
+
+   **Fail CLOSED wherever a real alternative still exists — the earlier "log and continue" framing
+   for intermediate resumes overclaimed "nowhere further to fall back to" when a real fallback WAS
+   available (corrected — closes a real gap found during design review: candidate A's own
+   resume-retries, and the bullet-3 same-thread retry, are NOT actually out of options on a failed
+   cleanliness recheck — this design already has a well-defined "abandon this compaction attempt" path,
+   step 6's fallback, available to them exactly as it is to any other compaction failure; treating a
+   KNOWN-polluted CWD as an acceptable, merely-logged risk here — rather than simply routing to the
+   fallback that already exists for this exact purpose — let a detected problem reach Codex anyway
+   when a safe alternative was sitting right there.)** Fixed: candidate A's own resume-retries and the
+   bullet-3 same-thread retry treat a failed recheck exactly like any other compaction failure —
+   abandon this compaction attempt, fall through to step 6's fallback, never dispatch into a
+   KNOWN-polluted directory. The "log and continue, disclosed risk" treatment is reserved ONLY for the
+   step 6 fallback dispatch itself and any retry OF that fallback — these are the true last resort,
+   genuinely having nowhere further to fall back to, since they ARE this round's own final, required
+   outcome. The ORIGINAL fresh dispatches (candidate A's first attempt, the no-threadId retry, thread
+   B) already had, and keep, their existing hard "fall through to the normal compaction failure path"
+   behavior when this recheck fails.
 3. **Repo-diff sessions — snapshot candidate lifecycle, fully specified (closes a real ownership/
    leak gap found during design review: the original draft allocated a new snapshot but never said
    who deletes it on failure, or exactly when the pointer swaps on success).** Re-collection
@@ -975,11 +1003,23 @@ isolation from the round loop" below.
         on what the SECOND failure's own reason happens to be. Treating a threadId-bearing second
         failure as an exemption from that stop instruction was an unwarranted generalization beyond
         what the reference rule actually states.)** If that one retry fails AGAIN, for ANY reason
-        (whether or not it happens to carry a threadId this time): exhausted — fall straight through
-        to step 6's fallback (never `⚠️ COULD NOT VERIFY`, per this design's own failure-isolation
-        principle substituting for the reference's own generic stop instruction), the SAME as bullet
-        2's own exhaustion. Only if this one retry SUCCEEDS does the candidate continue as this
-        round's own live, active attempt, exactly as if no no-ID hiccup had ever occurred.
+        (whether or not it happens to carry a threadId this time): exhausted. **Always record the
+        ALREADY-KNOWN thread id on exhaustion here — this bullet's own precondition guarantees one
+        exists, unlike bullet 2's own genuinely-uncertain case (corrected — closes a real gap found
+        during design review: an earlier revision's exhaustion language never explicitly said to add
+        anything to `LEAKED_THREAD_IDS`/`compaction_attempt_failed_thread` here, leaving room to
+        wrongly assume — by analogy with bullet 2's OWN "check whether THIS retry captured an id"
+        language — that "no id" is possible here too. It is not: bullet 3 only ever runs BECAUSE "a
+        threadId WAS captured for the current candidate" is already true, established before this
+        retry is even attempted — so the id to record is simply the one already known from earlier in
+        this sequence, never contingent on whether the FINAL failing response itself happens to
+        repeat it.)** Fixed: on exhaustion here, add the candidate's own already-known thread id to
+        `LEAKED_THREAD_IDS`/`compaction_attempt_failed_thread` unconditionally, then fall straight
+        through to step 6's fallback (never `⚠️ COULD NOT VERIFY`, per this design's own
+        failure-isolation principle substituting for the reference's own generic stop instruction),
+        the SAME as bullet 2's own exhaustion. Only if this one retry SUCCEEDS does the candidate
+        continue as this round's own live, active attempt, exactly as if no no-ID hiccup had ever
+        occurred.
      The fresh-B escalation is reached ONLY via a genuinely NEW resume-safe failure that carries a
      threadId on its OWN first occurrence for this candidate (never via a no-ID recovery scenario per
      bullet 3 above) — never via bullet 1 or bullet 2's own exhaustion either, all of which fall
@@ -1795,6 +1835,15 @@ total checked against `COMPACT_BYTE_BUDGET`, exactly as `--uncommitted`/`--base`
 their own diff/untracked component. Only non-repo-artifact scope remains genuinely focus-text-only
 for this preflight, since `CLEAN_REPO_DIR`'s guaranteed-empty diff means there is no separate
 diff-content component to measure at all for that case.
+
+**This `--commit`-scope measurement command can itself fail too — the existing collector-failure
+path below covers only `collect_untracked_files.py`, never this one (new — closes a real gap found
+during design review, confirmed live: `git show` on a bad/unreachable commit SHA exits 128, and the
+wrapper's own `--commit` branch converts exactly this into `git_error`).** Fixed: a nonzero exit from
+this `git show`/`git diff` measurement is never treated as "zero bytes" either — same principle as
+the untracked-collector's own fix below — it is treated exactly like any other compaction failure
+(log the narration, fall through to the normal `--resume` fallback) immediately, without ever
+attempting the real dispatch that would only hit the identical `git_error` failure.
 
 **This authoritative collector invocation can itself fail — that has an explicit failure path too
 (new — closes a real gap found during design review: the real `collect_untracked_files.py` exits
