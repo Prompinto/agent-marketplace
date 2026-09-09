@@ -403,9 +403,9 @@ isolation from the round loop" below.
    file, an unrelated bug elsewhere touching the path), a fresh dispatch against it would collect
    REAL tracked/untracked content and silently mix it into what is supposed to be a strictly
    artifact-only review, breaking the isolation this whole mechanism exists to guarantee).** Fixed:
-   immediately before this dispatch, re-run the same cleanliness check `CLEAN_REPO_DIR` was created
-   to satisfy (`git status --short --untracked-files=all` reporting nothing, through the same
-   anchored/sanitized invocation used elsewhere) — confirm it is STILL empty.
+   immediately before this dispatch, verify `CLEAN_REPO_DIR` is (still) clean
+   (`git status --short --untracked-files=all` reporting nothing, through the same anchored/sanitized
+   invocation used elsewhere).
 
    **This check must ALSO cover git-ignored content, not just tracked/untracked-unignored files (new
    — closes a real gap found during design review, confirmed live: `git status --short
@@ -417,9 +417,25 @@ isolation from the round loop" below.
    Fixed: the cleanliness check additionally passes `--ignored=matching` (`git status --short
    --untracked-files=all --ignored=matching`, same anchored/sanitized invocation) — cleanliness means
    the directory holds NOTHING beyond its own `.git` metadata, ignored or not, never merely "nothing
-   git would normally flag." This same addition applies everywhere else this design or the base
-   `references/non-repo-artifact.md` mechanism performs this identical check (the original round-1
-   creation-time check included), not only here.
+   git would normally flag."
+
+   **Corrects a false claim made while fixing this: there is no "original round-1 creation-time
+   check" for this addition to also apply to (new — closes a real gap found during design review: an
+   earlier revision asserted this `--ignored=matching` fix "applies everywhere else this design or
+   the base `references/non-repo-artifact.md` mechanism performs this identical check... the original
+   round-1 creation-time check included" — but the base mechanism's own actual setup, per that
+   reference in full, only ever `mkdir`s `CLEAN_REPO_DIR` and runs `git init` in it, then dispatches
+   directly; it never runs ANY cleanliness check of its own, at creation time or otherwise. The
+   phrasing this fix's own OPENING sentence used — "re-run the same cleanliness check `CLEAN_REPO_DIR`
+   was created to satisfy" — repeated the identical false premise.)** Corrected: this compaction-owned
+   recheck (and its own `--ignored=matching` extension) is the ONLY point at which `CLEAN_REPO_DIR`'s
+   cleanliness is EVER verified in this whole mechanism — starting from the FIRST compaction attempt
+   onward. Round 1's own very first artifact dispatch against `CLEAN_REPO_DIR`, and any session that
+   never triggers compaction at all, remain fully exposed to exactly this same pollution risk with NO
+   check of any kind — a real, disclosed, PRE-EXISTING gap in the base mechanism itself, not
+   introduced or widened by compaction, and out of scope for this design document to close (doing so
+   would mean adding a new check to the base skill's own Phase 0/Phase 1 setup, which this document
+   does not own).
 
    If either check is not clean, this is
    treated exactly like any other compaction failure (log the narration, fall through to the normal
@@ -485,7 +501,21 @@ isolation from the round loop" below.
    when a safe alternative was sitting right there.)** Fixed: candidate A's own resume-retries and the
    bullet-3 same-thread retry treat a failed recheck exactly like any other compaction failure —
    abandon this compaction attempt, fall through to step 6's fallback, never dispatch into a
-   KNOWN-polluted directory. The "log and continue, disclosed risk" treatment is reserved ONLY for the
+   KNOWN-polluted directory. **This abandonment must durably record candidate A's OWN already-known
+   thread id before falling through, exactly like bullet 3's own exhaustion fix above — this is a
+   LOCAL, pre-dispatch check failure, never a wrapper response, so nothing about "checking the
+   response for a threadId" applies here at all (new — closes a real gap found during design review:
+   this fail-closed path was added specifically to correct the earlier fail-open version, but never
+   itself said to add A's id to `LEAKED_THREAD_IDS`/`compaction_attempt_failed_thread` — candidate A
+   ALREADY has a known thread id by the time any of ITS OWN resume-retries are even attempted
+   (exactly the same precondition bullet 3's own exhaustion fix relies on), and this check failing
+   BEFORE the resume dispatch is attempted at all means there is no response to inspect — the
+   abandonment is entirely local knowledge, not something a wrapper response could confirm or deny.)**
+   Fixed: this abandonment unconditionally adds A's own already-known thread id to
+   `LEAKED_THREAD_IDS`/`compaction_attempt_failed_thread` before falling through — the exact same
+   "always record the already-known id, never contingent on a response" principle as bullet 3's own
+   exhaustion fix, applied here for the identical underlying reason (the id is already known; nothing
+   new needs discovering). The "log and continue, disclosed risk" treatment is reserved ONLY for the
    step 6 fallback dispatch itself and any retry OF that fallback — these are the true last resort,
    genuinely having nowhere further to fall back to, since they ARE this round's own final, required
    outcome. The ORIGINAL fresh dispatches (candidate A's first attempt, the no-threadId retry, thread
