@@ -2018,17 +2018,26 @@ above, produces a COMPACTION round that is itself round 2 — yet the candidate'
 directly on `retry-guards.md`'s own "no entry yet → one fresh retry" and "exhausted resumes → one
 fresh fallback" mechanics, which that reference's own literal text scopes to a group's genuine first
 attempt, explicitly calling that "only possible on round 1." The terminal-outcome amendment above
-never addressed this SEPARATE round-1-only scoping restriction at all.)** Fixed: the SAME companion
-amendment additionally clarifies that, for a compaction candidate specifically, `retry-guards.md`'s
-own "no entry yet" / "true first-ever attempt" language is keyed on the CANDIDATE's own independent
-thread-history tracking (see "A candidate's OWN no-threadId-at-all failure needs its own predicate,
-separate from `GROUP_THREADS`" above) — NOT on the session's own round-index, and NOT on
-`GROUP_THREADS` (which keeps meaning the OLD, pre-existing thread throughout a compaction attempt,
-per "Failure isolation from the round loop" above). A compaction candidate is its own independent
-"first attempt" lifecycle for these SPECIFIC mechanics, by construction, REGARDLESS of what round
-number in the session it actually occurs at — the base skill's own ordinary round-1 groups keep
-`retry-guards.md`'s literal round-1 scoping exactly as written; this is a scoped exception for
-compaction candidates only, not a change to what "round 1" means for an ordinary group.
+never addressed this SEPARATE round-1-only scoping restriction at all.)** **Scoped to candidate A
+ONLY, never to thread B — a broader "any compaction candidate" wording would silently re-enable
+exactly the B-gets-retry-machinery bug already closed once (new — closes a real gap found in the
+same review pass: an initial phrasing of this fix said "for a compaction candidate specifically" with
+no A/B distinction — but B is ALSO, literally, a compaction candidate (a second fresh dispatch), and
+"Thread B's own single dispatch gets NONE of bullets 1-4's retry machinery" above already
+deliberately excludes B from every one of these exact mechanics, precisely to prevent B's own failure
+from ever escalating to a third candidate "C." An unscoped "every candidate gets its own first-attempt
+lifecycle" exception would directly reopen that already-closed door for B specifically.)** Fixed: the
+SAME companion amendment additionally clarifies that, for candidate A specifically (never B),
+`retry-guards.md`'s own "no entry yet" / "true first-ever attempt" language is keyed on the
+CANDIDATE's own independent thread-history tracking (see "A candidate's OWN no-threadId-at-all
+failure needs its own predicate, separate from `GROUP_THREADS`" above) — NOT on the session's own
+round-index, and NOT on `GROUP_THREADS` (which keeps meaning the OLD, pre-existing thread throughout a
+compaction attempt, per "Failure isolation from the round loop" above). Candidate A is its own
+independent "first attempt" lifecycle for these SPECIFIC mechanics, by construction, REGARDLESS of
+what round number in the session it actually occurs at — the base skill's own ordinary round-1 groups
+keep `retry-guards.md`'s literal round-1 scoping exactly as written; this is a scoped exception for
+candidate A only, never B, and never a change to what "round 1" means for an ordinary group. B's own
+single-shot rule above governs B completely, unaffected by this amendment.
 
 ### Preserving failed-attempt telemetry (new — closes a real cost-accounting gap found during design review)
 
