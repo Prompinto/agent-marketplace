@@ -1,0 +1,1324 @@
+# `codex-stream-review:ccs` — opt-in thread compaction design
+
+## Problem
+
+`run-ccs-review.sh` keeps one resumable Codex thread per reviewer alive for a whole `/ccs` run,
+`--resume`ing it every round after the first rather than re-sending the diff. This avoids
+re-ingestion cost per round, but nothing ever prunes the thread's own accumulated history — every
+round's own `execution.usage.input_tokens` (the real per-turn size Codex actually processes,
+reported by `run-ccs-review.sh` from the round's own `turn.completed` event) grows monotonically,
+round after round, for the life of the thread.
+
+Real measured data, from the longest `/ccs` run observed to date (the `visual-verify`
+auth-stub-config feature, 2026-09-08/09, 17 rounds to CLEAN):
+
+| Round | `input_tokens` | `cached_input_tokens` | `elapsed_seconds` |
+|---|---|---|---|
+| 1 (approx, external report) | ~520,000 | — | ~300 |
+| 10 (approx, external report) | ~31,600,000 | — | — |
+| 14 | 52,310,561 | 48,435,129 | 774 |
+| 15 | 55,057,986 | 51,138,352 | 339 |
+| 16 | 58,451,225 | 54,197,383 | 524 |
+| 17 (CLEAN) | 60,032,215 | 55,625,250 | 235 |
+
+Growth is front-loaded (round 1→10 is ~60x; round 10→17 is ~1.9x over 7 more rounds), and elapsed
+wall time does **not** track token count monotonically (round 17 was both the largest-token and
+fastest round measured) — cache hit rate, not raw size, appears to dominate latency once a thread
+is this large, though this is a small sample, not a trend line. The concrete, structural problem
+this design solves is **unbounded token growth with no pruning mechanism**, not latency
+specifically.
+
+## What was ruled out, and why (real research, not assumption)
+
+- **`codex exec fork`.** Already evaluated in this repo for a *different* cost problem (parallel
+  mode's N-way redundant diff-ingestion) and rejected with real measured evidence: forking used
+  2.14x the tokens of independent dispatch, because a fork inherits the parent thread's *entire*
+  history — it does not prune anything. See `docs/2026-09-05-codex-stream-review-improvement-
+  roadmap-design.md`, "Phase 4 Item 1 canary results." Since a fork carries the same bloat forward,
+  it cannot serve a compaction goal either — ruled out without needing a second canary.
+- **Asking the same resumed thread to "forget" via `--focus` text.** There is no Codex CLI
+  primitive that shrinks a thread's own stored server-side context (confirmed: `codex exec`,
+  `codex exec resume`, `codex queue`, `codex resume` — none expose a compact/prune/forget verb).
+  Asking Codex, in plain text, to disregard earlier content does not reduce what the backend
+  actually re-processes on the next `--resume` turn — the billed/processed size stays exactly what
+  it already was. This does not solve the problem at all, so it isn't a real alternative.
+- **Codex's own native automatic compaction.** Real, directly observed: local session rollout logs
+  (`~/.codex/sessions/**/*.jsonl`) contain genuine `"type":"compacted"` events — an LLM-generated
+  handoff-style summary (current task, constraints, project state) replacing prior context, not
+  naive truncation. Confirmed in both an interactive `codex` session (12 occurrences in one long
+  session) and at least one `codex_exec`-originated rollout. **However, it did not fire even once**
+  during the real 17-round `/ccs` review measured above, despite that thread growing far larger
+  than the session where it fired 12 times. Working hypothesis (not confirmed): the trigger may be
+  evaluated only within one continuously-running process/turn, which a short-lived
+  `codex exec resume` process (one turn, then exit) may never satisfy — but this is not something
+  `/ccs` can rely on or control either way, so a plugin-side mechanism is needed regardless of the
+  true reason.
+
+## Design
+
+### Opt-in flag: `--compact`
+
+A fourth independent, optional `/ccs` prefix flag, alongside the existing `--capture-evidence`,
+`--keep-evidence`, and `--quick` — parsed by the same Phase 0 Step 0 prefix-stripping loop, its own
+independent boolean (`COMPACT_MODE`), any subset of the four may be ON in any order. **No changes
+to `run-ccs-review.sh` itself are required** — compaction is entirely a `SKILL.md`-level
+orchestration technique built from primitives the wrapper already exposes (a fresh dispatch, a
+`--cleanup` call), the same relationship `--quick`/`--keep-evidence` already have to the wrapper.
+
+Starting as opt-in (not always-on, unlike snapshot integrity/claim ledger) is deliberate: this is a
+genuinely new failure surface (see "Restart mechanism" and "Digest construction and verification"
+below) that has not yet been validated against real reviews the way the always-on mechanisms have.
+
+### Trigger
+
+After EVERY completed round — **including round 1 itself (corrected — closes a real gap found
+during design review: an earlier revision restricted this check to "round 2+ only," reasoning
+"round 1 has nothing to compact." That reasoning conflated two different things — round 1 has no
+PRIOR thread to compact away, which is true, but round 1's OWN resulting thread is already a real,
+resumable thread the moment round 1 completes, and its usage is already known then. Restricting the
+check to round 2+ would force at least one wasted `--resume` turn against an ALREADY-oversized
+round-1 thread whenever round 1 alone exceeds the threshold, before compaction could ever apply —
+missing the earliest point where enforcement is actually possible)** — if `COMPACT_MODE` is ON:
+check that just-completed round's own `execution.usage.input_tokens` (already reported by
+`run-ccs-review.sh`, no new telemetry needed) against a fixed threshold, `COMPACT_THRESHOLD =
+8,000,000`. If exceeded, compact before building the next round's dispatch — if round 1 itself
+triggers this, round 2 becomes the compaction round immediately (running the existing mandatory
+round-2+ active-snapshot revalidation first, per "Restart mechanism" step 0 below, then the fresh
+compaction path), never a wasted ordinary `--resume` first. The threshold is a starting point
+calibrated against the one real dataset available (roughly the midpoint of the round-1→round-10
+steep-growth zone above) — not user-configurable in v1 (YAGNI; a `--compact-threshold <N>` override
+can be added later if real usage shows 8M is wrong for other review shapes).
+
+**Guard against a repeated, benefit-free restart loop for intrinsically large reviews (new — closes
+a real gap found during design review: the trigger as stated has no guard against compacting again
+immediately after a compaction that didn't actually help. A successful COMPACTION round is, itself,
+just another completed round — its own usage gets checked by this same trigger. If the underlying
+diff/claims content is simply large enough that even a FRESH restart's own single-turn usage is
+already at or above `COMPACT_THRESHOLD` — not because of accumulated resumed-thread history, but
+because the content itself is that big — then the very next round would trigger compaction again,
+and again, every round, each one paying the full fresh-restart cost with ZERO benefit: no future
+compaction can ever bring a review's OWN intrinsic content size below a threshold its own baseline
+already exceeds. This turns the intended occasional, bounded-cost operation into a full
+re-ingestion on every non-CLEAN round for the largest reviews — worse than never compacting at
+all.)** Fixed: record `COMPACTION_BASELINE_TOKENS` — the COMPACTION round's OWN
+`execution.usage.input_tokens` (its own freshly-restarted usage, NOT the triggering round's — a real
+bug in an earlier revision of this very fix confused the two: the triggering round's usage is, BY
+DEFINITION, already `>= COMPACT_THRESHOLD` — that is what triggered it — so recording that value as
+the baseline would make the check below true unconditionally, disabling compaction after every
+single first successful restart, exactly the opposite of the intended behavior) — every time a
+compaction round's OWN dispatch succeeds. If THAT (the compaction round's own, freshly-restarted)
+baseline is itself already `>= COMPACT_THRESHOLD`, compaction is disabled for the remainder of the
+session (narrated once, clearly, the same way the byte-budget exhaustion limitation already is) —
+repeating it can only ever cost more, never less, once even a maximally-compacted round can't get
+under the bar. If the fresh baseline IS comfortably under threshold (the common, intended case —
+compaction genuinely reset accumulated growth), ordinary accumulation-based triggering simply
+resumes for future rounds exactly as designed, no special-casing needed.
+
+**Fail closed when the compaction round's OWN telemetry is unusable — never assume the restart
+helped (new — closes a real gap found during design review: "Handling missing OR malformed usage
+data" above already establishes that a round's `input_tokens` can legitimately be absent or
+malformed even on a genuine success. An earlier revision of this guard never said what happens to
+`COMPACTION_BASELINE_TOKENS` in exactly that case for the COMPACTION round itself — if left simply
+unset/skipped, a LATER resumed round reporting a high value would trigger another fresh compaction
+without ever having confirmed whether the ORIGINAL restart's own baseline was actually fine,
+reopening the identical benefit-free-restart-loop risk this guard exists to close, just via a
+different path.)** Fixed: if the compaction round's own `input_tokens` is unusable (per the existing
+missing/malformed rule above), `COMPACTION_BASELINE_TOKENS` is NOT left unset — it is treated
+IDENTICALLY to a baseline that IS `>= COMPACT_THRESHOLD`, disabling compaction for the remainder of
+the session. This mirrors the same fail-closed philosophy "Handling missing OR malformed usage data"
+already applies to the ordinary trigger check: never assume a restart helped just because its own
+usage couldn't be confirmed — an unverifiable baseline is treated as a failed one, not a free pass.
+
+**A SEPARATE circuit breaker is also needed for repeated FAILED fresh-dispatch attempts, not only
+for a successful-but-still-too-large one (new — closes a real gap found during design review: the
+baseline guard above only ever engages after a compaction dispatch SUCCEEDS. Every `ok:false`
+compaction attempt — including `timeout`, which the wrapper's own default fresh-dispatch deadline of
+1800 seconds makes a real possibility for a genuinely large diff, and `nonzero_exit` — instead falls
+straight through to the fallback `--resume` on the (still oversized) old thread, per "On failure"
+below, with the threshold check simply running again next round. Nothing bounds how many times THIS
+can repeat: a diff large/slow enough to reliably time out the fresh dispatch would trigger another
+identical, doomed fresh attempt every single subsequent round, each paying a nearly-full round-1-
+sized cost for zero benefit — a second, distinct flavor of the same benefit-free-restart-loop risk
+the baseline guard was built to close, this time via repeated FAILURE rather than a too-high
+success.)** Fixed: a second session-scoped counter, `COMPACTION_CONSECUTIVE_FRESH_FAILURES`,
+increments by one every time a compaction attempt's own fresh dispatch (after exhausting whatever
+bounded retry `references/retry-guards.md` already applies to that one round's own attempt) still
+ends up `ok:false` and falls through to step 6's fallback — and resets to `0` every time a compaction
+attempt succeeds. Once this counter reaches `COMPACTION_MAX_CONSECUTIVE_FAILURES = 2`, compaction is
+disabled for the remainder of the session — via the SAME `compaction_disabled_reason` mechanism
+below, with the value `"repeated_fresh_dispatch_failure"` — a small, deliberately conservative bound
+
+**This counter must ALSO increment on a purely LOCAL pre-dispatch failure, not only a wrapper
+`ok:false` (corrected — closes a real gap found during design review: a persistent LOCAL failure —
+the candidate's own `git diff`/`shasum` collection failing per "Collection/hash failure itself"
+above, or the byte preflight's own authoritative untracked-file collector invocation failing per
+its own failure path — falls straight through to step 6's fallback WITHOUT ever reaching a real
+wrapper dispatch at all, so the counter as originally scoped ("after a compaction attempt's own
+fresh dispatch... ends up ok:false") never increments for either case. A persistent local problem —
+a broken collector script, a corrupted git state — would repeat that same free local collection cost
+on every single triggering round forever, with no circuit breaker, exactly the same "repeated cost
+for zero benefit" pattern this counter exists to close for wrapper failures.)** Fixed: broadened to
+increment on ANY compaction attempt that falls through to step 6's fallback without completing a
+real successful compaction — local collection/hash failure, local preflight-collector failure, OR a
+wrapper `ok:false` alike — the one exception being `byte_budget_exceeded`, which already gets its
+own dedicated, immediate latch (see "A real latch, not merely an implicit..." below) precisely
+because a successful measurement over budget is a distinct, already-fully-diagnosed cause that
+doesn't need this counter's slower two-strikes bound.
+consistent with this design's other fixed, non-configurable limits (`COMPACT_THRESHOLD`,
+`CLOSED_CLAIM_LIMIT`, `COMPACT_BYTE_BUDGET`).
+
+**This counter's own intermediate value must ALSO be durably recorded, not only the final "disabled"
+decision (new — closes a real gap found during design review: an earlier revision durably logged
+`compaction_disabled_reason` only once the counter actually REACHES its bound, but never the
+counter's own value on the way there. A session recovering from a lost in-memory state after exactly
+ONE fresh-dispatch failure — not yet two — would reconstruct the counter as `0`, silently doubling
+the effective failure budget across that recovery event and undermining the two-attempt bound this
+guard exists to enforce.)** Fixed: every round whose own compaction attempt fails (falls through to
+step 6's fallback) durably records the counter's CURRENT value (after incrementing) as a new field,
+`compaction_attempt_failure_count`, on that round's own line — this is a genuinely pre-append case,
+exactly like `compaction_attempt_failed_thread`, since the failure is known before that round's own
+real (fallback) result is ever logged.
+
+**A successful compaction's own reset must be durably recorded too, or recovery can silently replay
+a STALE failure count from before the reset (new — closes a real gap found during design review,
+confirmed by direct simulation: a failure records `compaction_attempt_failure_count: 1`, a later
+compaction SUCCEEDS and resets the in-memory counter to `0`, but that success round's own line never
+recorded anything for this field — so a subsequent state-loss recovery, reading only the latest
+recorded value across the log, finds the OLDER `1` from before the reset and restores it as if no
+reset had ever happened. The very next fresh-dispatch failure after that recovery then reaches `2`
+and disables compaction, even though it is really only the FIRST consecutive failure since the last
+success.)** Fixed: a successful compaction round (this is the same round already appending
+`compacted_from_thread` and the `snapshot_digest_*` pair — see "Ordering on success" step 5.3 below,
+itself pre-append since the reset is already decided the moment dispatch returns `ok:true`, before
+that same append) ALSO durably records `compaction_attempt_failure_count: 0` on that SAME line,
+explicitly representing the reset rather than leaving it implicit. Continuity recovery reconstructs
+`COMPACTION_CONSECUTIVE_FRESH_FAILURES` from whichever of these two fields — a failure's incremented
+value or a success's explicit `0` — was recorded MOST RECENTLY across the whole session log (by
+round order, not by which field name it is), defaulting to `0` only when neither has ever been
+recorded at all.
+
+**The "disabled for the rest of the session" decision must be durably logged and recoverable — never
+in-memory-only (new — closes a real gap found during design review, and corrects an overclaim an
+earlier revision made in the process of fixing it: that revision asserted `PROVISIONAL_SNAPSHOT_FILE`
+and `RETIRED_SNAPSHOT_FILES` already had a "durable JSONL-backed recovery path" as precedent for this
+same fix — they did not; see "Retired- and provisional-snapshot durability" below, which closes that
+separate, real gap on its own terms rather than retroactively pretending it was already closed).**
+This guard's own "disabled for the rest of the session" latch (from EITHER circuit breaker above)
+was left as an in-memory-only fact with no durable path at all — if that memory is lost (an
+interruption, a context compaction of the CONVERSATION itself, anything the existing
+continuity-recovery mechanism already exists to handle for `GROUP_THREADS`/`LEAKED_THREAD_IDS`/claim
+state), a later round reporting high usage could re-trigger the exact benefit-free restart loop
+either guard was built to permanently close. Fixed: the compaction round that sets this latch
+(because its own baseline was `>= COMPACT_THRESHOLD`, its own telemetry was unusable,
+`COMPACTION_CONSECUTIVE_FRESH_FAILURES` reached its bound, OR the byte preflight below found the
+exact assembled payload over `COMPACT_BYTE_BUDGET`) durably records a new field,
+`compaction_disabled_reason` (a short string — `"baseline_at_or_above_threshold"`,
+`"baseline_unusable"`, `"repeated_fresh_dispatch_failure"`, or `"byte_budget_exceeded"`), on that
+SAME round's own JSONL line — never a separate append. Continuity
+recovery is extended, alongside its existing reconstruction of `GROUP_THREADS`/`LEAKED_THREAD_IDS`/
+claim state, to also check whether ANY prior round in the session's log ever recorded this field —
+if so, compaction is reconstructed as disabled for the rest of the session, exactly matching
+whatever the original in-memory decision would have been, never silently forgotten and re-enabled.
+
+**Round-ownership terminology, made explicit (new — closes a real ambiguity found during design
+review: the rest of this document says "round R" for BOTH the round whose usage was just checked
+AND the round that performs the compaction dispatch — these can never be the same round number,
+since a round's own dispatch has already happened by the time its usage is checked.)** Call the
+round whose completed usage triggers this check the TRIGGERING round. Compaction, when triggered,
+is attempted for the VERY NEXT round dispatched afterward — call it the COMPACTION round. **Every
+later use of "round R" in "Restart mechanism" below, and everywhere else in this document
+discussing the compaction attempt itself, means the COMPACTION round — never the triggering round
+the decision was based on.** The triggering round was already processed and logged normally,
+before this check ever ran; nothing about it is retroactively changed.
+
+### What gets preserved — full fidelity for open claims, one line for closed ones
+
+Reuses the claim ledger's existing reducer (`references/claim-ledger.md` section 8) over the
+session's own JSONL log — no new data structure. For every claim_id that has ever appeared this
+session:
+- **Still open** (no `claim_closures[]` entry): included **verbatim**, using the claim's MOST
+  RECENT occurrence, not necessarily its origin (revised — see "Most-recent, not origin" below) —
+  `file`/`line`/`severity`/`summary`/`evidence`, unabridged. This is deliberately the highest-
+  fidelity case, mirroring how Claude Code's own context compaction keeps the most
+  currently-relevant material closest to full fidelity rather than summarizing everything
+  uniformly. **Disclosed limitation:** this text (including its `file`/`line`) reflects where the
+  claim was most recently raised, which may now be stale if the file has changed shape since — this
+  is not treated as an enforcement problem (Codex is already instructed, in every round, to
+  re-read the actual current file rather than trust diff/context text as-is; a compaction restart
+  changes nothing about that existing discipline).
+- **Resolved or retracted**: collapsed to **one line**, built directly and deterministically from
+  its own `claim_closures[].marker_reason` (already exactly one sentence, by the existing
+  `DISPOSITION` marker grammar) — no new LLM call, no summarization step, zero added cost or
+  design surface. Example: `claim_id g1:f3 — RESOLVED (round 5): the null check now covers the
+  empty-array case, confirmed by re-reading the current file.` **Bounded — see "Closed-claim
+  section has its own ceiling" below.**
+
+**Most-recent, not origin (new — closes a real context-loss gap found during design review).** An
+earlier draft used each open claim's ORIGIN finding text only. This loses exactly the context a
+normal round-2+ History section would already carry forward: a later re-raise's own updated
+evidence, its `evidence_delta` judgment, and Claude's own most recent `action`/`rationale` for it.
+Fixed: for each open claim_id, use the SAME "most recent occurrence" lookup the quick-mode
+severity check already performs (`SKILL.md`'s own Guards section) — find that claim_id's latest
+`claude_verification[]` entry, read its own `finding_id`, and use THAT finding's
+`file`/`line`/`severity`/`summary`/`evidence` (falling back to the origin finding only for a claim
+that has never been re-raised, where origin IS the most recent). Additionally append one line
+noting the most recent `evidence_delta` (when present) and Claude's own most recent
+`action`/`rationale` for it, so the fresh thread sees "here is where this stood," not just the
+opening complaint.
+
+**Digest construction and verification — structured data first, prose rendering last (redesigned —
+closes a real spoofing gap found during design review).** An earlier draft built the digest as
+prose directly, then re-PARSED that same prose back out (looking for `OPEN CLAIM <id>:` lines) to
+verify nothing was dropped. This is unsound: a claim's own verbatim `evidence` text can legitimately
+contain a quoted example, a code block, or prose that itself contains a column-zero-anchored string
+shaped exactly like another claim's marker (confirmed directly: a Python regex scan of a hand-built
+example where one claim's own evidence text quotes what looks like a second claim's marker line
+returns a phantom match for an ID that has no real record) — the exact class of ambiguity the
+existing DISPOSITION marker parser avoids via fencing/cardinality rules that this simpler use case
+does not need to reinvent, because there is a simpler fix available here specifically: **never
+re-parse the rendered prose at all.**
+1. Compute the reducer's own open-claim-id list (`references/claim-ledger.md` section 8) as
+   structured data (e.g. a `jq` array), not prose.
+2. For each element of that array, resolve its `{claim_id, file, line, severity, summary,
+   evidence}` fields (via the same most-recent-occurrence lookup — see "Most-recent, not origin"
+   above) — **do not render `block_text` yet.**
+3. **Verification is a structural check on this data, BEFORE any prose is ever rendered — both a
+   KEY check and a CONTENT-COMPLETENESS check (the latter added — closes a real gap found during
+   design review):**
+   - **Key check:** the number of resolved objects equals the reducer's own open count, and their
+     `claim_id` keys are exactly the reducer's own open-id set (set equality).
+   - **Content-completeness check — TYPE/PRESENCE, not non-emptiness (corrected — closes a real
+     over-strict gap found during design review): every one of those objects has `summary`,
+     `evidence`, and `file` present as strings (per the review-verdict schema's own field types),
+     and `severity` is one of the schema's own legal values — but an empty string is a legal value
+     for `summary`/`evidence`/`file` under that same schema (confirmed directly: the wrapper's own
+     semantic validator checks only JSON type for these three fields, never non-emptiness, unlike
+     `verification`, which it does check for non-emptiness) and is NOT rejected here.** An earlier
+     revision required non-empty, which would have let one legitimately (if unusually) blank-field
+     finding — accepted by the wrapper as schema-valid — permanently fail this check for as long as
+     that claim stays open, disabling compaction for the whole rest of that session over a case that
+     was never actually a formatter bug. Given `block_text` is now DERIVED from these exact fields
+     (step 4 below), a check on TYPE (did the resolved object have the right shape at all) is what
+     actually matters for spoofing-resistance — a check on CONTENT (is the review data itself
+     interesting) is a different, unrelated concern this step was never meant to enforce.
+   - Neither check can be spoofed by anything a rendering step might later produce, because neither
+     ever inspects rendered prose — both read only the resolved fields, sourced directly from the
+     finding record the reducer already resolved.
+4. **Only once step 3 passes (both checks) is `block_text` computed — as a pure, canonical function
+   of the ALREADY-VALIDATED fields from step 2, in the same step, never a separately/independently
+   rendered value (closes a real divergence gap found during design review: the previous revision
+   validated sidecar fields but rendered `block_text` through a separate path that could still
+   diverge from them — confirmed directly with a counterexample object whose sidecars were valid
+   but whose `block_text` was a heading-only string; the fix removes the second path entirely by
+   deriving `block_text` from the checked values themselves, e.g. a fixed template `"OPEN CLAIM
+   <claim_id>:\nfile: <file>\nline: <line>\nseverity: <severity>\nsummary: <summary>\nevidence:
+   <evidence>"` — there is no way for the sent text to omit content the check already confirmed
+   present, because the sent text IS built from that exact, already-validated content).** The final
+   flattening (one deterministic concatenation, a 1:1 map with nothing filtered) produces the prose
+   sent to Codex. `OPEN CLAIM <claim_id>:` remains as a heading purely for Codex's own readability —
+   it is never re-parsed by `/ccs`'s own code again after this point.
+5. On any structural or content-completeness mismatch in step 3: log a one-line narration note, and
+   skip straight to the normal `--resume` fallback (see "On failure" below) — never attempt to
+   dispatch an unverified or incomplete digest.
+
+### Restart mechanism
+
+There is no way to shrink an existing thread's own context, so compaction means **abandoning the
+old thread and starting a genuinely fresh one**. A compaction attempt is entirely self-contained —
+its own success or failure is never itself reported as this round's terminal outcome; see "Failure
+isolation from the round loop" below.
+
+0. **The EXISTING mandatory round-2+ active-snapshot revalidation always runs first, unconditionally
+   — never bypassed or reordered by compaction (closes a real ordering gap found during design
+   review).** Round R's own pre-dispatch snapshot check (`references/snapshot-integrity.md`) —
+   validating the CURRENTLY ACTIVE `SNAPSHOT_FILE`/`SNAPSHOT_DIGEST`, unrelated to anything
+   compaction is about to do — runs exactly as it does for every other round, BEFORE the threshold
+   check that decides whether to attempt compaction at all. If that existing check fails, the
+   EXISTING `🛑 SNAPSHOT INTEGRITY FAILURE` hard stop fires immediately, exactly as today — a
+   corrupted active snapshot is never silently "fixed" by proceeding into a compaction attempt that
+   would replace it with a fresh candidate; that would hide a real integrity failure rather than
+   report it.
+1. Build `COMPACT_DIGEST` via the structured-data-first construction above; abort to the normal
+   `--resume` fallback (step 6) immediately if its own structural verification fails.
+2. **Non-repo-artifact sessions are a SEPARATE case, handled BEFORE the scope branches below (closes
+   a real gap found during design review: an earlier draft never considered this case at all, and
+   would have silently lost the reviewed content entirely on restart).** A non-repo-artifact
+   session (`references/non-repo-artifact.md`) dispatches `--uncommitted` against an intentionally
+   EMPTY `CLEAN_REPO_DIR` — the actual reviewed material lives only in `--focus` text, never in the
+   diff. If compaction naively re-collected "the diff" here, it would recollect an empty diff and
+   the fresh thread would never see the artifact at all. **Fixed:** for a non-repo-artifact session,
+   compaction (a) allocates NO new snapshot — like `--commit` scope, the ORIGINAL round-1 snapshot
+   (which, per `references/snapshot-integrity.md`, already holds the exact pasted artifact bytes for
+   this session type) remains active and untouched throughout; (b) the fresh restart's focus text
+   includes the ORIGINAL ARTIFACT TEXT in addition to `COMPACT_DIGEST` — exactly mirroring how round
+   1 itself had to paste the artifact into focus text for this session type (see `SKILL.md`'s own
+   Phase 1 Step 0 non-repo-artifact rule).
+
+   **Bind the dispatched bytes to the SAME verified copy the hash-check ran against — never a
+   separate re-read (new — closes a real check-then-use race found during design review): an
+   earlier revision validated `SNAPSHOT_FILE` against `SNAPSHOT_DIGEST` in step 0's existing
+   revalidation, then, LATER, separately re-opened and read that same (mutable) file's content to
+   embed in focus text. Between those two operations, the file could be modified, so a CLEAN
+   compaction restart could end up reviewing altered bytes despite the earlier check having passed.**
+   Fixed: read `SNAPSHOT_FILE`'s content into a captured copy exactly ONCE, at this step — hash that
+   SAME captured copy and confirm it equals `SNAPSHOT_DIGEST` before using it for anything. If it
+   matches, embed that verified copy's content into the fresh restart's focus text (never re-open or
+   re-read the original file a second time for this purpose). If it does NOT match, this is the
+   EXISTING `🛑 SNAPSHOT INTEGRITY FAILURE` hard stop, exactly as an ordinary round's own pre-dispatch
+   revalidation already handles — never a silently-accepted mismatch.
+
+   **Revalidate `CLEAN_REPO_DIR`'s own cleanliness before trusting it — never simply assumed (new —
+   closes a real isolation gap found during design review: an earlier revision assumed the
+   `--uncommitted` dispatch against `CLEAN_REPO_DIR` "still produces an empty diff, as always,"
+   without ever re-checking that assumption at compaction-restart time. `CLEAN_REPO_DIR` is created
+   once and reused for the whole session — if anything unexpected polluted it since round 1 (a stray
+   file, an unrelated bug elsewhere touching the path), a fresh dispatch against it would collect
+   REAL tracked/untracked content and silently mix it into what is supposed to be a strictly
+   artifact-only review, breaking the isolation this whole mechanism exists to guarantee).** Fixed:
+   immediately before this dispatch, re-run the same cleanliness check `CLEAN_REPO_DIR` was created
+   to satisfy (`git status --short --untracked-files=all` reporting nothing, through the same
+   anchored/sanitized invocation used elsewhere) — confirm it is STILL empty. If it is not, this is
+   treated exactly like any other compaction failure (log the narration, fall through to the normal
+   `--resume` fallback) — never dispatch against a `CLEAN_REPO_DIR` whose emptiness wasn't just
+   reconfirmed. Only once this check passes does the `--uncommitted` dispatch against `CLEAN_REPO_DIR`
+   proceed, producing an empty diff as designed, with the wrapper's own no-diff branch falling back
+   to reviewing the focus text — now containing both the artifact and the digest. **This is a
+   genuinely separate branch from the scope-dependent handling below, not an extra step layered on
+   top of it.**
+3. **Repo-diff sessions — snapshot candidate lifecycle, fully specified (closes a real ownership/
+   leak gap found during design review: the original draft allocated a new snapshot but never said
+   who deletes it on failure, or exactly when the pointer swaps on success).** Re-collection
+   handling depends on round 1's original scope, as before:
+   - **`--uncommitted`:** re-collect the diff into a NEW candidate `SNAPSHOT_FILE`, hash it into a
+     candidate `SNAPSHOT_DIGEST` (same mechanism as Phase 0 step 5 / Phase 1's post-sizing step) —
+     the working tree may genuinely have changed since round 1, so this is the one case
+     re-collection is meaningful for.
+   - **`--base <ref>`:** re-collect `${ref}...HEAD` again into a new candidate the same way — this
+     DOES pick up any new commits landed on `HEAD` since round 1, but does **not** reflect
+     uncommitted working-tree changes (disclosed limitation: a fix applied but not yet committed
+     will not appear in this re-collection).
+   - **`--commit <value>`:** re-collecting this scope's diff is byte-identical every time **ONLY
+     WHEN `<value>` is itself an immutable, already-resolved commit SHA — corrected here (closes a
+     real assumption error found during design review): an earlier draft treated EVERY accepted
+     `--commit` value as inherently immutable, but the wrapper's own argument parser accepts any git
+     revision expression (confirmed directly against the wrapper's source — it rejects only a
+     leading-dash value, never validates or resolves the value to a fixed SHA), so `--commit HEAD`
+     or `--commit main` is legal and can resolve to a genuinely different commit by the time a
+     compaction restart happens, if that ref moved since round 1.** Fixed: resolve `git rev-parse
+     <value>` — through the SAME anchored, sanitized `env -i`/isolated-`HOME` invocation this file
+     already uses for every direct git call outside the wrapper (see "Determine review mode" in
+     `SKILL.md`'s Phase 1 for the canonical pattern) — into `target.resolved_commit_sha`, and use
+     THAT resolved SHA, not the original literal `<value>`, for round 1's OWN scope-dependent
+     sizing/snapshot-collection/dispatch, in addition to every later compaction restart.
+
+     **Verify the resolution is a single, clean commit SHA before ever pinning to it (new — closes a
+     real regression found during design review, confirmed live: plain `git rev-parse <value>` does
+     NOT always emit one commit object. For a range-shaped value the wrapper's own `--commit` branch
+     already handles successfully today — e.g. `HEAD^..HEAD` — `rev-parse` emits the positive commit
+     PLUS a separate `^<parent>` exclusion line; feeding that two-line output back in as a single
+     `--commit` argument fails git resolution outright (confirmed: exit 128), which would make
+     compaction (and, with the round-1 pinning fix above, even round 1 itself) newly BREAK a scope
+     value the wrapper currently accepts and handles fine unpinned.)** After resolving, verify the
+     output is EXACTLY one line matching a bare commit-SHA shape (`^[0-9a-f]{7,64}$`). **If it
+     matches:** pin to it as designed. **If it does NOT** (multiple lines, a range, or anything else
+     non-SHA-shaped): do NOT pin at all — round 1 dispatches with the ORIGINAL literal `<value>`
+     exactly as the wrapper already does today (zero behavior change for this narrow case), no
+     `target.resolved_commit_sha` is recorded, and compaction is simply never attempted for the rest
+     of THIS session under this scope (every later threshold check no-ops immediately, falling
+     through as if compaction were never enabled) — disclosed as an accepted, narrow limitation:
+     ref-drift protection and compaction restart are both unavailable specifically for a `--commit`
+     value that isn't a single resolvable commit, since `--commit` scope's own intent (review one
+     commit's own patch) makes a multi-revision expression an edge case of the accepted grammar, not
+     the common path this design needs to optimize for.
+
+     **Round 1 itself must be pinned too, not only the compaction restart (closes a real gap found
+     during design review: an earlier revision pinned only the COMPACTION round to the resolved SHA,
+     leaving round 1's own dispatch still using the raw, potentially-movable literal value — the
+     wrapper resolves that literal independently, at its own moment, during its own collection. If
+     the ref moves between OUR round-1 resolution and the WRAPPER's own separate round-1 resolution,
+     round 1 could review a DIFFERENT commit than the one durably recorded — and a later compaction
+     restart would then "correctly" pin back to the ORIGINAL resolution, reviewing yet a THIRD state
+     relative to what round 1 actually saw). Fixed: the resolve-once-then-pin discipline applies
+     from round 1 onward, uniformly — resolution happens exactly once, before ANY scope-dependent
+     collection for this session (round 1's own sizing/snapshot/dispatch included), and the
+     resulting SHA is the ONLY value ever used for a real git operation under `--commit` scope for
+     the rest of the session. The original literal `<value>` the user typed is retained purely as
+     `target.scope_value`, for audit/display, never used for a git operation again after this one
+     resolution. This closes the loop completely: from round 1 through every possible compaction
+     restart, `--commit` scope operates on one single, immutable commit for the whole session.** A
+     resolved SHA is immutable by git's own guarantee (barring history rewriting, already covered by
+     `references/snapshot-integrity.md`'s existing "not a defense against a deliberately changed
+     source" non-goal), so pinning once, this early, closes the race entirely rather than narrowing
+     it, and is MORE consistent with `--commit` scope's own intent (review one specific, fixed
+     commit's patch) than ever re-resolving a movable name a second time. No candidate snapshot is
+     ever allocated for `--commit` scope; the ORIGINAL round-1 `SNAPSHOT_FILE`/`SNAPSHOT_DIGEST`
+     remains the active snapshot, untouched, through every subsequent round including any
+     compaction restart.
+   - **Durably persisting the original scope ARGUMENT, not just its category (new — closes a real
+     recovery gap found during design review).** An earlier draft recorded only `target.scope`
+     (`"base"`/`"commit"`/`"uncommitted"` as a category), never the actual `<ref>`/`<value>` VALUE —
+     without that value durably logged, continuity recovery (or a later compaction restart) has no
+     way to know what to re-dispatch against for `--base`/`--commit`. Fixed: round 1's own JSONL
+     line (not only a compaction round's) gains a new field, `target.scope_value` — the literal
+     `<ref>`/`<value>` string for `--base`/`--commit` scope, omitted for `--uncommitted` (which has
+     no such argument) — plus, for `--commit` specifically, `target.resolved_commit_sha` (see
+     above). A compaction restart under `--base` scope reuses the EXACT durably-recorded
+     `scope_value`, never a freshly-typed or re-derived one; a compaction restart under `--commit`
+     scope uses the durably-recorded `resolved_commit_sha` instead (see above — pinned directly, not
+     the original literal value). **Disclosed limitation, inherent to `--base <ref>` where `<ref>`
+     names a movable branch:** re-dispatching
+     with the same literal `<ref>` string can still resolve to a different merge-base if that branch
+     has advanced since round 1 — this is the same class of "not a defense against a deliberately
+     changed source" non-goal `references/snapshot-integrity.md` already accepts elsewhere, not a
+     new gap compaction introduces (unlike `--commit`, `--base`'s own resolved merge-base is not
+     separately pinned/verified here — its scope is defined relative to the CURRENT `HEAD` by
+     design, so "the merge base may have moved" is expected scope behavior, not drift); pinning
+     `--base` further would change what `--base` scope actually MEANS,
+     which is out of scope for this feature to alter.
+   - **Ownership, for `--uncommitted`/`--base` (where a real candidate exists):** the candidate
+     file is a NEW, separate temp file — the ACTIVE (old) `SNAPSHOT_FILE`/`SNAPSHOT_DIGEST` used
+     for round-2+ revalidation is left completely untouched while the candidate merely sits on
+     disk. **On compaction failure (step 6 below): delete the candidate file immediately** (it was
+     never used for anything) **and continue revalidating rounds against the untouched original
+     active snapshot** — the fallback `--resume` round's own snapshot check has an unchanged
+     baseline to validate against, exactly as if compaction had never been attempted. **On success,
+     only after this round's JSONL append is verified (step 5 below):** delete the OLD active
+     snapshot file, and promote the candidate to be the new active `SNAPSHOT_FILE`/
+     `SNAPSHOT_DIGEST` for every subsequent round's revalidation. There is only ever one snapshot
+     file on disk needing cleanup at any given moment outside this brief transition window.
+
+     **Recoverable without giving up `mktemp`'s own symlink-attack protection (corrected — reverses
+     a wrong turn taken during design review and closes the two problems it caused: (a) a prior
+     revision made this path deterministic — the ACTIVE `SNAPSHOT_FILE`'s own path with a fixed
+     `.candidate` suffix appended — specifically so the post-append/pre-promotion crash window
+     (below) could be recovered without a new durable field; but this reintroduced exactly the
+     symlink/predictable-path attack `mktemp`'s existing atomic, random allocation exists to prevent
+     (`/tmp` resolves to the world-writable sticky `/private/tmp` on this platform — confirmed live
+     via `stat -f '%Sp %N'` — so a local process could pre-plant a symlink at the predictable
+     `.candidate` path and have the collection redirect follow it); (b) separately, deriving
+     anything from "the ACTIVE `SNAPSHOT_FILE`'s own path" assumed that path itself is durably
+     reconstructable, but it is not — `SNAPSHOT_FILE` is, and always has been, only a literal fact
+     Claude remembers for the running session (see `SKILL.md`'s own "Remember both `SNAPSHOT_FILE`
+     and `SNAPSHOT_DIGEST` as literal facts for the rest of the run... never re-collected" — the
+     exact same category as `REPO_ROOT`/`SESSION_ID`), never JSONL-backed, so a recovery mechanism
+     that depends on deriving a NEW path from it is no more durable than depending on the literal
+     fact directly.)** Fixed by reverting to the ORIGINAL, safe allocation and closing the real gap
+     a different way: the candidate file keeps using `mktemp` for a fresh, unpredictable, atomically-
+     created path exactly like every other snapshot allocation in this design (no behavior change to
+     allocation) — but the resulting random path is now ALSO durably recorded, as a new field,
+     `candidate_snapshot_path`, on this SAME round's own JSONL line at the moment of the append in
+     step 5 below (a genuinely pre-append-decided value, known the instant the candidate is
+     collected — see "Logging" below). Continuity recovery for the post-append/pre-promotion window
+     (see "PROVISIONAL_SNAPSHOT_FILE" below) reads this field directly instead of deriving anything.
+     **This still depends on one pre-existing, inherited assumption, not a new one this design
+     introduces:** identifying whether promotion ALREADY completed still requires hashing the
+     CURRENTLY ACTIVE snapshot file, which — like literally every other round's own step-0
+     revalidation in this entire skill, compaction or not — assumes `SNAPSHOT_FILE`'s own path is
+     still known to the running Claude session. If that specific literal fact is ALSO lost, this is
+     the identical total-memory-loss scenario the base skill already requires a fresh session for
+     (see its own `schema_version` mismatch hard stop) — not a gap this design adds.
+   - **Collection/hash failure itself (new — closes a real gap found during design review: the
+     original draft only ever discussed a WRAPPER `ok:false` result, never a failure in the LOCAL
+     re-collection/hashing step that happens before any dispatch is even attempted).** Mirrors
+     Phase 0 step 5 / Phase 1's own post-sizing snapshot allocation, which already checks every
+     collection command's own exit status and the resulting digest's shape before trusting it:
+     if the candidate's own `git diff`/`shasum` collection fails, or the resulting digest fails the
+     64-hex-character validation, this is treated exactly like any other compaction failure — delete
+     whatever partial candidate file may exist (on a failed deletion here, add its path to
+     `RETIRED_SNAPSHOT_FILES` — see "Retired-snapshot tracking is general-purpose" above), log the
+     narration note, and go straight to step 6's normal `--resume` fallback. No dispatch is even
+     attempted with an uncollectible candidate.
+   - **Concrete provisional-resource tracking (new — closes a real gap found during design review:
+     the original draft asserted "an existing candidate-snapshot cleanup sweep" without one actually
+     existing — Phase 3's current terminal cleanup only ever removes the ONE active `SNAPSHOT_FILE`,
+     with no concept of a candidate to also check).** A new session-scoped fact,
+     `PROVISIONAL_SNAPSHOT_FILE` (analogous to `LEAKED_THREAD_IDS`), is set the moment a candidate
+     is successfully collected and hashed, and cleared the moment that candidate is either promoted
+     (success) or deleted (failure/collection error) — never left ambiguous in between. Phase 3's
+     terminal cleanup (every terminal path, including `🛑 REVIEW LOG INTEGRITY FAILURE`) is extended
+     to also remove `PROVISIONAL_SNAPSHOT_FILE` whenever one is currently set, exactly like it
+     already removes the active `SNAPSHOT_FILE` — this is the concrete mechanism the earlier "already
+     tracked as provisional" language in "Ordering on success" step 5.2 actually relies on.
+   - **Snapshot lineage:** the one JSONL line that performs a compaction restart records both
+     `snapshot_digest_before` and `snapshot_digest_after` (identical for `--commit` scope, by
+     construction) — pure audit trail; the existing "one canonical subject, no external-drift
+     detection" contract (`references/snapshot-integrity.md`) is deliberately, narrowly overridden
+     only by this Claude-orchestrated, fully-disclosed re-snapshot event, never by anything
+     auto-detected.
+4. Dispatch a **fresh** `run-ccs-review.sh` call (same scope flag as round 1, not `--resume` — or,
+   for a non-repo-artifact session per step 2 above, `--uncommitted` against `CLEAN_REPO_DIR` with
+   the original artifact text included in focus) with focus text = `COMPACT_DIGEST` (+ the original
+   artifact text, for a non-repo-artifact session) + the original Why **AND task-specific Scope**
+   framing (new — closes a real gap found during design review: an earlier revision carried forward
+   only "the original Why framing," dropping round 1's own task-specific Scope text entirely — the
+   part of round-1's focus that narrows WHAT to verify, e.g. "only check the auth logic," which is
+   NOT the same thing as the generic `⚠️ SCOPE CONSTRAINT` block below (that one is about excluding
+   `node_modules`/vendor directories, never about the task's own narrowing). Since a fresh dispatch
+   is a genuinely NEW thread with no memory of round 1's own framing, omitting this would silently
+   turn a narrowly-scoped review into a whole-diff review after compaction.
+
+   **A dedicated field is required — `target.focus` is NOT a stable source for this, corrected here
+   (closes a real gap found during design review, confirmed against actual real durable logs from
+   past sessions): `target.focus` records whatever focus text was sent for round 1's own FINAL
+   logged dispatch ATTEMPT — not a stable "original task framing" fact.** Two real, confirmed ways
+   this diverges from the true original framing:
+   1. If round 1's own dispatch initially failed and needed a resume-safe retry
+      (`references/retry-guards.md`), the retry's own focus text is just a short "Retrying after
+      a `<reason>` failure..." note plus the generic scope constraint — NOT the original Why/Scope.
+      Confirmed directly against a real `retry-resume-safe-round1` session log: its round-1
+      `target.focus` contains neither a `Why:` nor a `Scope:` line at all. Reading `target.focus`
+      back after exactly this (valid, supported) recovery path would restore a retry note, not the
+      real task framing.
+   2. For a non-repo-artifact session, `target.focus` ALREADY embeds the full original artifact text
+      (per the existing non-repo-artifact rule). Confirmed directly against a real artifact-session
+      log. Reading `target.focus` back AND separately re-embedding the artifact (per step 2 above)
+      would duplicate the artifact in the fresh prompt — wasting bytes and risking an unnecessary
+      byte-preflight failure for an artifact that would have fit with one copy.
+
+   **Fixed: a new, dedicated, write-once field — `target.original_scope_framing` — captured exactly
+   ONCE, at the moment round 1's OWN focus text is first constructed (Phase 1 Step 0, BEFORE the
+   very first dispatch attempt of any kind, retry or not), holding ONLY the Why + task-specific Scope
+   text.** For a non-repo-artifact session, this field explicitly EXCLUDES the pasted artifact text
+   (which stays available separately, via the unchanged snapshot, per step 2 above) — never
+   double-embedded. This field is written once to round 1's own JSONL line and is NEVER overwritten
+   by a later retry — a retry only ever changes what is actually dispatched for that attempt
+   (`target.focus`, serving its existing, unchanged diagnostic/continuity purpose), never this
+   separately-recorded original-framing fact. Compaction's fresh dispatch sources its Why+Scope
+   component from `target.original_scope_framing`, never from `target.focus`.) + the standard
+   `⚠️ SCOPE CONSTRAINT` block **+ the SAME fixed collaboration-frame sentence every round-1 focus
+   already includes (new — closes a real gap found during design review: `SKILL.md`'s own round-1
+   rule requires stating, in that same focus text, that Claude and Codex are equal peers, findings
+   must be evidence-based, and the goal is 100% clean mutual agreement — confirmed directly against
+   a real round-1 JSONL log that this frame is genuinely present there. This is fixed, static
+   boilerplate, not task-specific content — unlike Why/Scope, it does not need to be captured into
+   `target.original_scope_framing` at all; it is simply appended to the compaction restart's own
+   focus text directly, exactly like the `⚠️ SCOPE CONSTRAINT` block immediately before it, since
+   both are the same kind of fixed framing every fresh dispatch already carries.)** + the SAME
+   `DISPOSITION` request block
+   an ordinary round 2+ would
+   include (new — closes a real convergence gap found during design review: without this, a claim
+   that this fresh reviewer would happily confirm fixed has no mechanism to actually close, since
+   the marker parser only recognizes a `DISPOSITION` for a claim_id the SAME round's focus text
+   explicitly requested — omitting the request here would strand every qualifying open claim,
+   eventually producing a false `⚠️ NOT CONVERGED` at the round cap purely because compaction never
+   asked).** This block is constructed by the EXISTING rule (`references/claim-ledger.md` section 4
+   and `SKILL.md`'s own round-2+ History construction), evaluated against the pre-compaction
+   thread's own most recently completed round exactly as it would be for an ordinary resumed round
+   — compaction changes WHICH thread receives the request, never whether or how the request itself
+   is built. **This dispatch IS round R's real dispatch** — its own findings are processed through
+   Phase 2 steps 2-6 exactly like any other round's; no separate follow-up dispatch happens in the
+   success case. **Coverage epoch (new — closes a real false-CLEAN gap found during design
+   review):** for a `--uncommitted` compaction dispatch specifically, this call can report its own
+   `coverage.source` exactly like any fresh `--uncommitted` dispatch can — this is a SECOND fresh
+   `--uncommitted` epoch within the same session, not only round 1's. The existing "coverage is a
+   round-1-only property" rule is revised to "coverage is a property of every fresh `--uncommitted`
+   dispatch this session, round 1 or a compaction restart" — the CLEAN convergence gate merges
+   EVERY such dispatch's own coverage outcome (worst-of-all: `"complete"` only if every one of them
+   was `"complete"`, else the existing `"partial"`/`"unknown"` precedence, `omitted` lists unioned
+   and deduplicated by `(path, reason)`), never round 1's alone once a compaction has occurred.
+   `--base`/`--commit` compaction dispatches report no coverage, exactly like round 1 in those
+   scopes — nothing changes for them.
+
+   **A successful restart can ALSO lack real coverage — fail-open gap closed (new — closes a real
+   gap found during design review, confirmed against the actual collector's own source): the
+   untracked-file collector deliberately treats a failure to write its own `--coverage-out` sidecar
+   as non-fatal (catches the error, still exits successfully), and the wrapper deliberately degrades
+   a missing/malformed sidecar to reporting no coverage metadata at all — so an `ok:true` fresh
+   `--uncommitted` compaction dispatch can genuinely lack `coverage.source` too, not only a failed
+   one.** The "always record coverage — real value when present, the `"unknown"` sentinel when
+   absent" rule (see "On failure" below for the failure-side statement of this same rule) therefore
+   applies symmetrically to a SUCCESSFUL fresh `--uncommitted` compaction restart as well: if this
+   dispatch's own response is `ok:true` but carries no `coverage.source`, the round's `coverage_source`
+   field is still recorded, as the `"unknown"` sentinel — never silently omitted just because the
+   dispatch itself otherwise succeeded. `--base`/`--commit` compaction dispatches report no coverage,
+   exactly like round 1 in those scopes — nothing changes for them.
+
+   **A retry-then-succeed candidate must reuse its OWN pre-retry coverage, never treat itself as
+   coverage-less (new — closes a real gap found during design review: a fresh `--uncommitted`
+   dispatch that first returns `ok:false` with `coverage.source` already present — per the interface
+   reference, several of the reasons eligible for this, e.g. `timeout`, occur only after collection
+   has already completed — and is then retried per `references/retry-guards.md`'s own existing
+   bounded-retry rule via `--resume` on that SAME new candidate thread (not the step-6 fallback to
+   the OLD thread) until it succeeds, ends up with a final `ok:true` response that itself carries NO
+   `coverage.source` at all, because a `--resume` call never re-collects anything — the wrapper only
+   ever populates `SOURCE_COVERAGE_JSON` inside its `--uncommitted` FRESH-dispatch branch. Reading
+   coverage only from this final response would wrongly record `"unknown"` for a candidate whose real
+   collected content is already known.).** Fixed: this is exactly the same situation
+   `references/retry-guards.md` already solves for actual round 1's own retry-then-succeed case —
+   generalized here from "round 1" to "whichever round performs a fresh `--uncommitted` dispatch"
+   (a compaction restart's dispatch is, by construction, also a fresh dispatch, per "Dispatch a
+   fresh `run-ccs-review.sh` call" above) — carry forward the EARLIER failed attempt's own
+   `coverage.source` as this round's real coverage once the retry succeeds, rather than treating the
+   final successful (but coverage-silent) `--resume` response as evidence of "unknown." If the
+   earlier failed attempt itself carried no `coverage.source` either, the existing `"unknown"`
+   sentinel rule above still applies unchanged.
+
+   **The SAME retry-then-succeed situation applies to `COMPACTION_BASELINE_TOKENS` too, not only
+   coverage (new — closes a real gap found during design review: the baseline guard above records
+   `execution.usage.input_tokens` from "the compaction round's OWN, freshly-restarted" dispatch —
+   but when that fresh dispatch first fails and is retried via `--resume` on the SAME candidate
+   thread per `references/retry-guards.md` until it succeeds, the final response's own
+   `execution.usage` describes only the RESUMED turn's marginal usage, not the original fresh
+   dispatch's true size — using it as the baseline would read as artificially small, wrongly passing
+   a review that was actually large enough to warrant disabling compaction, or conversely (if that
+   marginal usage happens to be unusable/malformed) forcing an unnecessary permanent disable when a
+   perfectly good number was already available from the FIRST attempt.)** Fixed, reusing the exact
+   same principle as the coverage fix immediately above: `COMPACTION_BASELINE_TOKENS` is read from
+   the EARLIER failed fresh attempt's own `execution.usage.input_tokens` when one exists (the fresh
+   dispatch's real, original size, before any retry), never from a subsequent `--resume` retry's own
+   response. Only when the fresh attempt's own first response carried no usable telemetry at all
+   does the existing "fail closed when telemetry is unusable" rule above apply.
+
+   **One shared reducer, not three ad hoc implementations (new — closes a real durable-contract gap
+   found during design review).** The original draft only described a live, in-session merge rule
+   and never addressed two other places coverage is read: continuity recovery (reconstructing state
+   from the JSONL log, e.g. after an interruption), the final-verdict artifact's own `coverage`
+   field (Phase 3 step 4), AND the user-facing **Final Report's own "Source coverage" narration**
+   (new — closes a real reporting gap found during design review: that section's EXISTING rule
+   reports coverage only when ROUND 1's own `coverage_source` is partial/unknown — confirmed
+   directly against the base skill's own text. A session where round 1 is `"complete"` but a LATER
+   successful compaction restart's own coverage is partial/unknown would correctly still end at
+   `⚠️ PARTIAL COVERAGE` — the underlying gate already accounts for every epoch — but the report
+   text a user actually reads would look only at round 1's now-irrelevant `"complete"` value and
+   fail to explain why the run actually ended that way) — all FOUR of which currently read (or, for
+   the Final Report, would read) ONLY round 1's stored value. Fixed: a successful `--uncommitted`
+   compaction restart's own `coverage_source` (real or the `"unknown"` sentinel per above) is
+   PERSISTED on that round's JSONL line (not merged only transiently in memory), and exactly ONE
+   reducer definition is used for all FOUR consumers (the live per-round convergence check, a
+   from-scratch continuity-recovery read, the final artifact's own `coverage` construction, AND the
+   Final Report's own Source coverage section — which must name WHICH epoch(s), round 1 and/or
+   which specific compaction round, actually contributed any partial/unknown status, never assume
+   it was necessarily round 1) — no separate re-implementation for any of the four:
+   - `status`: `"complete"` only if every epoch's own status was `"complete"`, else the existing
+     `"partial"`/`"unknown"` precedence, exactly as before.
+   - `omitted`: the union of every epoch's own `omitted` list, deduplicated by `(path, reason)`,
+     exactly as before.
+   - **`reviewed_file_count` (new — closes a real schema-completeness gap found during design
+     review): the LATEST epoch's own count, never a sum.** The durable result schema
+     (`schemas/interactive-result.schema.json`) requires this field alongside `status`/`omitted`,
+     and the existing coverage-merge fixture only ever produced the first two — confirmed directly
+     that feeding it two epochs (counts 2 and 3) omits `reviewed_file_count` from its output
+     entirely. Summing would double-count files re-scanned by a later epoch that already covered
+     ground round 1 did; using the latest epoch's own count is both simpler and more accurate,
+     since a later `--uncommitted` epoch's scan supersedes an earlier one's as the more current
+     picture of the codebase. **When the latest epoch is itself the `"unknown"` sentinel below
+     (closes a real gap found during design review: that sentinel carries no count at all, yet the
+     schema requires an integer here) — use the most recent PRECEDING epoch's own real count
+     instead** (the most defensible available number, pending the currently-unknown state — the
+     accompanying `status: "unknown"` is what actually gates CLEAN, not this count, so it is
+     informational once status is already unknown). In the edge case where no epoch has ever
+     reported a real count at all, use `0`, explicitly non-authoritative given the unknown status.
+   - **A failed fresh `--uncommitted` compaction attempt's own coverage is durably LOGGED, but
+     deliberately EXCLUDED from this shared reducer (revised — an earlier revision here folded it
+     into the reducer like a successful epoch; "On failure" above explains, with a live-traced
+     example, why that was itself a false-CLEAN bug: the candidate diff a failed attempt collected
+     is abandoned when the round falls back to `--resume` on the OLD thread, which never sees that
+     candidate's content at all — so that candidate's own "complete" collection status describes
+     content nobody ever actually reviewed, and folding it in would misrepresent the session's real
+     reviewed completeness).** When a failed compaction attempt's own response carries
+     `coverage.source` (or lacks one entirely), it is still recorded — as `compaction_attempt_coverage`
+     (alongside `compaction_attempt_failed_thread`/`compaction_attempt_execution`, same
+     mandatory-whenever-a-real-dispatch-was-attempted treatment) on round R's own line — purely as a
+     durable, best-effort AUDIT trail of what that abandoned attempt's own collection situation was.
+     This reducer folds in ONLY a successful compaction restart's `coverage_source`, never a failed
+     attempt's `compaction_attempt_coverage` — see "On failure" above for the full reasoning.
+
+   **Schema version bump required (new — closes a real contract-versioning gap found during design
+   review).** This changes how EXISTING lines must be interpreted — before this feature, `scope`
+   other than `"resume"` and a present `coverage_source` were both round-1-only signals; after it,
+   either can legitimately appear again at any round that performed a compaction restart. Per the
+   EXISTING legacy-session policy (`references/claim-ledger.md` section 10), this is exactly the
+   kind of change that requires bumping the session's own `schema_version` (introduced at whatever
+   the next available integer is when this ships) — reusing the mechanism already in place, not a
+   new one: a session started before this feature shipped is refused for `--resume` under the new
+   skill version, exactly as an old-claim-ledger session already is today, rather than attempting a
+   mixed-interpretation reduce.
+5. **Ordering on success — durability before any thread or snapshot file is touched, with immediate
+   provisional tracking to close the intermediate-window leak an earlier draft left open (closes a
+   real gap found during design review: between "dispatch returns ok:true" and "JSONL append
+   verified," the new thread and candidate snapshot were tracked NOWHERE — not yet `GROUP_THREADS`/
+   `LEAKED_THREAD_IDS`, not yet the active snapshot — so a `🛑 REVIEW LOG INTEGRITY FAILURE` in that
+   window would leak both, since that failure's own cleanup only ever sweeps `GROUP_THREADS`/
+   `LEAKED_THREAD_IDS` and the currently-active snapshot):**
+   1. This dispatch returns `ok:true` (never inferred from "a threadId exists" — several `ok:false`
+      failure reasons also carry a `threadId`, see the interface reference's own reason table).
+   2. **Immediately** (before doing anything else with this result): add the new thread id to
+      `LEAKED_THREAD_IDS` provisionally (the candidate snapshot, when one exists, is ALREADY tracked
+      as `PROVISIONAL_SNAPSHOT_FILE` from the moment it was collected in step 3 above — nothing new
+      to do for it here). Both are now covered by every existing terminal cleanup sweep (including a
+      `🛑 REVIEW LOG INTEGRITY FAILURE` that might fire in step 3 below), even though neither has
+      been "promoted" yet.
+   3. Process this round's findings normally (Phase 2 steps 2-6, including the coverage merge
+      above), then append this round's JSONL line — `target.scope` = the scope flag actually used
+      (never `"resume"`), plus `compacted_from_thread: <old thread id>` and the snapshot-lineage
+      fields from step 3 above — and run the EXISTING append-verify hard stop exactly as any other
+      round does. **The append-verify check itself must be extended for a compaction round,
+      never left as the bare `.round == R` check alone (new — closes a real gap found during design
+      review: the base skill's own verifier only confirms the appended line carries the expected
+      round NUMBER — it says nothing about which FIELDS that line carries. A partial or buggy write
+      that lands the correct round number but drops, say, `candidate_snapshot_path` or
+      `compaction_attempt_failure_count` would pass that check unnoticed, silently breaking exactly
+      the durability guarantees this whole design depends on those fields for.)** **This extension
+      must be BRANCH-AWARE, not one fixed field list (corrected — closes a real gap found during
+      design review: a first revision required `candidate_snapshot_path` on EVERY successful
+      compaction and `compaction_attempt_failed_thread` on EVERY attempted-and-failed one — but a
+      non-repo-artifact session and `--commit` scope never allocate a candidate at all (see the
+      snapshot-candidate-lifecycle bullet above: "No candidate snapshot is ever allocated for
+      `--commit` scope"), and several `ok:false` reasons — `no_thread_started`, `bad_args`,
+      `git_error`, `incomplete_collection` — structurally never carry a `threadId` at all, per the
+      interface reference's own per-reason table. Both are legitimate, expected outcomes that the
+      original fixed field list would have wrongly failed.)** Fixed: for any round whose own line
+      records a compaction outcome, the verify step confirms exactly the fields THAT SPECIFIC
+      outcome requires, never a one-size-fits-all list:
+      - **Success, `--uncommitted`/`--base` scope (a real candidate was allocated):**
+        `compacted_from_thread`, `candidate_snapshot_path`, `snapshot_digest_before`,
+        `snapshot_digest_after`, `compaction_attempt_failure_count` (must be `0`).
+      - **Success, non-repo-artifact or `--commit` scope (no candidate ever allocated):** the same
+        set MINUS `candidate_snapshot_path`, whose absence here is the CORRECT state, not a defect.
+      - **Attempted-and-failed, falling through to the fallback:** `compaction_attempt_failure_count`
+        — EXCEPT when the failure was `byte_budget_exceeded` (see "A real latch, not merely an
+        implicit..." below), which deliberately never increments this counter, so its absence here
+        is likewise the correct state, not a defect. `compaction_attempt_failed_thread` is required
+        additionally, but ONLY when the underlying failure reason is one the interface reference's
+        own table marks as threadId-bearing — never for `no_thread_started`, `bad_args`,
+        `git_error`, or `incomplete_collection`, which structurally never carry one.
+      - **Any round that newly sets `compaction_disabled_reason` this round (baseline over
+        threshold, baseline unusable, failure count reaching its bound, or byte budget exceeded):**
+        that field is additionally required whenever the round's own processing actually reached
+        that decision this round — closes a related gap found in the same review pass, where the
+        original extension checked candidate/thread/count fields but never the disable-latch field
+        itself, despite the design elsewhere calling it a one-shot durable latch exactly as
+        load-bearing as the others.
+      - **Any round whose own processing discovers a genuinely PRE-append snapshot-deletion failure
+        this round (a partial-candidate or abandoned-candidate deletion failure, per "Retired-
+        snapshot tracking is general-purpose" above — never the deferred POST-append case, which is
+        legitimately optional and lands on a LATER round instead):** `retired_snapshot_files` is
+        additionally required, non-empty.
+      A missing or malformed required field for whichever of these branches actually applies is
+      treated with the SAME severity as a wrong round number — a hard stop,
+      `🛑 REVIEW LOG INTEGRITY FAILURE`, never a soft warning — since these fields are exactly as
+      durability-load-bearing as the round number itself; a field this round's own outcome does NOT
+      require is correctly absent and must never be flagged as missing. **If this append fails
+      verification: the new thread and candidate snapshot are ALREADY tracked as provisional/leaked
+      (step 2 above) and get cleaned up by the existing `🛑 REVIEW LOG INTEGRITY FAILURE` path
+      exactly like any other leaked resource — nothing extra to do here, and nothing new leaks.**
+   4. **Only after that append is verified**: (a) promote — remove the NEW thread id from its
+      provisional `LEAKED_THREAD_IDS` entry and make it the active `GROUP_THREADS` entry instead;
+      add the OLD thread id to `LEAKED_THREAD_IDS` in its place (never an immediate `--cleanup` —
+      see "Interaction with `--keep-evidence`" below); (b) promote the candidate snapshot from
+      provisional to active, and delete the OLD active snapshot file. **If that deletion itself
+      fails: add its path to `RETIRED_SNAPSHOT_FILES`** — see "Retired-snapshot tracking is
+      general-purpose, not one-case-specific" below for the full, generalized mechanism (this is
+      one of three places that set gets used, not a special case of its own).
+
+   **Retired-snapshot tracking is general-purpose, not one-case-specific (new — closes a real
+   remaining gap found during design review: the first revision of `RETIRED_SNAPSHOT_FILES` only
+   covered a failed deletion of the OLD active snapshot after promotion — leaving two OTHER deletion
+   points in this same restart mechanism just as capable of leaking a file with nowhere to be
+   tracked: a failed deletion of a PARTIAL candidate, per step 3's own collection/hash-failure
+   handling above, before it ever became a fully-hashed candidate at all; and a failed deletion of a
+   fully-hashed candidate on ordinary compaction failure, per "On failure" step 2 below — in EITHER
+   case, if a LATER compaction attempt's own single `PROVISIONAL_SNAPSHOT_FILE` slot then gets
+   reassigned to a new candidate, the earlier failed-to-delete file is referenced by nothing at all,
+   tracked by neither the active/provisional slots nor the original narrower `RETIRED_SNAPSHOT_FILES`
+   rule).** Fixed: `RETIRED_SNAPSHOT_FILES` is the ONE general-purpose catch-all for every snapshot-
+   related file this restart mechanism ever fails to delete when it is supposed to — a partial
+   candidate (step 3), an abandoned fully-hashed candidate (step 6 below), or an old active snapshot
+   after promotion (this step) all route through the exact same set on their own deletion failure,
+   never three separate ad hoc mechanisms. Phase 3's terminal cleanup (every terminal path) attempts
+   `rm -f` on every path ever added to this one set, giving each a final retry at session end.
+
+   **Retired- and provisional-snapshot durability — real fix for one, honest disclosure for the
+   other (new — closes a real gap found during design review, and corrects an overclaim: an earlier
+   revision, while fixing the SEPARATE `compaction_disabled_reason` durability gap above, asserted
+   `PROVISIONAL_SNAPSHOT_FILE`/`RETIRED_SNAPSHOT_FILES` already had "a durable JSONL-backed recovery
+   path" as existing precedent — confirmed, on inspection, that neither ever actually did; both were
+   only ever described as in-memory session-scoped facts, "analogous in spirit to
+   `LEAKED_THREAD_IDS`" without ever receiving the SAME durable-field treatment that name actually
+   has.**
+   - **`RETIRED_SNAPSHOT_FILES` — made genuinely durable for TWO of the three deletion points; the
+     third needs its own honest treatment (corrected — closes a real gap found during design review:
+     an earlier revision claimed uniformly "the round's own JSONL line has not yet been appended" for
+     ALL three deletion points, which is true for the partial-candidate failure (step 3) and the
+     abandoned-candidate failure (step 6 below) — both discovered before that round's own line is
+     ever written — but FALSE for the OLD-active-snapshot deletion after promotion (step 5.4): by
+     that point, step 5.3's own JSONL append has ALREADY happened, and the append-only contract
+     forbids ever modifying an already-committed line).** For the two genuinely pre-append cases,
+     the fix stands as designed: the path is added to a new array field, `retired_snapshot_files`, on
+     that SAME round's own line (present only when non-empty), and Phase 3's terminal cleanup plus
+     continuity recovery are both extended to union in every path ever recorded in this field across
+     the session's log — the same "durable backstop, in-memory set is not the sole source of truth"
+     pattern already established for `LEAKED_THREAD_IDS`. **For the post-append case (old-snapshot
+     deletion failure after promotion) specifically:** the path cannot go on the round that already
+     committed — it is instead attached to the NEXT round's own `retired_snapshot_files` field,
+     whenever that round's own line eventually gets appended (a one-round-deferred, best-effort
+     backfill, not a violation of append-only). **The disclosed gap here is broader than just "no
+     next round exists" (corrected — closes a real gap found during design review: an earlier
+     revision disclosed this only for the compaction round being the session's own literal LAST
+     round — but the identical loss also occurs on a NON-terminal interruption, one where a next
+     round WAS expected, if that next round's own session state or process is itself interrupted
+     before ITS OWN line ever gets appended; a next round merely being dispatched later is not
+     enough — it has to actually complete its own append for the deferred backfill to land).** If
+     EITHER the compaction round that triggered this failure turns out to be the session's own last
+     round (an immediately CLEAN or otherwise terminal outcome, with no further round ever
+     dispatched), OR a next round WAS dispatched but a subsequent interruption prevents that round's
+     own line from ever being appended — in both cases, this specific case shares the exact same
+     accepted, disclosed, bounded-impact residual gap as `PROVISIONAL_SNAPSHOT_FILE` below, for the
+     identical underlying reason (no later completed line exists to attach a durability marker to).
+   - **`PROVISIONAL_SNAPSHOT_FILE` — two genuinely different windows, not one (corrected — closes a
+     real gap found during design review: an earlier revision described this window as "ENTIRELY
+     within one round's own processing, before that round's own JSONL line is ever appended at all,"
+     which is true only for the FAILURE-path window below — the SUCCESS path's own promotion (step
+     5.4) happens strictly AFTER that same round's own append already verified (step 5.3), so its
+     provisional window genuinely spans the append boundary, contradicting the "entirely pre-append"
+     framing for that case).**
+     - **Pre-append window (failure path, or success path before its own append) — disclosed,
+       accepted residual gap, not fully closed. Impact corrected (closes a real overclaim found
+       during design review): this window's impact is NOT limited to "at most one small temp file,
+       never a thread" as an earlier revision claimed — on the SUCCESS sub-case specifically, the
+       newly-created thread is ALSO only tracked in-memory (`LEAKED_THREAD_IDS`, step 5.2 above)
+       until that SAME append lands, so a crash in this exact window can orphan that new thread too,
+       not only the candidate file. This is not a NEW risk compaction introduces, though: it is the
+       identical, already-accepted gap every ordinary round's own thread creation already has before
+       ITS OWN first append (the standard per-round `threadId` field is what makes any round's own
+       thread durable, and that field, like everything else on a line, only exists once the line is
+       appended) — "Durable backstop for abandoned threads" above durably covers the OLD thread (on
+       success) and the failed attempt's thread (on failure) specifically because those are
+       genuinely NEW durability needs this feature adds; the NEW thread's OWN pre-append window on
+       the success path was already covered by nothing more than every other round's thread already
+       is, and is accepted on the same terms.** "Provisional" here describes a file mid-transit,
+       between successful candidate creation and either its own deletion on failure (step 6 below)
+       or this round's own JSONL append on the way to success — in both cases, entirely before any
+       line for this round has been written. A session interrupted in exactly that narrow window has
+       no completed line yet to attach a durability marker to; true crash-safety for this specific
+       window would need a different mechanism (e.g. a pre-round, write-ahead marker file, committed
+       before candidate creation even begins) — a larger design escalation than this narrow,
+       low-probability window warrants for v1. This gap is accepted and disclosed, not silently left
+       implicit: an interruption in this exact window can leave one orphaned candidate file (and, on
+       the success sub-case, one orphaned thread, on the same accepted terms as any other round's own
+       pre-append thread) behind with no recorded path to retry its cleanup, and not addressed
+       further in this design.
+     - **Post-append window (success path only, between step 5.3's verified append and step 5.4's
+       promotion) — genuinely closed, not merely disclosed, via durably recording the candidate's
+       own random path (see "Recoverable without giving up `mktemp`'s own symlink-attack protection"
+       in the snapshot-candidate-lifecycle bullet above).** **Never skip the mandatory
+       verify-before-trust step snapshot-integrity.md already requires, even inside this recovery
+       (corrected — closes a real gap found during design review: an earlier revision's recovery
+       algorithm branched directly on `candidate_snapshot_path`'s own existence without ever
+       independently verifying what is CURRENTLY at the active path first — so (a) if the active
+       file had been separately corrupted or deleted during the same interruption (unrelated to
+       promotion itself — e.g. stray `/tmp` cleanup), the "candidate exists" branch would silently
+       overwrite it with the verified candidate, never raising the same
+       `🛑 SNAPSHOT INTEGRITY FAILURE` the base mechanism requires for exactly this kind of
+       unexplained state; and (b) the "candidate absent" branch declared promotion complete purely
+       from absence, without ever confirming the active file actually matches `snapshot_digest_after`
+       — absence could equally mean the candidate was lost some OTHER way before ever being moved,
+       leaving the active file still at its PRE-promotion state, silently treated as done.)** Fixed:
+       recovery for a session whose latest completed line shows a successful compaction
+       (`compacted_from_thread` present) now performs an explicit verify-before-trust of the CURRENT
+       active file FIRST, before consulting `candidate_snapshot_path` at all:
+       1. Hash whatever currently exists at the active path. If it is missing, or its hash matches
+          NEITHER `snapshot_digest_before` NOR `snapshot_digest_after` — this is genuine, unexplained
+          corruption or loss, unrelated to anything this recovery can resolve on its own — hard stop,
+          `🛑 SNAPSHOT INTEGRITY FAILURE`, exactly as the base mechanism already requires, never
+          silently proceeded past.
+       2. If it matches `snapshot_digest_after`: promotion already completed (this also correctly
+          covers the before/after-identical edge case above, since the observable bytes are already
+          correct either way). If `candidate_snapshot_path` STILL exists on disk too (a stray leftover
+          — e.g. a move that succeeded but left a hard-linked duplicate, or a retry of an already-
+          completed move), it is no longer needed: delete it, folding a failed deletion into
+          `retired_snapshot_files` per the existing rule. Proceed normally.
+       3. If it matches `snapshot_digest_before` (still the OLD file — promotion has NOT completed):
+          check `candidate_snapshot_path`. If it exists and verifies against `snapshot_digest_after`,
+          the crash landed in exactly this window — complete the interrupted promotion now (move it
+          into the active path; on a failed deletion of whatever is currently at the active path,
+          fold into `retired_snapshot_files` per the existing rule). If the candidate is missing, or
+          present but fails to verify, neither the promoted state nor a valid pre-promotion candidate
+          can be produced — hard stop, `🛑 SNAPSHOT INTEGRITY FAILURE`, never silently continued.
+6. **On failure (any `ok:false` reason, including `artifact_too_large`) — self-contained fallback,
+   never this round's own terminal outcome, and NEVER a separate JSONL append (closes a real
+   one-object-per-round contract violation found during design review — an earlier draft implied
+   a standalone append for the failed attempt, which conflicts with the append-verify contract
+   requiring exactly one JSONL object per round number):**
+   1. **Three independent checks on the failed attempt's own response — each captured whenever
+      present, none gated on whether another is present (closes a real gap found during design
+      review: an earlier draft nested `execution`/`coverage` capture inside "if a threadId exists,"
+      but `no_thread_started` — no `threadId`, since the wrapper's own reason table shows that
+      branch requires an empty `THREAD_ID` — still carries a genuine `execution` object, since Codex
+      was already launched and timed before that failure was detected; nesting would have silently
+      dropped exactly this real telemetry):**
+      - If a `threadId` is present (several reasons carry one), remember it in-memory in
+        `LEAKED_THREAD_IDS` immediately — it must not linger untracked, and this is a REQUIRED step
+        whenever a threadId exists, not best-effort (see "Durable backstop for abandoned threads"
+        below for why).
+      - If an `execution` object is present (several failure reasons launch Codex and so still
+        report real elapsed time/usage, independent of whether a `threadId` ever got assigned — see
+        "Preserving failed-attempt telemetry" below), remember it.
+      - **A failed compaction attempt's coverage is DURABLY LOGGED for audit, but NEVER folded into
+        the shared convergence-gating reducer (corrected here — closes a real false-CLEAN gap found
+        during design review, and reverses part of an earlier revision's own fix). The earlier
+        revision treated a failed attempt's coverage symmetrically with a successful one — recording
+        `coverage.source` when present or the `"unknown"` sentinel when absent, then folding it into
+        the shared reducer either way. This is wrong specifically for the FAILURE case: `coverage`
+        describes whether file COLLECTION completed for the CANDIDATE diff — it says nothing about
+        whether a real Codex VERDICT was ever produced for that candidate. When the attempt fails,
+        the candidate is discarded and the round falls back to `--resume` on the OLD thread, which
+        only ever continues reviewing the OLD thread's own original diff context — confirmed
+        directly against the wrapper's own source: `--resume` cannot be combined with a scope flag
+        and never re-collects a diff, so the fallback thread has no knowledge of whatever changes
+        the candidate alone captured. Folding the candidate's own "complete" collection status into
+        the session's overall coverage would therefore claim the codebase was fully reviewed when
+        the specific content that triggered this compaction attempt was, in fact, reviewed by
+        NOBODY. This differs from the existing `references/retry-guards.md` precedent for an
+        ordinary failed round-1 dispatch, which this design's earlier revision incorrectly treated
+        as identical: that precedent works because retrying preserves and eventually resumes the
+        SAME thread that will itself go on to produce a real verdict for that SAME collected diff —
+        the coverage information stays meaningful because the epoch it describes is still part of
+        what the session ultimately reviews. A failed COMPACTION attempt's fallback explicitly does
+        NOT do this — it abandons the candidate thread and diff entirely, falling back to a
+        DIFFERENT thread reviewing DIFFERENT (older) content.** Fixed: `compaction_attempt_coverage`
+        is still recorded on the round's own JSONL line whenever a real wrapper dispatch was
+        attempted and returned `ok:false` — `coverage.source` when present, or the `"unknown"`
+        sentinel when absent, exactly as before — but purely as a durable, best-effort AUDIT record
+        of what that abandoned attempt's own collection situation was. **It is explicitly EXCLUDED
+        from the shared reducer's convergence-gating computation** — the CLEAN gate, continuity
+        recovery, and the final artifact's own `coverage` field all consider ONLY successful fresh
+        `--uncommitted` dispatches' coverage (round 1, or a compaction restart that actually
+        succeeded), never a failed attempt's. A LOCAL pre-dispatch failure (step 1's digest
+        verification, step 3's candidate collection/hash failure, or the byte-size preflight
+        rejection) records no coverage field at all, for the same underlying reason plus the
+        additional fact that no real dispatch was ever attempted — coverage-wise, both kinds of
+        compaction failure are, and remain, exactly as if compaction had never been attempted this
+        round, from the reducer's point of view. For `--base`/`--commit` scope, no coverage field is
+        ever recorded — that scope never reports coverage, exactly like round 1 in that case. **A
+        non-repo-artifact session is NOT exempt from the general rule that a SUCCESSFUL restart's
+        coverage DOES fold into the reducer** (corrected — an earlier revision incorrectly claimed it
+        never reports coverage at all): its `--uncommitted` dispatch against `CLEAN_REPO_DIR` DOES
+        report coverage on success, exactly as round 1 already does for this session type (per the
+        base skill's own documented behavior, ordinarily `{"status":"complete",
+        "reviewed_file_count":0,"omitted":[]}` against the always-empty clean repo) — but a FAILED
+        non-repo-artifact compaction attempt's coverage is excluded from the reducer for the exact
+        same reason as any other scope's failed attempt.**
+   2. Delete the candidate snapshot file (if one was allocated this attempt — never for `--commit`
+      scope or a non-repo-artifact session, neither of which allocates one) — it was never used for
+      anything. On a failed deletion here, add its path to `RETIRED_SNAPSHOT_FILES` — see
+      "Retired-snapshot tracking is general-purpose" above.
+   3. Log one narration line noting the compaction attempt failed and why.
+   4. Fall through to a NORMAL `--resume` dispatch against the STILL-ALIVE old thread (still the
+      active `GROUP_THREADS` entry — never touched by a failed attempt), validated against the
+      STILL-ACTIVE, untouched original snapshot, using this round's real History/Scope focus text
+      exactly as an ordinary round would — this IS round R's real dispatch in the failure case.
+      **This fallback dispatch is subject to the EXISTING retry-by-failure-reason procedure
+      (`references/retry-guards.md`) exactly like any other round's own dispatch would be (closes a
+      real gap found during design review: an earlier draft never addressed what happens if the
+      fallback ITSELF initially fails)** — the compaction-attempt fields from steps 1 and 3 above
+      are carried through that entire retry sequence in memory, and attached only once, to whatever
+      single result eventually gets appended for round R (its own eventual accepted success, or its
+      own eventual terminal non-CLEAN outcome if retries are exhausted) — never an intermediate
+      failed fallback attempt logged as if it were round R's final result. The compaction threshold
+      check runs again next round if still exceeded.
+   5. **This round's own single JSONL line — written once, after step 4's fallback dispatch (and any
+      of its own retries) reaches its final result, exactly like any other round — additionally
+      carries the failed attempt's own `compaction_attempt_failed_thread` (and
+      `compaction_attempt_execution`, when available) as REQUIRED fields on THAT SAME line whenever
+      step 1 applies.** There is no separate append for the failed attempt at any point — round R
+      still produces exactly one JSONL object, satisfying the existing one-object-per-round
+      append-verify contract unchanged; the failed attempt is recorded only as additional fields
+      riding on round R's own real (fallback) result, and — because that line's append already goes
+      through the EXISTING mandatory append-verify hard stop — these fields inherit that same
+      mandatory (never best-effort) guarantee.
+
+### Interaction with `--keep-evidence` (new — closes a real contract violation in the original draft)
+
+The original draft's "delete the old thread immediately on successful restart" step was wrong: it
+is not yet known, at compaction time, whether this SESSION will end CLEAN or not — and the
+`--keep-evidence` contract requires every thread in `GROUP_THREADS`/`LEAKED_THREAD_IDS` to survive
+an eligible non-CLEAN outcome for later inspection. **Fixed: the old thread is never eagerly
+deleted.** Step 5.4 above always routes it through the EXISTING `LEAKED_THREAD_IDS` mechanism
+instead of a direct `--cleanup` call — Phase 3's already-keep-evidence-gated terminal cleanup then
+handles it with zero special-casing: deleted normally on `✅ CLEAN` (or any outcome with
+`--keep-evidence` OFF), preserved alongside the new thread on an eligible non-CLEAN outcome with
+`--keep-evidence` ON. This reuses machinery that already exists for exactly this "an earlier thread
+was abandoned mid-session" shape (see `SKILL.md`'s own Guards → "Empty / failed review" handling
+for round-1 retries), rather than inventing a second cleanup path with its own edge cases.
+
+### Durable backstop for abandoned threads (new — closes a real durability gap found during design review)
+
+`LEAKED_THREAD_IDS` (and `GROUP_THREADS`) are in-memory facts Claude carries across separately-
+dispatched tool calls for the rest of the run — the existing design already relies on this for
+ordinary round-1 retries. Compaction adds more state of this shape (an abandoned old thread on
+every successful restart; a dead-end thread on every failed attempt), so the existing durable-
+backstop principle `GROUP_THREADS` already documents ("each round's log line also records the
+thread id... so `jq` on the latest round's log line re-derives the mapping if memory is ever in
+doubt") is extended to cover both here too, rather than leaving compaction as the one mechanism
+relying on memory alone:
+- A successful compaction's `compacted_from_thread` field (already logged, see "Logging" below) is
+  itself sufficient to reconstruct that the named thread is abandoned and needs the same treatment
+  as a `LEAKED_THREAD_IDS` entry, purely by reading the JSONL log.
+- A FAILED compaction attempt's own threadId (when one exists) is additionally recorded as a
+  REQUIRED field **on that same round's own single JSONL line** (never a separate append, and never
+  best-effort — see "On failure" step 6 above) — `compaction_attempt_failed_thread`. This is
+  deliberately NOT treated like `kept_last_message_path`'s best-effort convention: since this field
+  is what makes the "never permanently unaccounted-for" guarantee actually true, making it skippable
+  would silently contradict that guarantee the moment in-memory `LEAKED_THREAD_IDS` state is lost —
+  it inherits the SAME mandatory append-verify guarantee as the rest of that round's line.
+- Phase 3 and the final-verdict artifact's own thread enumeration (`references/keep-evidence.md`'s
+  retention rules; the `threads[]` array in the durable result artifact) are both extended to union
+  in every `compacted_from_thread` and `compaction_attempt_failed_thread` value found anywhere in
+  the session's own JSONL log, in addition to whatever `GROUP_THREADS`/`LEAKED_THREAD_IDS` memory
+  currently holds — so a thread is never permanently unaccounted-for purely because in-memory state
+  did not survive to the end of a long run.
+
+### Failure isolation from the round loop (new — closes a real conflation in the original draft)
+
+A compaction attempt's own dispatch (steps 4-6 above) must never be confused with, or reported as,
+a SEPARATE round from the loop's perspective. Concretely: when compaction triggers for round R,
+round R has exactly ONE real dispatch — either the compaction fresh-dispatch (success case) or the
+fallback `--resume` against the still-alive old thread (failure case) — never both, and a
+compaction attempt's own failure reason (e.g. `artifact_too_large`) is NEVER surfaced as round R's
+own terminal status; it is purely an internal detail of "how round R's dispatch was attempted,"
+logged as one narration line, nothing more.
+
+### Preserving failed-attempt telemetry (new — closes a real cost-accounting gap found during design review)
+
+Several `ok:false` reasons (`timeout`, `nonzero_exit`, `missing_task_complete`, `invalid_json`, and
+others — see the interface reference's own reason table) still launch `codex exec` and so still
+carry a genuine `execution` object (elapsed time, and usage when available) even on failure. An
+earlier draft discarded this — recording only a threadId and a narration line — understating the
+real cost of the exact recovery path compaction itself introduces. Fixed: when a failed compaction
+attempt's own response carries an `execution` object, it is preserved as `compaction_attempt_
+execution` on round R's own JSONL line (alongside `compaction_attempt_failed_thread`, per "On
+failure" step 6 above — never a separate line). **`round_wall_seconds` for a round that included a
+failed compaction attempt covers the WHOLE round timeline** — from immediately before the
+compaction attempt's own dispatch through the fallback dispatch's own completion — consistent with
+its existing definition as coordinator-measured wall time for the entire round, not per-dispatch.
+
+**Surfaced in the final report, not just durably logged (new — closes a real gap found during
+design review: an earlier draft made this field durable in the JSONL log but never extended the
+Final Report's own execution-telemetry bullet to actually mention it, silently omitting a failed
+attempt's real cost from the user-facing accounting the design otherwise claims to preserve).** The
+Final Report's existing execution-telemetry section is extended to also list, for any round that
+carries a `compaction_attempt_execution` value, a clearly labeled separate line — e.g. "Round R also
+attempted a compaction restart that failed after using `<input>`/`<output>` tokens (`<elapsed>`s)
+before falling back" — distinct from that round's own real (fallback) `execution`/`usage` reporting,
+never merged into it.
+
+### A failed compaction attempt is a superseded attempt, not a novel evidence-lifecycle case (new — closes a real gap found during design review)
+
+A round with a failed compaction attempt followed by its own fallback `--resume` has TWO physical
+dispatches, and an earlier draft never addressed how `--capture-evidence`/`--keep-evidence` — which
+already allocate a per-dispatch event-log file and last-message scratch file, per
+`references/capture-evidence.md`/`references/keep-evidence.md` — apply here. **Fixed: this is
+exactly the EXISTING "superseded attempt within a round" case `references/retry-guards.md` already
+defines for an ordinary round's own retries — apply it unchanged, inventing nothing new.** The
+failed compaction attempt's own raw event-log file (when `--capture-evidence` is ON) is deleted, not
+retained, exactly like any other superseded attempt's; its own last-message file (when
+`--keep-evidence` is ON) is never kept, exactly like any other superseded attempt's — only the
+round's FINAL attempt (the fallback dispatch) participates normally in whichever of the two flags is
+ON. This also avoids any path collision: the compaction attempt and the fallback each get their own
+temp files under the existing per-attempt allocation scheme, exactly as two retries of the same
+round already would.
+
+### Handling missing OR malformed usage data (expanded — closes a real gap in the original draft, plus a further gap found during design review)
+
+`execution.usage` (and, within it, `input_tokens`) is documented as best-effort and may be entirely
+absent even on a genuinely successful round. If the most recently completed round's response has no
+`execution.usage.input_tokens` to check: **skip the threshold check for this round** (never treat
+missing data as "under threshold," which would make an opt-in `--compact` session silently never
+compact at all, and never as "over threshold" either) — log one narration line noting the check was
+skipped, and re-attempt the check normally at the next round where usage data is available.
+
+**A PRESENT value must also be validated before comparison — never trusted as-is (new — closes a
+real gap found during design review, confirmed live: `execution.usage` is deliberately untyped at
+the wrapper boundary, with no validation on its member types, so `input_tokens` can legitimately be
+a string, `null`, or negative. Directly running a numeric comparison against such a value is
+unsafe — confirmed live that both `{"input_tokens":"not-a-number"}` and a plain string value
+compare as GREATER than `8,000,000` under `jq`'s own type-ordering rules, which rank any string
+above any number — so malformed telemetry could spuriously trigger an unnecessary, expensive fresh
+restart instead of being safely ignored).** Fixed: `input_tokens`, when present, must additionally
+be validated as a non-negative integer before ever being compared to `COMPACT_THRESHOLD`. Any other
+shape — a string, `null`, a negative number, an object, anything non-integer — is treated exactly
+like the ABSENT case above: skip the threshold check for this round, narrate, and re-attempt
+normally next round. This check never trusts `execution.usage`'s own reported shape without
+verifying it first.
+
+### Closed-claim section has its own ceiling (new — closes a real unbounded-growth gap found during design review)
+
+The closed-claim one-line summaries have no bound in the original draft, and the count of closed
+claims only ever grows across a session — in a claims-heavy review, this section could itself
+eventually threaten the wrapper's 131,072-byte combined-prompt cap, at which point compaction would
+permanently fail via `artifact_too_large` (self-contained per "Failure isolation" above, so it
+would not break the review, but it WOULD mean the core goal — capping growth — silently stops being
+achievable for exactly the sessions most likely to need it). Fixed with a small, bounded rule
+consistent with this design's existing YAGNI stance (no LLM summarization): include the
+`CLOSED_CLAIM_LIMIT = 20` most-recently-closed claims' one-line summaries verbatim (ordered by
+`source_round` descending), and collapse everything older into a single line: `<N> additional
+claims resolved/retracted before round <R>; see the session's own JSONL log for full detail.` This
+bounds the closed-claim section's own contribution to a small, fixed COUNT regardless of how many
+rounds a session eventually runs — see the disclosed limitation immediately below for why this is a
+count bound, not yet a byte bound.
+
+**Disclosed, accepted residual limitation (does not fully close finding — capping closed-claim
+COUNT bounds one growth vector, not overall byte size, and not the whole prompt).** Two things this
+design does NOT fully bound, corrected here after design review:
+- The closed-claim cap bounds COUNT (20 entries), not bytes — the marker-reason grammar requires
+  only a non-empty sentence, with no length limit, so 20 valid-but-long closure reasons are not
+  actually "small" in the way the earlier text implied. Corrected: the count cap is a coarse
+  guard, not a byte guarantee by itself.
+- Open claims remain fully unabridged with no count or byte bound, and no schema field limits a
+  finding's own `summary`/`evidence` length.
+
+So a session with a large number of open/closed claims, one exceptionally large finding, OR a
+large re-collected diff/artifact can still produce a rendered prompt exceeding the wrapper's
+131,072-byte cap. **Mitigation, corrected to measure via the AUTHORITATIVE collection path, not an
+approximation (closes a real undercount gap found during design review): an earlier revision
+estimated the diff/artifact component from the CANDIDATE SNAPSHOT — but for `--uncommitted` scope,
+the snapshot deliberately records untracked files by NAME ONLY, never their content (this is
+`references/snapshot-integrity.md`'s own documented, deliberate design — the snapshot exists to
+detect corruption of Claude's local record, not to serve as the real payload). The wrapper's actual
+dispatch, however, DOES include eligible untracked files' real content via its own
+`collect_untracked_files.py`. A name-only estimate therefore silently undercounts by however large
+those files' real content is — confirmed directly against the wrapper's own source that untracked
+content collection and prompt rendering are separate, later steps the snapshot's own bytes cannot
+stand in for.** Fixed: the preflight estimate reuses the SAME authoritative collection the wrapper
+itself performs (the actual `collect_untracked_files.py`-equivalent content collection for
+`--uncommitted` scope, not the name-only snapshot) to measure the diff/untracked-content component.
+
+**This authoritative collector invocation can itself fail — that has an explicit failure path too
+(new — closes a real gap found during design review: the real `collect_untracked_files.py` exits
+nonzero — status 1 or 2 — before ever reaching its normal output loop in exactly the same
+`git_error`/`incomplete_collection` cases the wrapper's own real dispatch would later hit for the
+identical reason. An earlier revision only branched on the computed byte total, implicitly treating
+a failed collector invocation as "zero bytes collected" — silently UNDER-counting rather than
+failing, which could pass the preflight and then immediately re-hit the exact same collector failure
+during the real dispatch, wasting precisely the dispatch this preflight exists to avoid).** Fixed: a
+nonzero exit from this preflight's own collector invocation is never treated as "zero bytes" — it is
+treated exactly like any other compaction failure (log the narration, fall through to the normal
+`--resume` fallback below) immediately, without ever attempting the real dispatch that would only
+fail the identical way.
+
+**Measure the focus text EXACTLY, never estimate it (further corrected — closes a real gap found
+during design review: "a conservative fixed estimate for framing overhead" is itself wrong, because
+the Why/Scope/SCOPE-CONSTRAINT text is CALLER-SUPPLIED prose Claude writes fresh each time, not a
+small fixed template — and for a non-repo-artifact session, the full original artifact text is ALSO
+part of focus, already large by definition).** Since Claude constructs the exact, complete focus
+text (digest + Why/Scope/SCOPE-CONSTRAINT + original artifact text, when applicable) before ever
+dispatching it, the preflight measures its REAL byte length directly (e.g. `wc -c` on the assembled
+focus content) — an exact count, not an estimate, for this entire component. The total checked
+against `COMPACT_BYTE_BUDGET` is: this exact focus-text byte count, PLUS the diff/untracked-content
+byte count from the authoritative collection above. If that combined, now-exact total exceeds
+`COMPACT_BYTE_BUDGET = 120,000` (tighter headroom now that it covers the true total, versus the
+wrapper's real 131,072-byte cap — the remaining ~11,000-byte margin absorbs the wrapper's own fixed
+prompt scaffolding text outside the caller-supplied focus, which this estimate still does not
+measure directly), treat this exactly like any other compaction failure — fall through to the
+normal `--resume` fallback (see "On failure" above) without ever wasting a real dispatch on a
+payload already known to be too large.
+This still does not solve the underlying
+problem (per this design's own YAGNI stance, no LLM summarization is in scope for v1) — it only
+prevents a wasted network round-trip on a doomed dispatch.
+
+**A real latch, not merely an implicit "it'll fail the same way again" claim (corrected — closes a
+real inconsistency found during design review: an earlier revision asserted compaction is
+"effectively disabled for the remainder of that session" purely because the SAME estimate will
+exceed budget every subsequent round — true for avoiding a wasted network dispatch, but this claim
+glossed over the fact that nothing actually SKIPS the preflight itself, so every later triggering
+round still pays the real local cost of re-collecting the diff/untracked files and re-measuring the
+exact focus text, only to reach the identical doomed conclusion — the exact "repeated cost for zero
+benefit" pattern `COMPACTION_BASELINE_TOKENS` and `COMPACTION_CONSECUTIVE_FRESH_FAILURES` above were
+each built to close, left unclosed here for a third, equally real trigger).** Fixed: exceeding
+`COMPACT_BYTE_BUDGET` sets `compaction_disabled_reason` to a third value,
+`"byte_budget_exceeded"` — the SAME durable latch mechanism as the other two triggers, naming WHICH
+component (claims vs. diff/artifact) drove the estimate over budget where determinable. Once set,
+every later triggering round's threshold check no-ops immediately, per the existing latch contract
+— skipping the local re-collection and re-measurement entirely, not merely skipping the network
+dispatch — so the growth-capping goal's absence is visible (narrated once, the first time it
+happens) rather than silently unmet, AND its ongoing local cost is actually eliminated, not just its
+network cost. A future revision could address the root cause (e.g. capping open-claim evidence
+length, or reintroducing LLM summarization) — explicitly out of scope for v1.
+
+### Logging
+
+The compaction round is logged like any other round, with four additions: a top-level
+`compacted_from_thread` field naming the abandoned thread's id, an optional
+`compaction_attempt_failed_thread`/`compaction_attempt_execution`/`compaction_attempt_coverage`
+trio (see "Durable backstop for abandoned threads", "Preserving failed-attempt telemetry", and "One
+shared reducer" above), and `snapshot_digest_before`/`snapshot_digest_after` fields (see "Snapshot
+candidate lifecycle" above) — each present only on the round(s) they actually apply to (a round can
+carry the `compaction_attempt_*` trio alone, if compaction failed and this round proceeded via the
+fallback `--resume`, with none of the other three fields; or the other three together, on an actual
+compaction restart round; a round could in principle carry both groups, if a first compaction
+attempt failed before a later one in the same round succeeded — not expected in practice since the
+threshold check runs at most once per round, but the schema does not forbid it). A compaction
+restart round's `target.scope` is whatever scope flag was actually used (not `"resume"`) —
+consistent with how round 1 already records its own scope. `finding_id`/`claim_id` numbering
+continues incrementing globally across the compaction boundary — never reset — so the existing
+reducer keeps working over the whole log unmodified. **Two further additions apply to round 1 as
+well, not only compaction rounds:** `target.scope_value` (see "Durably persisting the original
+scope argument" above) — the literal `--base`/`--commit` argument value, omitted for
+`--uncommitted` — and `target.original_scope_framing` (see the dispatch step above) — the Why +
+task-specific Scope text captured once, before round 1's own first dispatch attempt, excluding any
+pasted artifact text, never overwritten by a later retry's own different focus. **A sixth addition,
+`compaction_disabled_reason`** (see "The 'disabled for the rest of the session' decision must be
+durably logged" above) — present only on the one round that ever sets this latch, never repeated on
+later rounds once set. **A seventh, `retired_snapshot_files`** (see "Retired- and provisional-
+snapshot durability" above) — an array, present only when non-empty, on whichever round's own line
+is being written when a snapshot-file deletion failure is discovered. **An eighth,
+`compaction_attempt_failure_count`** (see "This counter's own intermediate value must ALSO be
+durably recorded" and "A successful compaction's own reset must be durably recorded too" above) —
+present on TWO kinds of rounds: a round whose own compaction attempt fell through to step 6's
+fallback (the counter's current value after incrementing), and a round whose own compaction attempt
+SUCCEEDED (the explicit value `0`, representing the reset); continuity recovery reconstructs the
+live `COMPACTION_CONSECUTIVE_FRESH_FAILURES` counter from whichever of the two was recorded most
+recently across the session's log, by round order, defaulting to `0` only when neither has ever been
+recorded. **A ninth, `candidate_snapshot_path`** (see "Recoverable without giving up `mktemp`'s own
+symlink-attack protection" above) — the candidate's own `mktemp`-allocated path, present only on a
+round whose own compaction attempt SUCCEEDED, alongside `snapshot_digest_after`; continuity recovery
+uses it to locate and complete an interrupted post-append/pre-promotion transition (see
+"PROVISIONAL_SNAPSHOT_FILE" above). **Shipping this feature requires bumping `schema_version`** —
+see "Schema version bump required" above.
+
+### Scope (v1)
+
+- **Single-reviewer only** (`GROUP="main"`). Parallel mode is explicitly out of scope for v1 — each
+  group could cross its own threshold at a different round, meaningfully increasing design/testing
+  surface for a first pass. Documented as a follow-up, not silently dropped.
+- **Operationally enforced, not merely stated (new — closes a real ambiguity found during design
+  review): when `COMPACT_MODE` is ON, "Determine review mode" (`SKILL.md`'s Phase 1, run once before
+  round 1) is forced to single-group `main`, regardless of what the normal file-count sizing
+  heuristic would otherwise select.** This is a hard override, not a rejection of the `--compact`
+  request — a review that would otherwise size as parallel still runs, just without parallel mode,
+  for the whole session, whenever `--compact` was given. Removing this restriction (making
+  compaction parallel-aware) is future work, not a v1 goal.
+- **`MAX_ROUNDS` unaffected in meaning** — a compaction round consumes one increment of the round
+  counter like any other round; no separate cap or exemption.
+
+### Cost tradeoff, stated plainly
+
+A compaction restart costs roughly as much as an ordinary round-1 dispatch (diff re-collection +
+full framing), and Codex must re-establish its own understanding of the current code via its
+read-only shell access rather than relying on a rich internal reasoning trail it no longer has —
+this is a real, one-time cost per compaction event, not free. The tradeoff being made is: pay that
+bounded, one-time cost periodically, in exchange for capping the otherwise-unbounded linear growth
+observed above. This is disclosed as a deliberate exchange, not a pure win.
+
+## Explicitly out of scope for v1
+
+- Parallel mode (see above).
+- User-configurable threshold (fixed constant for now).
+- Any LLM-authored (as opposed to deterministic, JSONL-derived) summarization of closed claims.
+- A true byte-bound on open-claim content (each kept fully unabridged) or on closed-claim
+  marker-reason length (only count-bounded, at 20) — a session whose claim payload, or whose
+  re-collected diff/artifact, exceeds `COMPACT_BYTE_BUDGET` has compaction effectively disabled for
+  the rest of that session (see "Closed-claim section has its own ceiling" above); addressing this
+  would need either bounding evidence/reason length or LLM summarization, both deferred.
+- Recovering from an intrinsically-large review whose freshly-compacted baseline is itself over
+  threshold (see "Guard against a repeated, benefit-free restart loop" above) — compaction is simply
+  disabled for the rest of that session once this is detected; no attempt is made to shrink the
+  underlying content itself (again, deferred to a possible future LLM-summarization revision).
+- True crash-safety for a candidate snapshot file (and, on the success sub-case, the newly-created
+  Codex thread alongside it) in the narrow pre-append window between its own creation and this
+  round's own JSONL append (see "Retired- and provisional-snapshot durability" above) — corrected
+  here to match that section (an earlier revision of this same disclosure understated the impact as
+  "at most one small temp file"): an interruption in exactly that window can leave one orphaned
+  candidate file, and on the success sub-case one orphaned thread, with no durably-recorded path to
+  retry cleanup for either; not addressed further in v1.

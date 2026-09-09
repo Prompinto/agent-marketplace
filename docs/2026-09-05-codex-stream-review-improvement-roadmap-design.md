@@ -1307,3 +1307,30 @@ should actively solicit Codex's direct knowledge on these specific points rather
 defending the external research above, while still independently verifying any such claim before
 it changes the plan (same equal-partnership/disclosure-ordering discipline this skill already
 applies everywhere else — a claim of self-knowledge is not exempt from evidence).
+
+## Appendix: unscoped future idea (raw, not negotiated, not brainstormed) — 2026-09-08
+
+Recorded here only so it is not lost — this has NOT been through `superpowers:brainstorming`,
+has no design, and is not part of any phase above.
+
+**The idea**: a single interactive terminal session where the user can converse directly with both
+Claude and Codex, and Claude and Codex can also converse with and collaborate with each other live
+— surfaced while discussing whether the user's Ghostty terminal could be customized/forked into "a
+personal terminal system." The actual want, once clarified, is not a new terminal emulator — it's
+an orchestration/UI capability that would run inside any terminal.
+
+**Working assessment**: `codex-stream-review:ccs` already does the core mechanic this idea needs —
+Claude dispatching real `codex exec`/`codex exec resume` calls and negotiating with Codex — but
+today only as opaque, batched, round-based dispatches (the user sees nothing until a whole round
+finishes). The natural path toward this idea is evolving that into a **live-streaming, interactive
+mode**: surface the Claude<->Codex exchange as it happens, and let the user inject messages into
+the conversation directly, rather than waiting for the next `--focus`-driven round. This would most
+likely live as a new mode of `codex-stream-review` (or a companion skill built on
+`run-ccs-review.sh`'s existing resumable-thread primitives), not a new plugin or a terminal fork.
+
+**Status**: purely conceptual. Next step whenever this is picked up: `superpowers:brainstorming`
+first — real design questions include how deep user-injection should go mid-round (does it need to
+pause Codex's own turn, or only queue for the next dispatch), whether streaming live Codex output
+to the terminal is even exposed by the current `codex exec --json` event stream in a form
+`run-ccs-review.sh` could tap without breaking its own JSON-verdict parsing, and whether this
+belongs in `codex-stream-review` itself or as a genuinely separate companion plugin.
