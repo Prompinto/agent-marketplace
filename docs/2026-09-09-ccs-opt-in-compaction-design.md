@@ -349,15 +349,23 @@ isolation from the round loop" below.
    the remembered `SNAPSHOT_DIGEST` with what the log says actually happened.)** The two checks
    answer different questions and run at different times: THIS step's job is "does the ACTIVE file
    still match what Claude currently remembers," and it assumes that remembered value is already
-   correct going in. Reconstructing what that remembered value SHOULD be, after an interruption whose
-   latest completed line shows a successful compaction, is the job of the post-append recovery logic
-   instead — which is a one-time, continuity-recovery-only step, run once, BEFORE this step's own
-   check is ever invoked for the first round dispatched after that recovery (whether completing an
-   interrupted promotion or merely confirming one already finished, per that section's own 3-way
-   branch). Once that recovery step has updated the remembered `SNAPSHOT_FILE`/`SNAPSHOT_DIGEST` (or
-   confirmed no update was needed), THIS step proceeds exactly as already described, now correctly
-   informed. Outside of continuity recovery — the ordinary case, no interruption having occurred —
-   there is nothing to reconcile and this step simply runs first as originally stated.
+   correct going in. Reconstructing what that remembered value SHOULD be, after an interruption, is
+   the job of the post-append recovery logic instead — **triggered by searching the WHOLE session log
+   for the most recent round that ever recorded compaction lineage, never by checking only whether
+   the LATEST completed line happens to be one (corrected here to match the recovery algorithm's own
+   later fix — closes a real internal contradiction found during design review: an earlier revision
+   of THIS clarifying note still said "an interruption whose latest completed line shows a successful
+   compaction," while the recovery algorithm itself was separately corrected to search the whole log
+   instead — once even one ordinary round completes after a successful compaction, "the latest line"
+   is no longer that compaction's own line, so this note's own narrower trigger would incorrectly
+   skip reconstruction exactly where the algorithm's own broader trigger says it must still run)** —
+   which is a one-time, continuity-recovery-only step, run once, BEFORE this step's own check is ever
+   invoked for the first round dispatched after that recovery (whether completing an interrupted
+   promotion or merely confirming one already finished, per that section's own 3-way branch). Once
+   that recovery step has updated the remembered `SNAPSHOT_FILE`/`SNAPSHOT_DIGEST` (or confirmed no
+   update was needed), THIS step proceeds exactly as already described, now correctly informed.
+   Outside of continuity recovery — the ordinary case, no interruption having occurred — there is
+   nothing to reconcile and this step simply runs first as originally stated.
 1. Build `COMPACT_DIGEST` via the structured-data-first construction above; abort to the normal
    `--resume` fallback (step 6) immediately if its own structural verification fails.
 2. **Non-repo-artifact sessions are a SEPARATE case, handled BEFORE the scope branches below (closes
@@ -416,6 +424,26 @@ isolation from the round loop" below.
    mandatory precondition of ANY fresh dispatch under a non-repo-artifact session — the original
    attempt, the no-threadId fresh retry, and thread B's own fresh dispatch alike — never assumed
    still valid from an earlier check moments (or minutes, across resume-retry cycles) in the past.
+
+   **Also required immediately before compaction's own step 6 fallback dispatch, for a non-repo-
+   artifact session specifically (new — closes a real gap found during design review: the wrapper
+   changes into `--cwd CLEAN_REPO_DIR` for a `--resume` launch exactly as it does for a fresh one —
+   confirmed directly against the wrapper's own source — and `references/non-repo-artifact.md`
+   documents that this working directory governs Codex's own investigation context for the WHOLE
+   turn, even though `--resume` itself skips diff re-collection; a compaction attempt that just
+   touched/considered `CLEAN_REPO_DIR`'s cleanliness this same round, then falls through to a
+   fallback dispatch sharing that identical directory, should not let that fallback proceed on a
+   stale, unrenewed cleanliness assumption).** Fixed: the SAME recheck also runs immediately before
+   step 6's own fallback dispatch, whenever this session is non-repo-artifact — if it fails, this is
+   treated exactly like any other narration-only compaction-adjacent issue, never blocking the
+   fallback itself from proceeding (the fallback is this round's own real, required outcome; a
+   polluted `CLEAN_REPO_DIR` at this point is logged as a disclosed risk, not a hard stop, since
+   there is no further fallback beneath the fallback). **Ordinary, non-compaction `--resume` rounds
+   sharing this identical base-skill property (no round is otherwise ever forced to recheck
+   `CLEAN_REPO_DIR`'s cleanliness before an ordinary resume) are an inherited, pre-existing
+   limitation this feature does not newly introduce and is out of scope to fix here** — closing it
+   fully would mean changing the base skill's own ordinary per-round dispatch behavior, a change this
+   design document does not own.
 3. **Repo-diff sessions — snapshot candidate lifecycle, fully specified (closes a real ownership/
    leak gap found during design review: the original draft allocated a new snapshot but never said
    who deletes it on failure, or exactly when the pointer swaps on success).** Re-collection
@@ -886,11 +914,21 @@ isolation from the round loop" below.
         digest) exactly like the original attempt did, the OLD (now-superseded) candidate is deleted
         immediately (folding a failed deletion into `retired_snapshot_files`, per the existing rule)
         — mechanically identical to how the A→B escalation already handles this, just without a
-        distinct "B" thread identity, since no thread was ever captured for either attempt. If this
-        retry ALSO fails the same way (excluding `artifact_too_large`, handled by bullet 1 above
-        regardless), this candidate is exhausted with no thread ever created — nothing to add to
+        distinct "B" thread identity, since no thread was ever captured for either attempt. **If this
+        retry fails AGAIN, for ANY reason — not only "the same no-ID way" (corrected — closes a real
+        gap found during design review, the identical class of bug already fixed once for bullet 3's
+        own one-retry rule: an earlier revision here exhausted only on a repeat of the SAME no-ID
+        failure, implicitly leaving a door open for a threadId-bearing second failure to feed into the
+        ordinary bounded-resume/fresh-B escalation instead — but `references/retry-guards.md`'s own
+        literal rule for "no entry yet, one fresh retry" describes exactly two outcomes: it succeeds,
+        or it fails and processing stops, with no reason-based exception carved out for a SECOND
+        failure that happens to look different from the first)** — (excluding `artifact_too_large`,
+        handled by bullet 1 above regardless, which as always takes priority over any other
+        classification): this candidate is exhausted with no thread ever created — nothing to add to
         `LEAKED_THREAD_IDS` for it (nothing was ever captured) — delete this retry's own candidate
-        too, when one exists (same rule) — and fall straight through to step 6's fallback.
+        too, when one exists (same rule) — and fall straight through to step 6's fallback. The
+        fresh-B escalation is never reached from this bullet, regardless of what the retry's own
+        second failure looks like.
      3. **Else (a threadId WAS captured for the current candidate, either by this response or an
         earlier one in the same sequence): if THIS specific response itself lacks a threadId despite
         the candidate already having one** (a `--resume`-style no-ID failure per the corrected bullet
@@ -1036,22 +1074,33 @@ isolation from the round loop" below.
         `snapshot_digest_after`, `compaction_attempt_failure_count` (must be `0`).
       - **Success, non-repo-artifact or `--commit` scope (no candidate ever allocated):** the same
         set MINUS `candidate_snapshot_path`, whose absence here is the CORRECT state, not a defect.
-      - **Success, whenever the dispatch that produced it actually used `--uncommitted` as its
-        wrapper-level scope flag — including a non-repo-artifact session, which dispatches AS
-        `--uncommitted` under the hood: `coverage_source` additionally required (new — closes a real
-        gap found during design review, and corrects an overcorrection caught in the same pass: a
-        first fix here excluded non-repo-artifact scope entirely, alongside `--base`/`--commit` — but
-        non-repo-artifact sessions dispatch `--uncommitted` against an intentionally empty
+      - **Success, whenever the ROUND's OWN scope is `--uncommitted` — including a non-repo-artifact
+        session, which dispatches AS `--uncommitted` under the hood — regardless of whether the
+        SPECIFIC call that ultimately produced success was itself a fresh `--uncommitted` dispatch
+        or a later `--resume` retry of it: `coverage_source` additionally required (new — closes a
+        real gap found during design review, and corrects an overcorrection caught in the same pass:
+        a first fix here excluded non-repo-artifact scope entirely, alongside `--base`/`--commit` —
+        but non-repo-artifact sessions dispatch `--uncommitted` against an intentionally empty
         `CLEAN_REPO_DIR` per "Non-repo-artifact sessions are a SEPARATE case" above, so the wrapper's
         `--uncommitted` collection branch — and therefore `SOURCE_COVERAGE_JSON` — runs for them too,
         exactly as it already does for round 1 of a non-repo-artifact session, per the earlier-
-        established correction "confirmed non-repo-artifact rounds DO report coverage." "Coverage
+        established correction "confirmed non-repo-artifact rounds DO report coverage." A SEPARATE
+        overcorrection found in the same pass: keying this requirement on "the dispatch that PRODUCED
+        success" rather than the round's own scope broke the retry-then-succeed carry-forward case
+        entirely — "A retry-then-succeed candidate must reuse its OWN pre-retry coverage" above
+        establishes that when a fresh `--uncommitted` attempt first fails then succeeds via
+        `--resume`, the FINAL (successful) call is itself a `--resume`, which the wrapper never
+        combines with a scope flag and never populates `SOURCE_COVERAGE_JSON` for — so "the dispatch
+        that produced success used `--uncommitted`" is literally FALSE for exactly this case, even
+        though its carried-forward coverage is exactly what this requirement exists to verify. "Coverage
         epoch" above already establishes that a successful fresh `--uncommitted` compaction restart's
         own coverage — real value OR the `"unknown"` sentinel — is durably persisted and feeds the
         shared convergence/final-artifact reducer, but this verify branch never actually required it,
         so a partial/unknown epoch could be silently dropped by an otherwise round-valid append,
         letting later consumers miss it entirely).** Required: `coverage_source`, either a real value
-        or the `"unknown"` sentinel, never simply absent. **Never for `--base`/`--commit` scope
+        or the `"unknown"` sentinel, never simply absent — checked against the round's own recorded
+        `target.scope`, never against which specific call within that round happened to succeed.
+        **Never for `--base`/`--commit` scope
         specifically (never non-repo-artifact) — even though `--base` also allocates a candidate,
         both `--base` and `--commit` use their OWN distinct wrapper flags, never `--uncommitted`, so
         neither ever emits `coverage.source` at all (confirmed directly against the wrapper:
@@ -1164,11 +1213,22 @@ isolation from the round loop" below.
       legitimately produce an `\"unknown\"` sentinel to satisfy an unqualified "always required"
       rule — for those two scopes, `compaction_attempt_coverage` correctly has NO entry at all for
       that sub-attempt, exactly matching how round 1 itself never reports coverage under those
-      scopes either.)** Fixed: for every `--uncommitted`-scope sub-attempt where a real wrapper
-      dispatch was attempted, `compaction_attempt_coverage`'s corresponding array entry is required
-      — either the real `coverage.source` value or the `\"unknown\"` sentinel, but never simply
-      absent. For a `--base`/`--commit`-scope sub-attempt, no entry is ever required or expected. A
-      missing, malformed, OR
+      scopes either.)** **Also scoped to a FAILED sub-attempt specifically, never a direct,
+      first-attempt success (corrected once more — closes a related gap found in the same review
+      pass: this field is defined, from its very first introduction above, as "one entry per FAILED
+      fresh `--uncommitted` sub-attempt" — but the wording just fixed still said "for every
+      `--uncommitted`-scope sub-attempt... a real wrapper dispatch was attempted," with no exclusion
+      for a round that succeeds on its OWN first fresh attempt, with no failed sub-attempt at all to
+      report. Requiring this field there would force either an append-verification failure or
+      fabricating a nonexistent failed-attempt record.)** Fixed: for every `--uncommitted`-scope
+      sub-attempt that actually FAILED (whether the round's eventual outcome is itself a success via
+      retry/fresh-B, or the ordinary fallback), `compaction_attempt_coverage`'s corresponding array
+      entry is required — either the real `coverage.source` value or the `\"unknown\"` sentinel, but
+      never simply absent. A round whose FIRST fresh `--uncommitted` attempt succeeds directly has no
+      failed sub-attempt at all, and correctly has no `compaction_attempt_coverage` entry — its own
+      coverage is reported via `coverage_source` instead (see above), never this field. For a
+      `--base`/`--commit`-scope sub-attempt, no entry is ever required or expected. A missing,
+      malformed, OR
       value-mismatched required field for whichever of these branches actually applies is treated
       with the SAME severity as a wrong round number — a hard stop,
       `🛑 REVIEW LOG INTEGRITY FAILURE`, never a soft warning — since these fields are exactly as
@@ -1697,6 +1757,23 @@ payload already known to be too large.
 This still does not solve the underlying
 problem (per this design's own YAGNI stance, no LLM summarization is in scope for v1) — it only
 prevents a wasted network round-trip on a doomed dispatch.
+
+**Re-run before EVERY re-collected candidate, not only the original attempt (new — closes a real gap
+found during design review: the no-threadId fresh retry and thread B's own dispatch — see
+"Reconciling with `references/retry-guards.md`'s OWN full escalation topology" above — each
+re-collect a genuinely FRESH candidate, per the correctness fix establishing that reuse is unsafe
+above; a newly re-collected candidate's own byte size can legitimately differ from the ORIGINAL
+measurement — the source may have grown in the meantime — so a candidate that passed the original
+preflight is not guaranteed to still pass it after a later re-collection. Without re-running this
+check, an oversized later re-collection would bypass the graceful, latched `byte_budget_exceeded`
+path entirely and instead hit the wrapper's OWN separate `artifact_too_large` failure at dispatch
+time — a real dispatch cost this preflight exists specifically to avoid.)** Fixed: this exact-byte
+preflight re-runs before EVERY fresh dispatch that re-collects a candidate — the original attempt,
+the no-threadId fresh retry, and thread B's own dispatch alike (for `--uncommitted`/`--base` scope;
+non-repo-artifact/`--commit` scope re-dispatches involve no candidate re-collection, so their own
+focus-text-only preflight — digest plus framing text, no separate diff/untracked component — simply
+re-measures that unchanged combination each time) — never trusted from an earlier, now-stale
+measurement.
 
 **A real latch, not merely an implicit "it'll fail the same way again" claim (corrected — closes a
 real inconsistency found during design review: an earlier revision asserted compaction is
