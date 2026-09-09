@@ -1089,7 +1089,24 @@ isolation from the round loop" below.
      it belongs to A's now-abandoned attempt — following the SAME "abandoned fully-hashed candidate"
      rule as any other ordinary compaction failure (fold a failed deletion into
      `retired_snapshot_files`, per the existing rule).
-   - Thread B's OWN dispatch is a genuinely fresh one: for `--uncommitted`/`--base` scope
+   - **Thread B's OWN dispatch reconstructs the COMPLETE compaction focus text, identically to step 4
+     above — never a partial or abbreviated one (new — closes a real gap found during design review:
+     this bullet, and the no-threadId fresh retry bullet below, only ever specified snapshot
+     RE-COLLECTION, never focus-text CONSTRUCTION — but B's dispatch is a genuinely fresh `codex exec`
+     call, not a `--resume`, so it has NO prior turn to inherit anything from; the wrapper copies each
+     invocation's own stdin into a fresh `FOCUS_RECEIVED_FILE` and launches a plain `codex exec` for
+     every non-resume call, meaning whatever focus text this dispatch sends IS the entirety of what
+     the new thread ever sees. A literal implementation following only "re-collect the snapshot" could
+     dispatch B with nothing more than that snapshot, omitting `COMPACT_DIGEST`, the original Why and
+     task-specific Scope, the verified non-repo-artifact text when applicable, the collaboration frame,
+     and the pre-compaction `DISPOSITION` request block step 4 already requires — silently stranding
+     open claims and losing the task's own original framing.)** Fixed: B's dispatch reconstructs the
+     EXACT SAME complete focus text step 4 specifies for the original candidate — `COMPACT_DIGEST` (+
+     the verified original artifact text, for a non-repo-artifact session) + the original Why AND
+     task-specific Scope (from `target.original_scope_framing`) + the SCOPE CONSTRAINT/collaboration
+     frame + the SAME `DISPOSITION` request block — never anything less, regardless of which candidate
+     (A originally, or B now) is doing the re-collecting. Thread B's OWN dispatch is a genuinely fresh
+     one: for `--uncommitted`/`--base` scope
      specifically (the only scopes with a candidate lifecycle at all), a fresh candidate snapshot is
      re-collected (a new `candidate_snapshot_path`, new digest) exactly as thread A's original
      dispatch was — never a reuse of A's now-deleted candidate. **For non-repo-artifact/`--commit`
@@ -1189,7 +1206,12 @@ isolation from the round loop" below.
         digest) exactly like the original attempt did, the OLD (now-superseded) candidate is deleted
         immediately (folding a failed deletion into `retired_snapshot_files`, per the existing rule)
         — mechanically identical to how the A→B escalation already handles this, just without a
-        distinct "B" thread identity, since no thread was ever captured for either attempt. **If this
+        distinct "B" thread identity, since no thread was ever captured for either attempt. **This
+        retry ALSO reconstructs the COMPLETE compaction focus text identically to step 4 above, for
+        the identical reason thread B's own dispatch must (see "Thread B's OWN dispatch reconstructs
+        the COMPLETE compaction focus text" above) — this is likewise a genuinely fresh `codex exec`
+        call with no prior turn of its own to inherit anything from, so whatever focus text it sends
+        is the entirety of what this new dispatch ever sees.** If this
         retry fails AGAIN, for ANY reason — not only "the same no-ID way" (corrected — closes a real
         gap found during design review, the identical class of bug already fixed once for bullet 3's
         own one-retry rule: an earlier revision here exhausted only on a repeat of the SAME no-ID
