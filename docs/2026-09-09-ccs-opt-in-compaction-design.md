@@ -540,9 +540,13 @@ isolation from the round loop" below.
    confirmed, never from mere membership in SOME working tree, and never from filesystem-level or
    git-dir/common-dir identity checks alone without also confirming no object-level borrowing is
    configured. **A
-   residual, disclosed risk this does not close: `references/snapshot-integrity.md`'s own
-   `scripts/lib/git-safe.sh` sanitization (e.g. neutralizing a repo-local `core.fsmonitor` hook that
-   could otherwise execute a command) protects the WRAPPER's own git invocations specifically — it
+   residual, disclosed risk this does not close (citation corrected — closes a sibling gap to the one
+   found and fixed in this same section elsewhere: this note previously misattributed
+   `scripts/lib/git-safe.sh` to `references/snapshot-integrity.md`, which does not mention that
+   script at all — `git-safe.sh` is the wrapper's own separate helper script, not something
+   `snapshot-integrity.md` owns or references):** `codex-stream-review/scripts/lib/git-safe.sh`'s own
+   sanitization (e.g. neutralizing a repo-local `core.fsmonitor` hook that could otherwise execute a
+   command) protects the WRAPPER's own git invocations specifically — it
    says nothing about whatever Codex itself might independently choose to read or execute from
    `.git/config` during its own investigation of this same CWD. Hardening Codex's own sandboxed
    behavior against a hypothetically malicious `.git` directory is a base-sandbox-model concern well
@@ -1090,16 +1094,21 @@ isolation from the round loop" below.
      round's real outcome — A's own attempt is entirely superseded, not merged, once B is dispatched
      (B itself is never retried — see its own single-shot treatment below — so there is no
      retry-then-succeed sub-case for B specifically, only for A). **This carry-forward principle
-     applies ONLY to A's OWN `--resume` retry-then-succeed (bullet 3) — NEVER to A's bullet-2
-     no-threadId FRESH retry, which needs the OPPOSITE treatment (new — closes a real gap found
-     during design review: the carry-forward principle exists specifically because a `--resume` call
-     never re-collects anything, so the ONLY real coverage/baseline data available is the earlier
-     failed attempt's own. Bullet 2's own retry is the polar opposite — it is itself a genuinely NEW,
-     independent re-collection, exactly like the A→B transition already is, with its OWN fresh
-     coverage and baseline. Applying carry-forward there would use STALE data from an attempt whose
-     own collected content this retry has already deleted and superseded, exactly the same class of
-     error the A→B transition already avoids by using B's own data, never A's.)** For bullet 2's own
-     retry-then-succeed, the RETRY's own response is the sole authoritative source for coverage and
+     applies to A's OWN `--resume` retry-then-succeed — BOTH bullet 3's no-ID-hiccup retry AND bullet
+     4's ordinary threadId-bearing bounded resume retry, the two genuinely different ways A can
+     succeed via `--resume` — NEVER to A's bullet-2 no-threadId FRESH retry, which needs the OPPOSITE
+     treatment (new — closes a real gap found during design review: bullet 4 (the ordinary case) was
+     introduced in a LATER revision than this carry-forward rule, which had only ever named bullet 3
+     — but bullet 4 is, if anything, the MORE common of the two `--resume` retry-then-succeed paths,
+     and needs the identical carry-forward treatment for the identical reason: neither bullet 3's nor
+     bullet 4's own successful `--resume` response ever re-collects anything, so in BOTH cases the
+     ONLY real coverage/baseline data available is the earlier failed fresh dispatch's own. Bullet 2's
+     own retry is the polar opposite — it is itself a genuinely NEW, independent re-collection, exactly
+     like the A→B transition already is, with its OWN fresh coverage and baseline. Applying
+     carry-forward there would use STALE data from an attempt whose own collected content this retry
+     has already deleted and superseded, exactly the same class of error the A→B transition already
+     avoids by using B's own data, never A's.)** For bullet 2's own retry-then-succeed specifically,
+     the RETRY's own response is the sole authoritative source for coverage and
      `COMPACTION_BASELINE_TOKENS` — never the earlier, now-superseded failed attempt's — mechanically
      identical in principle to how B's own data is used, never A's, after the A→B transition.
    - `compaction_attempt_failed_thread` (see "Durable backstop for abandoned threads" below) becomes
@@ -1966,6 +1975,31 @@ underlying dispatches it took to get there; it is purely an internal detail of "
 outcome was reached," logged as one narration line (plus the durable `compaction_attempt_*` fields
 above), nothing more.
 
+**A THIRD base-skill contract this design conflicts with, needing the SAME companion-amendment
+treatment as `references/snapshot-integrity.md` and `references/execution-telemetry.md` above — never
+left as an implicit substitution (new — closes a real gap found during design review: this whole
+"Failure isolation" principle — absorbing a candidate's own `artifact_too_large`/exhausted-retry
+failure into "fall through to the fallback" — directly CONTRADICTS `references/retry-guards.md`'s own
+MANDATORY terminal-outcome rules for those exact reasons: `artifact_too_large` is required to end the
+group/round as `🛑 INPUT TOO LARGE`, and exhausted retries are required to end as
+`⚠️ COULD NOT VERIFY`. `SKILL.md`'s own Phase 2 requires reading `retry-guards.md` before doing
+anything with ANY group's `ok:false` response, and says its rules are never to be skipped. This
+design substitutes different behavior for the SAME failure reasons without ever formally scoping that
+substitution as an amendment the way the OTHER two base-skill conflicts already are above — leaving
+retry-guards.md's own mandatory contract and this design's own override mutually incompatible on
+paper.)** Fixed: shipping this feature requires the SAME kind of companion amendment to
+`references/retry-guards.md` as the other two references already require above — carving out an
+explicit, narrow exception: `references/retry-guards.md`'s own `artifact_too_large`/exhausted-retry
+terminal-outcome rules continue to apply UNCHANGED to the round's own REAL, reportable outcome (the
+existing/OLD thread's own group) exactly as they always have; they do NOT apply to failures occurring
+WITHIN a self-contained compaction ATTEMPT on the NEW candidate thread specifically, whose own failure
+this design deliberately absorbs into "fall through to the fallback" rather than surfacing as the
+round's own terminal status — a compaction attempt is not "a group" in `retry-guards.md`'s own sense,
+it is an internal sub-step of producing round R's one real outcome. The base skill's own ordinary,
+non-compaction failure handling for a REAL group's `ok:false` response remains governed by
+`retry-guards.md`'s existing, unmodified rules. Same category of required change as the
+`schema_version` bump and the other two companion amendments above, not a new one.
+
 ### Preserving failed-attempt telemetry (new — closes a real cost-accounting gap found during design review)
 
 Several `ok:false` reasons (`timeout`, `nonzero_exit`, `missing_task_complete`, `invalid_json`, and
@@ -2282,7 +2316,8 @@ compaction restart round; a round now regularly carries BOTH groups together —
 principle" — in any of THREE sub-cases (corrected here to match the fuller three-case enumeration in
 "Applies to a retry-then-succeed round too" above, which this Logging-section summary had drifted out
 of sync with by only ever naming two): (i) an EARLIER response for the eventually-successful thread A
-failed before that SAME thread went on to succeed via its own `--resume` retry (bullet 3); (ii) A's
+failed before that SAME thread went on to succeed via its own `--resume` retry (bullet 3's no-ID
+hiccup, or bullet 4's ordinary threadId-bearing bounded resume — both are this same sub-case); (ii) A's
 own first response failed with no threadId, and its ONE allowed no-threadId fresh retry then
 succeeded — still "A," no abandoned thread, but a real earlier failed response to preserve (bullet
 2); or (iii) a genuinely abandoned thread (thread A, exhausted, per "Reconciling with
