@@ -405,10 +405,39 @@ isolation from the round loop" below.
    to reviewing the focus text — now containing both the artifact and the digest. **This is a
    genuinely separate branch from the scope-dependent handling below, not an extra step layered on
    top of it.**
+
+   **This recheck runs before EVERY separate fresh dispatch for a non-repo-artifact session, not only
+   the very first one (new — closes a real gap found during design review: the no-threadId fresh
+   retry and the fresh-B escalation — see "Reconciling with `references/retry-guards.md`'s OWN full
+   escalation topology" above — are each their OWN separate fresh dispatch attempts, dispatched at a
+   LATER moment than the original attempt this check was originally written for; neither repeated
+   this recheck, leaving a real window in which `CLEAN_REPO_DIR` could become polluted between the
+   original attempt and a later retry, going undetected).** Fixed: this cleanliness recheck is a
+   mandatory precondition of ANY fresh dispatch under a non-repo-artifact session — the original
+   attempt, the no-threadId fresh retry, and thread B's own fresh dispatch alike — never assumed
+   still valid from an earlier check moments (or minutes, across resume-retry cycles) in the past.
 3. **Repo-diff sessions — snapshot candidate lifecycle, fully specified (closes a real ownership/
    leak gap found during design review: the original draft allocated a new snapshot but never said
    who deletes it on failure, or exactly when the pointer swaps on success).** Re-collection
-   handling depends on round 1's original scope, as before:
+   handling depends on round 1's original scope, as before.
+
+   **Disclosed limitation, inherited from round 1's own identical property, not new to compaction
+   (new — closes a real gap found during design review: the candidate below is collected and hashed
+   by Claude's OWN local git invocation, BEFORE the wrapper is ever dispatched; the wrapper then
+   independently re-collects its own `DIFF_TEXT` internally, at its own later moment, since it
+   accepts no snapshot/payload argument at all — if the source changes in that gap, the candidate
+   Claude hashed and the content the fresh thread actually reviewed can diverge, and every later
+   verification of the candidate — including the live pre-promotion checks above — only proves the
+   candidate itself wasn't corrupted AFTER Claude collected it, never that it equals what the
+   dispatch truly reviewed. This is especially pronounced for untracked files, whose CONTENT is
+   collected by the wrapper but whose entry in this design's own snapshot may only track their
+   names.)** This is the SAME accepted non-goal `references/snapshot-integrity.md` already documents
+   for round 1's own original collect-then-dispatch gap ("not a defense against a deliberately
+   changed source") — round 1 has the identical timing window between its own local collection and
+   the wrapper's own internal one, and this design has never claimed to close it there either.
+   Compaction inherits this exact property unchanged; it is not a new or widened gap this feature
+   introduces, and closing it for either case would require the wrapper itself to accept a pinned
+   payload rather than always re-collecting live — out of scope for this design.
    - **`--uncommitted`:** re-collect the diff into a NEW candidate `SNAPSHOT_FILE`, hash it into a
      candidate `SNAPSHOT_DIGEST` (same mechanism as Phase 0 step 5 / Phase 1's post-sizing step) —
      the working tree may genuinely have changed since round 1, so this is the one case
@@ -777,9 +806,16 @@ isolation from the round loop" below.
      it belongs to A's now-abandoned attempt — following the SAME "abandoned fully-hashed candidate"
      rule as any other ordinary compaction failure (fold a failed deletion into
      `retired_snapshot_files`, per the existing rule).
-   - Thread B's OWN dispatch is a genuinely fresh one: a fresh candidate snapshot is re-collected
-     (a new `candidate_snapshot_path`, new digest) exactly as thread A's original dispatch was —
-     never a reuse of A's now-deleted candidate. Coverage and `COMPACTION_BASELINE_TOKENS` carry-
+   - Thread B's OWN dispatch is a genuinely fresh one: for `--uncommitted`/`--base` scope
+     specifically (the only scopes with a candidate lifecycle at all), a fresh candidate snapshot is
+     re-collected (a new `candidate_snapshot_path`, new digest) exactly as thread A's original
+     dispatch was — never a reuse of A's now-deleted candidate. **For non-repo-artifact/`--commit`
+     scope (new — closes a real gap found during design review: an earlier revision stated candidate
+     re-collection unconditionally here, contradicting those two scopes' own existing "no candidate
+     is ever allocated" definitions above): B's dispatch involves no candidate file at all, exactly
+     like A's did not — B's eventual success correctly omits `candidate_snapshot_path`, matching the
+     existing non-repo-artifact/`--commit` success branch.** Coverage and `COMPACTION_BASELINE_TOKENS`
+     carry-
      forward (both fixes just above) apply to WHICHEVER thread (A or B) ultimately produces the
      round's real outcome — if B itself first fails then succeeds via its own resume retry, B's own
      first-response telemetry is what gets carried forward, not A's (A's own attempt is entirely
@@ -843,39 +879,41 @@ isolation from the round loop" below.
         `HEAD` to have moved — so promoting the OLD, earlier-collected candidate would durably record
         a digest for content that is NOT what this retry's own dispatch actually reviewed. The
         efficiency motivation for reuse was real, but traded away correctness for a modest local-cost
-        saving — the wrong tradeoff.)** Fixed: this retry re-collects and re-hashes a brand new
-        candidate (new `candidate_snapshot_path`, new digest) exactly like the original attempt did,
-        the OLD (now-superseded) candidate is deleted immediately (folding a failed deletion into
-        `retired_snapshot_files`, per the existing rule) — mechanically identical to how the A→B
-        escalation already handles this, just without a distinct "B" thread identity, since no
-        thread was ever captured for either attempt. If this retry ALSO fails the same way (excluding
-        `artifact_too_large`, handled by bullet 1 above regardless), this candidate is exhausted with
-        no thread ever created — nothing to add to `LEAKED_THREAD_IDS` for it (nothing was ever
-        captured) — delete this retry's own candidate too (same rule) and fall straight through to
-        step 6's fallback.
+        saving — the wrong tradeoff.)** Fixed, for `--uncommitted`/`--base` scope specifically (the
+        only scopes with a candidate lifecycle at all — for non-repo-artifact/`--commit` scope, this
+        retry involves no candidate file, exactly like the original failed attempt did not): this
+        retry re-collects and re-hashes a brand new candidate (new `candidate_snapshot_path`, new
+        digest) exactly like the original attempt did, the OLD (now-superseded) candidate is deleted
+        immediately (folding a failed deletion into `retired_snapshot_files`, per the existing rule)
+        — mechanically identical to how the A→B escalation already handles this, just without a
+        distinct "B" thread identity, since no thread was ever captured for either attempt. If this
+        retry ALSO fails the same way (excluding `artifact_too_large`, handled by bullet 1 above
+        regardless), this candidate is exhausted with no thread ever created — nothing to add to
+        `LEAKED_THREAD_IDS` for it (nothing was ever captured) — delete this retry's own candidate
+        too, when one exists (same rule) — and fall straight through to step 6's fallback.
      3. **Else (a threadId WAS captured for the current candidate, either by this response or an
         earlier one in the same sequence): if THIS specific response itself lacks a threadId despite
         the candidate already having one** (a `--resume`-style no-ID failure per the corrected bullet
-        2 above) **— retry the SAME already-captured thread EXACTLY ONCE, never more (corrected —
-        closes a real gap found during design review: an earlier revision said only "retry the same
-        thread," without stating this is bounded — `references/retry-guards.md`'s own rule for this
-        EXACT case, a `--resume` call against an ALREADY-EXISTING thread that itself returns no
-        threadId, is a SEPARATE, narrower bound from the ordinary 2-retry/fresh-B topology: exactly
-        one retry, then stop if it also fails the same way — conflating the two would let a
-        persistent no-ID responder retry indefinitely, or incorrectly re-enter the full bounded-
-        resume/fresh-B escalation on a failure mode that specific rule already exhausts after one
-        try).** If that one retry fails AGAIN with no threadId: exhausted — fall straight through to
-        step 6's fallback (never `⚠️ COULD NOT VERIFY`, per this design's own failure-isolation
-        principle), the SAME as bullet 2's own exhaustion. If that one retry instead succeeds, OR
-        fails with a DIFFERENT reason that DOES carry a threadId this time: the candidate's own
-        threadId is now confirmed live and known — proceed with the ordinary bounded-resume-retry-
-        then-fresh-B escalation above from this point, counting this as having consumed none of ITS
-        own 2 resume-retry allowance (that bound is specifically for a resume-safe failure that DOES
-        carry a threadId, a distinct failure mode from the one this bullet's own one-retry rule just
-        exhausted).**
-     The fresh-B escalation is reached via bullet 3's own ordinary path (a threadId-bearing failure)
-     — never via bullet 1 or bullet 2's own exhaustion, both of which fall straight to step 6's
-     fallback without ever creating a second candidate thread.
+        2 above) **— retry the SAME already-captured thread EXACTLY ONCE, never more, and never
+        re-entering the ordinary bounded-resume/fresh-B escalation on ANY outcome of this one retry
+        besides success (corrected once more — closes a real gap found during design review: an
+        earlier revision of this same fix let a threadId-bearing failure on this ONE retry feed back
+        into the ordinary 2-retry/fresh-B topology "counting as consuming none of its own allowance"
+        — but `references/retry-guards.md`'s own literal rule for this EXACT case describes only two
+        outcomes for this one retry: it succeeds, or "the retry ALSO fails, stop — report
+        `⚠️ COULD NOT VERIFY`" — with no carve-out for re-entering a different escalation path based
+        on what the SECOND failure's own reason happens to be. Treating a threadId-bearing second
+        failure as an exemption from that stop instruction was an unwarranted generalization beyond
+        what the reference rule actually states.)** If that one retry fails AGAIN, for ANY reason
+        (whether or not it happens to carry a threadId this time): exhausted — fall straight through
+        to step 6's fallback (never `⚠️ COULD NOT VERIFY`, per this design's own failure-isolation
+        principle substituting for the reference's own generic stop instruction), the SAME as bullet
+        2's own exhaustion. Only if this one retry SUCCEEDS does the candidate continue as this
+        round's own live, active attempt, exactly as if no no-ID hiccup had ever occurred.
+     The fresh-B escalation is reached ONLY via a genuinely NEW resume-safe failure that carries a
+     threadId on its OWN first occurrence for this candidate (never via a no-ID recovery scenario per
+     bullet 3 above) — never via bullet 1 or bullet 2's own exhaustion either, all of which fall
+     straight to step 6's fallback without ever creating a second candidate thread.
    - "This dispatch IS round R's real dispatch" above, and "round R has exactly ONE real dispatch"
      in "Failure isolation from the round loop" below, both mean exactly ONE real OUTCOME/RESULT for
      round R — success via A or B, or the old-thread fallback — never a literal single network call;
@@ -998,18 +1036,27 @@ isolation from the round loop" below.
         `snapshot_digest_after`, `compaction_attempt_failure_count` (must be `0`).
       - **Success, non-repo-artifact or `--commit` scope (no candidate ever allocated):** the same
         set MINUS `candidate_snapshot_path`, whose absence here is the CORRECT state, not a defect.
-      - **Success, `--uncommitted` scope specifically: `coverage_source` additionally required (new
-        — closes a real gap found during design review: "Coverage epoch" above already establishes
-        that a successful fresh `--uncommitted` compaction restart's own coverage — real value OR the
-        `"unknown"` sentinel — is durably persisted and feeds the shared convergence/final-artifact
-        reducer, but this verify branch never actually required it, so a partial/unknown epoch could
-        be silently dropped by an otherwise round-valid append, letting later consumers miss it
-        entirely).** Required: `coverage_source`, either a real value or the `"unknown"` sentinel,
-        never simply absent. **Never for `--base`/`--commit`/non-repo-artifact scope, even though
-        `--base` also allocates a candidate — those three scopes never emit `coverage.source` at all
-        (confirmed directly against the wrapper: `SOURCE_COVERAGE_JSON` is populated only inside the
-        `--uncommitted` collection branch), matching round 1's own identical scope-dependent coverage
-        rule.**
+      - **Success, whenever the dispatch that produced it actually used `--uncommitted` as its
+        wrapper-level scope flag — including a non-repo-artifact session, which dispatches AS
+        `--uncommitted` under the hood: `coverage_source` additionally required (new — closes a real
+        gap found during design review, and corrects an overcorrection caught in the same pass: a
+        first fix here excluded non-repo-artifact scope entirely, alongside `--base`/`--commit` — but
+        non-repo-artifact sessions dispatch `--uncommitted` against an intentionally empty
+        `CLEAN_REPO_DIR` per "Non-repo-artifact sessions are a SEPARATE case" above, so the wrapper's
+        `--uncommitted` collection branch — and therefore `SOURCE_COVERAGE_JSON` — runs for them too,
+        exactly as it already does for round 1 of a non-repo-artifact session, per the earlier-
+        established correction "confirmed non-repo-artifact rounds DO report coverage." "Coverage
+        epoch" above already establishes that a successful fresh `--uncommitted` compaction restart's
+        own coverage — real value OR the `"unknown"` sentinel — is durably persisted and feeds the
+        shared convergence/final-artifact reducer, but this verify branch never actually required it,
+        so a partial/unknown epoch could be silently dropped by an otherwise round-valid append,
+        letting later consumers miss it entirely).** Required: `coverage_source`, either a real value
+        or the `"unknown"` sentinel, never simply absent. **Never for `--base`/`--commit` scope
+        specifically (never non-repo-artifact) — even though `--base` also allocates a candidate,
+        both `--base` and `--commit` use their OWN distinct wrapper flags, never `--uncommitted`, so
+        neither ever emits `coverage.source` at all (confirmed directly against the wrapper:
+        `SOURCE_COVERAGE_JSON` is populated only inside the `--uncommitted` collection branch),
+        matching round 1's own identical scope-dependent coverage rule.**
       - **Success reached via the fresh-B retry topology, not a direct first-attempt success (new —
         closes a real gap found during design review: the success branches above never required
         `compaction_attempt_failed_thread` at all, so a round whose success came only after
@@ -1027,10 +1074,23 @@ isolation from the round loop" below.
         implicit..." below), which deliberately never increments this counter, so its absence here
         is likewise the correct state, not a defect. `compaction_attempt_failed_thread` is required
         additionally (an array of 1 or 2 ids — see "Reconciling with `references/retry-guards.md`'s
-        OWN full escalation topology" above), but ONLY when at least one attempted thread's
-        underlying failure reason is one the interface reference's own table marks as
-        threadId-bearing — never for `no_thread_started`, `bad_args`, `git_error`, or
-        `incomplete_collection`, which structurally never carry one.
+        OWN full escalation topology" above), **keyed on whether a threadId was ACTUALLY captured for
+        each abandoned attempt, never on a fixed reason-category exclusion list (corrected — closes a
+        real gap found during design review: an earlier revision excluded only `no_thread_started`/
+        `bad_args`/`git_error`/`incomplete_collection` as always-no-ID reasons — but `interrupted` can
+        ALSO occasionally lack a threadId, per this same design's own corrected candidate-retry
+        predicate above ("`references/retry-guards.md`'s own actual rule keys on whether THIS
+        SPECIFIC RESPONSE captured a threadId... it explicitly notes `interrupted`/`timeout` can
+        occasionally lack a threadId too"). Since `interrupted` was NOT in that exclusion list, a
+        candidate whose only failure was a no-ID `interrupted` occurrence — exhausted per bullet 2's
+        own no-ID handling, with no thread ever captured — would leave this verify branch requiring
+        an id to record when none genuinely exists, an impossible-to-satisfy requirement that would
+        wrongly hard-stop a legitimate fallback append.)** Fixed: required whenever at least one
+        abandoned sub-attempt's OWN specific response actually captured a threadId — checked
+        per-occurrence, exactly like the candidate-retry predicate itself, never inferred from a
+        fixed list of reasons. When every abandoned sub-attempt's own response genuinely captured no
+        threadId at all, this field is correctly absent, matching the fact that nothing was ever
+        created for `LEAKED_THREAD_IDS` to track.
       - **Any round that newly sets `compaction_disabled_reason` this round (baseline over
         threshold, baseline unusable, failure count reaching its bound, or byte budget exceeded):**
         that field is additionally required whenever the round's own processing actually reached
@@ -1262,9 +1322,23 @@ isolation from the round loop" below.
        from absence, without ever confirming the active file actually matches `snapshot_digest_after`
        — absence could equally mean the candidate was lost some OTHER way before ever being moved,
        leaving the active file still at its PRE-promotion state, silently treated as done.)** Fixed:
-       recovery for a session whose latest completed line shows a successful compaction
-       (`compacted_from_thread` present) now performs an explicit verify-before-trust of the CURRENT
-       active file FIRST, before consulting `candidate_snapshot_path` at all:
+
+       **Search the WHOLE log for the most recent compaction event, never just the latest line (new
+       — closes a real gap found during design review: an earlier revision scoped this whole
+       recovery algorithm to "a session whose LATEST completed line shows a successful compaction" —
+       but once even ONE ordinary, non-compaction round R+1 completes after a successful compaction
+       at round R, the latest line no longer carries `compacted_from_thread` at all, so this
+       precondition goes permanently false for the rest of the session — even though the active file
+       on disk still holds round R's promoted content/digest, which a LATER interruption's own
+       recovery would then have no path to reconstruct, since the algorithm below would simply never
+       run.)** Fixed: this recovery algorithm's own trigger is not "the latest line," but whether ANY
+       round in the ENTIRE session log ever recorded a successful compaction — reduce backward
+       through the log for the MOST RECENT round carrying `compacted_from_thread`/
+       `snapshot_digest_after`/(when applicable) `candidate_snapshot_path`, and reconstruct the
+       remembered `SNAPSHOT_DIGEST` from THAT round's own recorded values, regardless of how many
+       ordinary rounds have completed since. Once reconstructed, this performs an explicit
+       verify-before-trust of the CURRENT active file FIRST, before consulting
+       `candidate_snapshot_path` at all:
        1. Hash whatever currently exists at the active path. If it is missing, or its hash matches
           NEITHER `snapshot_digest_before` NOR `snapshot_digest_after` — this is genuine, unexplained
           corruption or loss, unrelated to anything this recovery can resolve on its own — hard stop,
