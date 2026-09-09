@@ -524,8 +524,16 @@ isolation from the round loop" below.
    defend against a sophisticated, deliberately adversarial actor with enough local write access to
    plant a crafted `.git` directory in the first place, since that same actor would already have
    comparable access to sabotage the session through many OTHER paths this design has no power to
-   close either (this matches the same trust boundary `references/git-safe.sh`'s own documented
-   non-goals already draw elsewhere in this codebase). Cleanliness means ALL EIGHT checks
+   close either. **Corrected citation (closes a real gap found during design review: an earlier
+   revision here cited `references/git-safe.sh` as if it were a reference document with its own
+   "Non-goals" section — but the actual file, `codex-stream-review/scripts/lib/git-safe.sh`, is a
+   SCRIPT, not a reference doc, and contains no such section at all; the citation was fabricated,
+   leaving this scope justification unverifiable from where it claimed to point.)** This same
+   "not a defense against a deliberately changed source" trust-boundary framing is the one already
+   established and used repeatedly elsewhere in THIS document (see, e.g., `--base` scope's own
+   merge-base drift disclosure, and `references/snapshot-integrity.md`'s own identically-worded
+   non-goal) — reused here by the SAME reasoning, not by any claim that `git-safe.sh` itself
+   documents non-goals of its own. Cleanliness means ALL EIGHT checks
    pass — a bare, freshly-`git init`'d, genuinely-independent, non-symlinked, self-contained git repo
    directory with no files, no commits, no borrowed metadata, and no borrowed objects — never inferred
    from the absence of DIFFS, never from a `git rev-parse` failure whose EXACT cause was never actually
@@ -899,6 +907,28 @@ isolation from the round loop" below.
      detection" contract (`references/snapshot-integrity.md`) is deliberately, narrowly overridden
      only by this Claude-orchestrated, fully-disclosed re-snapshot event, never by anything
      auto-detected.
+
+     **This override needs the SAME "shipping this feature requires a companion amendment" treatment
+     already given to `references/execution-telemetry.md`, not merely a one-line "deliberately
+     overridden" declaration (new — closes a real gap found during design review: this design
+     directly conflicts with `references/snapshot-integrity.md`'s own explicit, EXISTING contract —
+     that reference requires the snapshot allocated ONCE before round 1, session-scoped and NEVER
+     changed per round, with a changed source requiring a WHOLLY NEW invocation rather than a
+     running review pivoting mid-session. Compaction's entire restart mechanism does exactly the
+     pivot that reference says should never happen. "The 'One shared reducer'... Schema version bump
+     required" section above already treats an analogous conflict — round-1-only signals becoming
+     legitimately repeatable — as requiring a real, explicit versioning response; this contract
+     conflict is at least as central, yet was left with only a passing "narrowly overridden" note,
+     never named as something shipping this feature actually requires resolving.)** Fixed: shipping
+     this feature requires the SAME kind of companion amendment to `references/snapshot-integrity.md`
+     as `references/execution-telemetry.md` already requires above — carving out an explicit, narrow
+     exception: the "one canonical subject, never changed per round" invariant holds UNCHANGED for
+     every ordinary session; it is relaxed ONLY when `--compact` triggers this specific,
+     fully-specified, Claude-orchestrated, fully-disclosed re-snapshot-and-promote event (never by
+     anything auto-detected, and never for any other reason) — the base skill's own ordinary,
+     non-compaction behavior remains governed by that reference's existing, unmodified invariant. Same
+     category of required change as the `schema_version` bump and the `execution-telemetry.md`
+     amendment above, not a new one.
 4. Dispatch a **fresh** `run-ccs-review.sh` call (same scope flag as round 1, not `--resume` — or,
    for a non-repo-artifact session per step 2 above, `--uncommitted` against `CLEAN_REPO_DIR` with
    the original artifact text included in focus) with focus text = `COMPACT_DIGEST` (+ the original
@@ -1198,11 +1228,26 @@ isolation from the round loop" below.
         the SAME as bullet 2's own exhaustion. Only if this one retry SUCCEEDS does the candidate
         continue as this round's own live, active attempt, exactly as if no no-ID hiccup had ever
         occurred.
-     The fresh-B escalation is reached ONLY via a genuinely NEW resume-safe failure that carries a
+     4. **Else (THIS response DOES carry a threadId — the ordinary, most common case, whether this is
+        the candidate's own first-ever captured id or a later response that continues to carry one)
+        — a genuinely missing branch, not merely an implied one (new — closes a real gap found during
+        design review: bullets 1-3 above only ever enumerate `artifact_too_large`, "no threadId at
+        all yet," and "no threadId on THIS response despite one already being known" — none of those
+        three literally covers the single MOST ORDINARY failure this whole design's own "2 bounded
+        resume-retries then fresh-B" language elsewhere assumes exists: a ordinary resume-safe
+        failure — `timeout`, `nonzero_exit`, etc. — that DOES carry a threadId. A prior revision left
+        this case to be inferred only from a closing summary sentence after the enumerated bullets,
+        never as its own executable branch within the list itself.)**: this is the ordinary case —
+        apply the standard bounded-resume-retry-then-fresh-B escalation directly, exactly as already
+        specified in "Reconciling with `references/retry-guards.md`'s OWN full escalation topology"
+        above (2 bounded `--resume` retries against this SAME thread; if both are exhausted, the
+        fresh-B escalation).
+     The fresh-B escalation is reached ONLY via bullet 4's own ordinary path — a genuinely NEW
+     resume-safe failure that carries a
      threadId on its OWN first occurrence for this candidate (never via a no-ID recovery scenario per
      bullet 3 above) — never via bullet 1 or bullet 2's own exhaustion either, all of which fall
      straight to step 6's fallback without ever creating a second candidate thread.
-   - **Thread B's own single dispatch gets NONE of bullets 1-3's retry machinery — it either
+   - **Thread B's own single dispatch gets NONE of bullets 1-4's retry machinery — it either
      succeeds, or the whole compaction attempt is immediately exhausted, matching
      `references/retry-guards.md`'s own "round 2+"/one-fresh-fallback rule exactly.** If B's own
      dispatch fails, for ANY reason whatsoever (`artifact_too_large`, no threadId at all, a
@@ -1956,7 +2001,7 @@ failed sub-attempt, in attempt order — on this SAME successful round's own lin
 produce this, never a "B retries" case (corrected — closes a real gap found during design review,
 and a related gap found in the same pass — an earlier revision said this could include "thread A's
 own first response, and/or thread B's" — but per "Thread B's own single dispatch gets NONE of
-bullets 1-3's retry machinery" above, B is single-shot by construction: it either succeeds on its one
+bullets 1-4's retry machinery" above, B is single-shot by construction: it either succeeds on its one
 attempt or is immediately exhausted, so there is no possible "B's own first response failed, then B
 itself went on to succeed" scenario for this field to preserve telemetry from. A LATER revision then
 narrowed this to just TWO sub-cases, omitting a third, equally real one: candidate A's own bullet-2
@@ -1964,10 +2009,11 @@ no-threadId FRESH retry succeeding — a completely different mechanism from a r
 carried under the SAME name "A" since no new thread B is ever created for it, but still leaving a
 real, genuine earlier failed response of its own worth preserving.)**: (a) candidate A's own
 retry-then-succeed via `--resume` (A's first response failed WITH a captured threadId, A itself — the
-SAME thread — succeeded on a later resume retry, per bullet 3 above); (b) candidate A's own bullet-2
+SAME thread — succeeded on a later ordinary bounded resume retry, per bullet 4 above, or on the
+one allowed retry after a no-ID hiccup, per bullet 3 above); (b) candidate A's own bullet-2
 no-threadId fresh retry succeeding (A's first response failed with NO threadId at all, the ONE
 allowed fresh re-collection then succeeded — still "A," never a new thread identity, per bullet 2
-above); or (c) candidate A was exhausted entirely (its own failed attempt(s) via ANY of bullets 1-3)
+above); or (c) candidate A was exhausted entirely (its own failed attempt(s) via ANY of bullets 1-4)
 and thread B then succeeded on its own single, unretried attempt — in case (c) specifically, the
 preserved `execution` entries belong to A's own failed attempt(s), never to B (B's own successful
 attempt has no failed response of its own to preserve). (On a round that instead falls all the way
