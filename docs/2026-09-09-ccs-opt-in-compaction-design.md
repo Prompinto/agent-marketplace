@@ -403,9 +403,11 @@ isolation from the round loop" below.
    file, an unrelated bug elsewhere touching the path), a fresh dispatch against it would collect
    REAL tracked/untracked content and silently mix it into what is supposed to be a strictly
    artifact-only review, breaking the isolation this whole mechanism exists to guarantee).** Fixed:
-   immediately before this dispatch, verify `CLEAN_REPO_DIR` is (still) clean
-   (`git status --short --untracked-files=all` reporting nothing, through the same anchored/sanitized
-   invocation used elsewhere).
+   immediately before this dispatch, verify `CLEAN_REPO_DIR` is (still) clean — see the fully-specified
+   check below (this opening statement intentionally does not repeat the exact check here, to avoid
+   the SAME "two contradictory descriptions of one check" gap already found and fixed once in this
+   exact spot during design review: an earlier revision left THIS sentence describing the original,
+   since-abandoned `git status`-based test even after the real check was replaced below).
 
    **This check must ALSO cover git-ignored content, not just tracked/untracked-unignored files (new
    — closes a real gap found during design review, confirmed live: `git status --short
@@ -425,15 +427,23 @@ isolation from the round loop" below.
    substantial content is present. If `CLEAN_REPO_DIR` ever accumulated an actual commit through any
    bug or unexpected process, every `git status`-based cleanliness check, however many flags it
    carries, would report "clean" while real files sit there for Codex's own investigation to find.)**
-   Fixed: replace the `git status`-based check entirely with two direct facts `git status` cannot
+   Fixed: replace the `git status`-based check entirely with THREE direct facts `git status` cannot
    provide: (1) the directory contains NO entries at all other than `.git` itself (a literal
    directory listing — e.g. `find "$CLEAN_REPO_DIR" -mindepth 1 -maxdepth 1 ! -name .git`, through the
-   same anchored/sanitized invocation pattern, expected to produce no output), and (2) the repository
-   itself has NEVER been given a commit (`git rev-parse --verify -q HEAD` expected to FAIL/exit
-   nonzero — `CLEAN_REPO_DIR` is never supposed to have a commit at any point in its lifecycle, so a
-   valid `HEAD` existing at all is itself conclusive proof of unexpected pollution, regardless of
-   what any file-level check shows). Cleanliness means BOTH checks pass — a bare, freshly-`git init`'d
-   directory with no files and no commits — never inferred from the absence of DIFFS. **A residual,
+   same anchored/sanitized invocation pattern, expected to produce no output); (2) `CLEAN_REPO_DIR` IS
+   genuinely a git working tree (`git rev-parse --is-inside-work-tree` expected to output EXACTLY
+   `true`); and (3) that repository's own HEAD has NEVER been given a commit (`git rev-parse --verify
+   -q HEAD` expected to FAIL/exit nonzero). **Check (2) is required, not redundant with (3) alone
+   (new — closes a real gap found during design review, confirmed live: a directory that is NOT a git
+   repository at all — or even a plain regular file in place of a directory — ALSO satisfies "`find`
+   produces no output" (if empty) AND "`git rev-parse --verify -q HEAD` fails" (exit 128, "not a git
+   repository," a COMPLETELY DIFFERENT failure than the desired "unborn HEAD" case) — so checks (1)
+   and (3) alone cannot actually distinguish the intended state (a real, empty, commit-less git repo)
+   from `CLEAN_REPO_DIR` having been deleted, replaced, or never properly initialized at all, letting
+   a broken CWD silently reach the wrapper's own later git/`cd` operations instead of being caught
+   here.)** Cleanliness means ALL THREE checks pass — a bare, freshly-`git init`'d, genuinely-a-
+   git-repo directory with no files and no commits — never inferred from the absence of DIFFS, and
+   never from a `git rev-parse` failure whose EXACT cause was never actually confirmed. **A residual,
    disclosed risk this does not close: `references/snapshot-integrity.md`'s own
    `scripts/lib/git-safe.sh` sanitization (e.g. neutralizing a repo-local `core.fsmonitor` hook that
    could otherwise execute a command) protects the WRAPPER's own git invocations specifically — it
@@ -1250,9 +1260,12 @@ isolation from the round loop" below.
         abandoned thread durably unaccounted for despite "Durable backstop for abandoned threads"
         depending on exactly this field to reconstruct it).** Whichever success branch above applies,
         ADD to it: `compaction_attempt_failed_thread` (the array covering whichever earlier
-        sub-attempt(s) were abandoned before this round's real success), and
-        `compaction_attempt_execution`/`compaction_attempt_coverage` whenever the underlying earlier
-        failed response(s) actually carried them — exactly mirroring "Applies to a retry-then-succeed
+        sub-attempt(s) were abandoned before this round's real success), `compaction_attempt_execution`
+        whenever the underlying earlier failed response(s) actually carried it, and
+        `compaction_attempt_coverage` ONLY for whichever of those earlier failed response(s) was
+        itself a fresh `--uncommitted` dispatch — never for a failed `--resume` call among them, which
+        carries no coverage at all (see "Scoped to a failed FRESH `--uncommitted` dispatch
+        specifically" below for the full reasoning) — exactly mirroring "Applies to a retry-then-succeed
         round too" above.
       - **Attempted-and-failed, falling through to the fallback:** `compaction_attempt_failure_count`
         — EXCEPT when the failure was `byte_budget_exceeded` (see "A real latch, not merely an
@@ -1782,20 +1795,27 @@ an all-the-way-failed round.)** Fixed: whenever a compaction round's PATH TO SUC
 more earlier failed sub-attempts that each carried an `execution` object, those are ALSO preserved —
 as `compaction_attempt_execution`, the SAME always-an-array shape established above, one entry per
 failed sub-attempt, in attempt order — on this SAME successful round's own line, alongside
-`compacted_from_thread` and the snapshot-lineage fields. **Concretely, exactly two sub-cases can
-produce this, never a "B retries" case (corrected — closes a real gap found during design review: an
-earlier revision said this could include "thread A's own first response, and/or thread B's" — but
-per "Thread B's own single dispatch gets NONE of bullets 1-3's retry machinery" above, B is single-
-shot by construction: it either succeeds on its one attempt or is immediately exhausted, so there is
-no possible "B's own first response failed, then B itself went on to succeed" scenario for this
-field to preserve telemetry from.)**: (a) candidate A's own retry-then-succeed (A's first response
-failed, A itself — the SAME thread — succeeded on a later resume retry), or (b) candidate A was
-exhausted entirely (its own failed attempt(s), possibly several across bullets 1-3) and thread B then
-succeeded on its own single, unretried attempt — in case (b), the preserved `execution` entries
-belong to A's own failed attempt(s), never to B (B's own successful attempt has no failed response of
-its own to preserve). (On a round that instead falls all the way through to the fallback, this field
-is populated the identical way, covering whichever sub-attempts failed there — one shape, used
-uniformly on every round that has anything to record in it.)
+`compacted_from_thread` and the snapshot-lineage fields. **Concretely, exactly THREE sub-cases can
+produce this, never a "B retries" case (corrected — closes a real gap found during design review,
+and a related gap found in the same pass — an earlier revision said this could include "thread A's
+own first response, and/or thread B's" — but per "Thread B's own single dispatch gets NONE of
+bullets 1-3's retry machinery" above, B is single-shot by construction: it either succeeds on its one
+attempt or is immediately exhausted, so there is no possible "B's own first response failed, then B
+itself went on to succeed" scenario for this field to preserve telemetry from. A LATER revision then
+narrowed this to just TWO sub-cases, omitting a third, equally real one: candidate A's own bullet-2
+no-threadId FRESH retry succeeding — a completely different mechanism from a resume retry, still
+carried under the SAME name "A" since no new thread B is ever created for it, but still leaving a
+real, genuine earlier failed response of its own worth preserving.)**: (a) candidate A's own
+retry-then-succeed via `--resume` (A's first response failed WITH a captured threadId, A itself — the
+SAME thread — succeeded on a later resume retry, per bullet 3 above); (b) candidate A's own bullet-2
+no-threadId fresh retry succeeding (A's first response failed with NO threadId at all, the ONE
+allowed fresh re-collection then succeeded — still "A," never a new thread identity, per bullet 2
+above); or (c) candidate A was exhausted entirely (its own failed attempt(s) via ANY of bullets 1-3)
+and thread B then succeeded on its own single, unretried attempt — in case (c) specifically, the
+preserved `execution` entries belong to A's own failed attempt(s), never to B (B's own successful
+attempt has no failed response of its own to preserve). (On a round that instead falls all the way
+through to the fallback, this field is populated the identical way, covering whichever sub-attempts
+failed there — one shape, used uniformly on every round that has anything to record in it.)
 
 **Surfaced in the final report, not just durably logged (new — closes a real gap found during
 design review: an earlier draft made this field durable in the JSONL log but never extended the
@@ -1811,7 +1831,8 @@ back" — hardcoded a fallback outcome, but per "Applies to a retry-then-succeed
 same field also appears on a round whose real outcome is SUCCESS, where nothing ever "fell back" at
 all.)**: for a round whose real outcome is the fallback, "Round R also attempted a compaction restart
 that failed after using `<input>`/`<output>` tokens (`<elapsed>`s) before falling back"; for a round
-whose real outcome is a success (candidate A's own retry-then-succeed, or A exhausted then B
+whose real outcome is a success (any of the three sub-cases above — A's own resume-based
+retry-then-succeed, A's own bullet-2 no-threadId fresh-retry success, or A exhausted then B
 succeeded), "Round R's compaction restart succeeded after an earlier attempt used
 `<input>`/`<output>` tokens (`<elapsed>`s)" — in both cases reporting each preserved sub-attempt's own
 figures, never conflated with the round's own real dispatch numbers.
@@ -2018,9 +2039,13 @@ for that SAME thread — but a thread that itself goes on to succeed via its own
 abandoned at all, per `references/retry-guards.md`'s own explicit "that existing thread is untouched,
 not abandoned" language — recording it here would cause it to be double-cleaned, or falsely reported
 as leaked, despite being the round's own real, live, active thread).**
-`compaction_attempt_execution`/`compaction_attempt_coverage` record ANY earlier failed RESPONSE's own
-telemetry/coverage regardless of whose thread it belongs to (pure audit of real cost incurred, per
-"Preserving failed-attempt telemetry" and "Applies to a retry-then-succeed round too" above) —
+`compaction_attempt_execution` records ANY earlier failed RESPONSE's own telemetry regardless of
+whose thread it belongs to (pure audit of real cost incurred, per "Preserving failed-attempt
+telemetry" and "Applies to a retry-then-succeed round too" above); `compaction_attempt_coverage`
+records the SAME, but ONLY for whichever of those earlier failed responses was itself a fresh
+`--uncommitted` dispatch — never for a failed `--resume` call, which never carries coverage at all
+regardless of the round's overall scope (see "Scoped to a failed FRESH `--uncommitted` dispatch
+specifically" below) —
 `compaction_attempt_failed_thread` records ONLY a thread that was genuinely ABANDONED (its own
 retries exhausted, superseded by a DIFFERENT thread), alongside `compacted_from_thread`/the
 snapshot-lineage fields for the eventual success). A compaction
