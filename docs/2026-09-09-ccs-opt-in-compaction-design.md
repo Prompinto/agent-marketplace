@@ -478,14 +478,32 @@ isolation from the round loop" below.
    literally named `.git` never verified what that entry actually IS.)** Fixed: `CLEAN_REPO_DIR/.git`
    must itself be a real, ordinary DIRECTORY — never a plain file (the standard git-worktree gitfile
    format, `gitdir: <path>`) and never a symlink (`[ -d "$CLEAN_REPO_DIR/.git" ] && [ ! -L
-   "$CLEAN_REPO_DIR/.git" ]`) — ruling out the entire linked-worktree/external-git-dir redirection
-   mechanism that both live reproductions exploited, since that mechanism structurally requires `.git`
-   to be something OTHER than an ordinary self-contained directory. Cleanliness means ALL SIX checks
+   "$CLEAN_REPO_DIR/.git" ]`).
+
+   **This alone is STILL insufficient — an ordinary, non-symlink `.git` directory can itself contain a
+   `commondir` file redirecting shared metadata elsewhere, an entirely different indirection mechanism
+   than the gitfile/symlink form just closed (new — closes a real gap found during design review,
+   confirmed live: per git's own `gitrepository-layout(5)` documentation, a `commondir` file inside a
+   Git directory sets the effective `GIT_COMMON_DIR` to its own target — reproduced directly: with a
+   local, genuinely-a-directory, non-symlink `.git` whose own `commondir` file points at an unrelated
+   repository, EVERY check up through the ordinary-directory check above still passes — including
+   `is-inside-work-tree=true`, the correct own toplevel, and a failing/unborn `HEAD` lookup — while
+   `git rev-parse --git-common-dir` reveals the borrowed external path. The gitfile/symlink check
+   above closes ONE indirection mechanism; `commondir` is a SEPARATE one, operating from INSIDE an
+   otherwise entirely ordinary `.git` directory.)** Fixed with a single, more general check that
+   SUBSUMES both indirection mechanisms rather than chasing a third, fourth, or fifth: `git rev-parse
+   --git-dir` AND `git rev-parse --git-common-dir`, each resolved to its own canonical absolute path,
+   must BOTH equal `CLEAN_REPO_DIR/.git`'s own canonical absolute path — verifying the actual GIT-LEVEL
+   fact that matters (no metadata is borrowed from anywhere, by any mechanism) rather than continuing
+   to enumerate every possible filesystem-level trick that could produce that same effect. The
+   ordinary-directory/non-symlink check above is kept as a cheap, redundant first-line filter, but this
+   git-dir/common-dir identity check is the check that actually closes the class of gap, regardless of
+   how a future indirection mechanism might be implemented. Cleanliness means ALL SEVEN checks
    pass — a bare, freshly-`git init`'d, genuinely-independent, non-symlinked, self-contained git repo
-   directory with no files and no commits — never inferred from the absence of DIFFS, never from a
-   `git rev-parse` failure whose EXACT cause was never actually confirmed, never from mere membership
-   in SOME working tree, and never from identity checks alone without confirming the git metadata
-   itself is genuinely local and self-contained. **A
+   directory with no files, no commits, and no borrowed metadata of any kind — never inferred from the
+   absence of DIFFS, never from a `git rev-parse` failure whose EXACT cause was never actually
+   confirmed, never from mere membership in SOME working tree, and never from filesystem-level identity
+   checks alone without confirming the git metadata itself is genuinely local. **A
    residual, disclosed risk this does not close: `references/snapshot-integrity.md`'s own
    `scripts/lib/git-safe.sh` sanitization (e.g. neutralizing a repo-local `core.fsmonitor` hook that
    could otherwise execute a command) protects the WRAPPER's own git invocations specifically — it
@@ -494,18 +512,18 @@ isolation from the round loop" below.
    behavior against a hypothetically malicious `.git` directory is a base-sandbox-model concern well
    beyond this design's own scope — disclosed, not solved, here.**
 
-   **A second residual, disclosed risk: a check-then-use race remains between these six checks
+   **A second residual, disclosed risk: a check-then-use race remains between these seven checks
    completing and the wrapper's own LATER, separate use of the same `$CWD` pathname (new — closes a
    real gap found during design review: these checks all resolve the pathname locally, then dispatch
    happens afterward — the wrapper itself independently re-resolves `$CWD` twice more, once for its
    own `git -C "$CWD"` calls and once for its `cd "$CWD"` launch step. If `CLEAN_REPO_DIR` were
    replaced or swapped for a symlink in the narrow window between these checks finishing and either of
-   those later resolutions, none of the six checks would have observed it.)** This is inherent to any
+   those later resolutions, none of the seven checks would have observed it.)** This is inherent to any
    "verify a pathname locally, then hand it to a separately-invoked process" pattern and cannot be
    fully closed without a mechanism this design does not have available (e.g. resolving to a file
    descriptor and passing THAT to the wrapper, rather than a re-resolvable pathname — a change to the
    wrapper's own invocation contract, out of scope here). Accepted as a narrow, low-probability,
-   disclosed residual window — the six checks close every gap that persists BETWEEN separate,
+   disclosed residual window — the seven checks close every gap that persists BETWEEN separate,
    independent uses of the same session-lived pathname (the realistic threat this design addresses),
    not a race against a change happening in the same instant as dispatch itself.
 
@@ -527,7 +545,7 @@ isolation from the round loop" below.
    would mean adding a new check to the base skill's own Phase 0/Phase 1 setup, which this document
    does not own).
 
-   If any of the six checks is not clean, this is
+   If any of the seven checks is not clean, this is
    treated exactly like any other compaction failure (log the narration, fall through to the normal
    `--resume` fallback) — never dispatch against a `CLEAN_REPO_DIR` whose emptiness wasn't just
    reconfirmed. Only once this check passes does the `--uncommitted` dispatch against `CLEAN_REPO_DIR`
@@ -1959,6 +1977,25 @@ fabricating numbers or leaving a broken placeholder.)** Fixed: whenever a preser
 `<input>`/`<output>` tokens portion, reusing that EXACT existing fallback rather than inventing a
 new one — e.g. "Round R also attempted a compaction restart that failed after `<elapsed>`s (usage
 unavailable) before falling back."
+
+**This still leaves a partial `usage` object unhandled — the wrapper preserves whatever member shape
+a `turn.completed` event happens to carry, with no guarantee both `input_tokens` and `output_tokens`
+are present together (new — closes a real gap found during design review, confirmed live: the
+wrapper's own `build_execution_json()` retains a non-empty `usage` object exactly as received, with
+no member validation — a real, valid response carrying only `{"input_tokens": 12}` (no
+`output_tokens` key at all) is preserved as-is per `references/execution-telemetry.md`'s own
+documented behavior, reproduced directly against the wrapper's own extraction logic. The template
+above only branches on "is `usage` present or absent" — a PRESENT-but-partial object still forces the
+same unconditional `<input>`/`<output>` interpolation, which cannot be satisfied when only one of the
+two actually exists.)** Fixed: report each of `<input>`/`<output>` independently — whichever value is
+actually present in `usage` is reported normally; whichever is absent (whether because `usage` itself
+is completely missing, or present but missing just that one member) is reported with its own
+"unavailable" wording rather than the whole object being treated as all-or-nothing — e.g. "Round R
+also attempted a compaction restart that failed after using 12 input tokens (output tokens
+unavailable) (`<elapsed>`s) before falling back." This one rule uniformly covers all three shapes: full
+usage (both values reported), partial usage (one reported, one marked unavailable), and no usage at
+all (both marked unavailable, collapsing to the simpler "usage unavailable" wording as a natural
+special case rather than a separately-maintained one).
 
 ### A failed compaction attempt is a superseded attempt, not a novel evidence-lifecycle case (new — closes a real gap found during design review)
 
