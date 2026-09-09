@@ -481,11 +481,33 @@ isolation from the round loop" below.
      disk. **On compaction failure (step 6 below): delete the candidate file immediately** (it was
      never used for anything) **and continue revalidating rounds against the untouched original
      active snapshot** — the fallback `--resume` round's own snapshot check has an unchanged
-     baseline to validate against, exactly as if compaction had never been attempted. **On success,
-     only after this round's JSONL append is verified (step 5 below):** delete the OLD active
-     snapshot file, and promote the candidate to be the new active `SNAPSHOT_FILE`/
-     `SNAPSHOT_DIGEST` for every subsequent round's revalidation. There is only ever one snapshot
-     file on disk needing cleanup at any given moment outside this brief transition window.
+     baseline to validate against, exactly as if compaction had never been attempted.
+
+     **On success, promotion is ONE atomic rename onto the fixed `SNAPSHOT_FILE` path, never a
+     separate delete-then-move (corrected — closes a real gap found during design review: an
+     earlier revision described this as two sequential steps, "delete the OLD active snapshot file,
+     AND promote the candidate" — which (a) creates a real window where the active path is
+     genuinely missing (old deleted, new not yet in place) that a later recovery step then wrongly
+     treated as unrecoverable corruption, since it never distinguished "missing because promotion is
+     mid-flight" from "missing because something is actually broken," and (b) left "promote the
+     candidate" itself ambiguous between two incompatible readings — reassigning which literal path
+     Claude calls `SNAPSHOT_FILE` (a pointer change, no physical file operation) versus physically
+     moving bytes into the ORIGINAL fixed path (keeping the path itself constant) — each of which
+     breaks a different part of the recovery logic below if assumed silently.)** Fixed: `SNAPSHOT_FILE`
+     is, and remains, ONE fixed literal path for the entire session, exactly like `REPO_ROOT`/
+     `SESSION_ID` (see "Recoverable without giving up `mktemp`'s own symlink-attack protection" just
+     below) — promotion NEVER reassigns which path Claude calls `SNAPSHOT_FILE`; it always physically
+     replaces that fixed path's own content. Concretely, only after this round's JSONL append is
+     verified (step 5 below): `mv "$candidate_snapshot_path" "$SNAPSHOT_FILE"` — a single `rename(2)`
+     syscall (both paths are guaranteed to be on the same filesystem, both living under the same
+     session-scoped `/tmp` area), which POSIX guarantees ATOMICALLY replaces the destination,
+     unlinking its previous content as part of the SAME operation — there is no OS-visible
+     intermediate state where the active path is empty, and no separate "delete the old file, which
+     might itself fail" step exists at all anymore: a single successful `mv` both installs the new
+     content and reclaims the old content's space in one indivisible step. A failure of this `mv`
+     itself (e.g. a permissions error) is treated like any other compaction failure — see "On
+     failure" below — the OLD content is guaranteed untouched by a failed rename (rename either
+     fully happens or doesn't, never partially).
 
      **Recoverable without giving up `mktemp`'s own symlink-attack protection (corrected — reverses
      a wrong turn taken during design review and closes the two problems it caused: (a) a prior
@@ -669,6 +691,55 @@ isolation from the round loop" below.
    response. Only when the fresh attempt's own first response carried no usable telemetry at all
    does the existing "fail closed when telemetry is unusable" rule above apply.
 
+   **Reconciling with `references/retry-guards.md`'s OWN full escalation topology, not just its
+   2-resume bound (corrected — closes a real gap found during design review: "This dispatch IS
+   round R's real dispatch... no separate follow-up dispatch happens in the success case" above,
+   and "Failure isolation from the round loop" below, both asserted a compaction attempt is exactly
+   ONE dispatch (plus, elsewhere, its 2 bounded resume-retries) — but `references/retry-guards.md`'s
+   own tested, EXISTING behavior for a "no pre-existing thread" failure — which is exactly what a
+   compaction attempt's brand-new candidate thread structurally is, having never appeared in
+   `GROUP_THREADS` before this attempt — is fresh A → resume A → resume A → if BOTH resumes are
+   STILL exhausted, one further FULL fresh retry with a brand NEW thread B, abandoning A to
+   `LEAKED_THREAD_IDS`, before ever giving up. An actual eval fixture
+   (`evals/scenarios/retry-exhausted-round1-fresh-fallback`) exercises exactly this sequence.
+   Compaction's design never modeled thread B at all — its own candidate/coverage/baseline
+   ownership, or how reaching this point interacts with step 6's own fallback.)** Fixed, by
+   deliberately reusing this EXACT existing topology rather than inventing a compaction-specific
+   variant (consistent with this design's own "reuse existing mechanisms" principle elsewhere): if
+   thread A's own 2 bounded resume-retries are both exhausted, dispatch ONE further fresh attempt
+   under thread B, exactly as `references/retry-guards.md` already prescribes for this shape of
+   failure — with the following compaction-specific bookkeeping, since compaction has state
+   `retry-guards.md` itself has no concept of:
+   - Before dispatching B: thread A is added to `LEAKED_THREAD_IDS` (per the existing rule); if A's
+     own dispatch had allocated a candidate snapshot file, that candidate is deleted immediately —
+     it belongs to A's now-abandoned attempt — following the SAME "abandoned fully-hashed candidate"
+     rule as any other ordinary compaction failure (fold a failed deletion into
+     `retired_snapshot_files`, per the existing rule).
+   - Thread B's OWN dispatch is a genuinely fresh one: a fresh candidate snapshot is re-collected
+     (a new `candidate_snapshot_path`, new digest) exactly as thread A's original dispatch was —
+     never a reuse of A's now-deleted candidate. Coverage and `COMPACTION_BASELINE_TOKENS` carry-
+     forward (both fixes just above) apply to WHICHEVER thread (A or B) ultimately produces the
+     round's real outcome — if B itself first fails then succeeds via its own resume retry, B's own
+     first-response telemetry is what gets carried forward, not A's (A's own attempt is entirely
+     superseded, not merged).
+   - If thread B ALSO fails: per `references/retry-guards.md`'s own "round 2+" rule (from B's own
+     perspective, having just used its one fresh-retry chance, further failure has no further
+     fresh fallback of its own) — the WHOLE compaction attempt is now exhausted. This is still never
+     reported as its own `⚠️ COULD NOT VERIFY` outcome, consistent with "Failure isolation from the
+     round loop" below: it falls through to step 6's ordinary `--resume`-the-old-thread fallback,
+     exactly as a single-attempt failure already would.
+   - `compaction_attempt_failed_thread` (see "Durable backstop for abandoned threads" below) becomes
+     an ARRAY of 1 or 2 thread ids — just `[A]` when B was never reached, `[A, B]` when both were
+     abandoned — rather than a single value; every consumer of this field (Phase 3 cleanup, the
+     final-report thread enumeration, the append-verify field checks) is extended to accept and
+     union in either shape.
+   - "This dispatch IS round R's real dispatch" above, and "round R has exactly ONE real dispatch"
+     in "Failure isolation from the round loop" below, both mean exactly ONE real OUTCOME/RESULT for
+     round R — success via A or B, or the old-thread fallback — never a literal single network call;
+     the underlying attempt sequence (fresh A, its bounded resumes, and possibly fresh B) is an
+     internal implementation detail of reaching that one outcome, identical in spirit to how round
+     1's own bounded retries already work without round 1 itself being called "multiple rounds."
+
    **One shared reducer, not three ad hoc implementations (new — closes a real durable-contract gap
    found during design review).** The original draft only described a live, in-session merge rule
    and never addressed two other places coverage is read: continuity recovery (reconstructing state
@@ -779,9 +850,11 @@ isolation from the round loop" below.
         — EXCEPT when the failure was `byte_budget_exceeded` (see "A real latch, not merely an
         implicit..." below), which deliberately never increments this counter, so its absence here
         is likewise the correct state, not a defect. `compaction_attempt_failed_thread` is required
-        additionally, but ONLY when the underlying failure reason is one the interface reference's
-        own table marks as threadId-bearing — never for `no_thread_started`, `bad_args`,
-        `git_error`, or `incomplete_collection`, which structurally never carry one.
+        additionally (an array of 1 or 2 ids — see "Reconciling with `references/retry-guards.md`'s
+        OWN full escalation topology" above), but ONLY when at least one attempted thread's
+        underlying failure reason is one the interface reference's own table marks as
+        threadId-bearing — never for `no_thread_started`, `bad_args`, `git_error`, or
+        `incomplete_collection`, which structurally never carry one.
       - **Any round that newly sets `compaction_disabled_reason` this round (baseline over
         threshold, baseline unusable, failure count reaching its bound, or byte budget exceeded):**
         that field is additionally required whenever the round's own processing actually reached
@@ -789,13 +862,33 @@ isolation from the round loop" below.
         original extension checked candidate/thread/count fields but never the disable-latch field
         itself, despite the design elsewhere calling it a one-shot durable latch exactly as
         load-bearing as the others.
-      - **Any round whose own processing discovers a genuinely PRE-append snapshot-deletion failure
+      - **Any round whose own processing discovers a genuinely pre-append snapshot-deletion failure
         this round (a partial-candidate or abandoned-candidate deletion failure, per "Retired-
-        snapshot tracking is general-purpose" above — never the deferred POST-append case, which is
-        legitimately optional and lands on a LATER round instead):** `retired_snapshot_files` is
+        snapshot tracking is general-purpose" above — both of its two cases are pre-append; there is
+        no longer a deferred post-append case at all, now that promotion is a single atomic rename —
+        see "On success, promotion is ONE atomic rename..." above):** `retired_snapshot_files` is
         additionally required, non-empty.
-      A missing or malformed required field for whichever of these branches actually applies is
-      treated with the SAME severity as a wrong round number — a hard stop,
+      **Presence and type are not enough on their own — the durability-critical fields must also
+      match the VALUE Claude itself already computed for this transition (new — closes a real gap
+      found during design review: a first revision of this whole extension checked only that
+      `compaction_attempt_failure_count` was "an integer," for instance — so a bug or corruption
+      that appended `0` on an actual FAILURE round would still pass verification, and a later
+      continuity recovery reading that `0` would grant two MORE failures than the two-strike bound
+      actually allows, silently defeating the circuit breaker's entire purpose. The same blind spot
+      applies to every other durable field here.)** Fixed: wherever this round's own processing
+      already computed an authoritative value BEFORE the append (every field on this list qualifies
+      — that is precisely why each is being appended in the first place), the verify step compares
+      the appended value against that already-known value, not merely its shape:
+      `compaction_attempt_failure_count` must equal the just-incremented (or, on success, `0`) value
+      Claude itself computed this round, never merely "any integer"; `snapshot_digest_before`/
+      `snapshot_digest_after` must equal the digests Claude itself hashed; `candidate_snapshot_path`
+      must equal the literal `mktemp` path Claude itself allocated this round;
+      `compaction_disabled_reason` must equal the SPECIFIC cause that actually triggered it this
+      round, not merely be one of the 4 valid strings; `compaction_attempt_execution`/
+      `compaction_attempt_coverage`, when the underlying failed response(s) actually carried them,
+      must be present and non-empty, never silently dropped. A missing, malformed, OR
+      value-mismatched required field for whichever of these branches actually applies is treated
+      with the SAME severity as a wrong round number — a hard stop,
       `🛑 REVIEW LOG INTEGRITY FAILURE`, never a soft warning — since these fields are exactly as
       durability-load-bearing as the round number itself; a field this round's own outcome does NOT
       require is correctly absent and must never be flagged as missing. **If this append fails
@@ -805,28 +898,32 @@ isolation from the round loop" below.
    4. **Only after that append is verified**: (a) promote — remove the NEW thread id from its
       provisional `LEAKED_THREAD_IDS` entry and make it the active `GROUP_THREADS` entry instead;
       add the OLD thread id to `LEAKED_THREAD_IDS` in its place (never an immediate `--cleanup` —
-      see "Interaction with `--keep-evidence`" below); (b) promote the candidate snapshot from
-      provisional to active, and delete the OLD active snapshot file. **If that deletion itself
-      fails: add its path to `RETIRED_SNAPSHOT_FILES`** — see "Retired-snapshot tracking is
-      general-purpose, not one-case-specific" below for the full, generalized mechanism (this is
-      one of three places that set gets used, not a special case of its own).
+      see "Interaction with `--keep-evidence`" below); (b) promote the candidate snapshot via the
+      single atomic `mv "$candidate_snapshot_path" "$SNAPSHOT_FILE"` rename described above — no
+      separate old-file deletion step exists anymore (closes a real gap found during design review:
+      an earlier revision described this as "promote the candidate... and delete the OLD active
+      snapshot file," treating that deletion as its own fallible step tracked via
+      `RETIRED_SNAPSHOT_FILES` — but a single atomic rename cannot fail "after succeeding," so
+      there is nothing left to add to that set here; a failure of the `mv` itself is an ordinary
+      compaction failure, per "On failure" below, with the OLD content guaranteed untouched).
 
-   **Retired-snapshot tracking is general-purpose, not one-case-specific (new — closes a real
-   remaining gap found during design review: the first revision of `RETIRED_SNAPSHOT_FILES` only
-   covered a failed deletion of the OLD active snapshot after promotion — leaving two OTHER deletion
-   points in this same restart mechanism just as capable of leaking a file with nowhere to be
-   tracked: a failed deletion of a PARTIAL candidate, per step 3's own collection/hash-failure
-   handling above, before it ever became a fully-hashed candidate at all; and a failed deletion of a
-   fully-hashed candidate on ordinary compaction failure, per "On failure" step 2 below — in EITHER
-   case, if a LATER compaction attempt's own single `PROVISIONAL_SNAPSHOT_FILE` slot then gets
-   reassigned to a new candidate, the earlier failed-to-delete file is referenced by nothing at all,
-   tracked by neither the active/provisional slots nor the original narrower `RETIRED_SNAPSHOT_FILES`
-   rule).** Fixed: `RETIRED_SNAPSHOT_FILES` is the ONE general-purpose catch-all for every snapshot-
-   related file this restart mechanism ever fails to delete when it is supposed to — a partial
-   candidate (step 3), an abandoned fully-hashed candidate (step 6 below), or an old active snapshot
-   after promotion (this step) all route through the exact same set on their own deletion failure,
-   never three separate ad hoc mechanisms. Phase 3's terminal cleanup (every terminal path) attempts
-   `rm -f` on every path ever added to this one set, giving each a final retry at session end.
+   **Retired-snapshot tracking is general-purpose, covering the two deletion points that remain
+   fallible on their own (revised — closes a real gap found during design review: an earlier
+   revision listed THREE deletion points sharing this mechanism, including "old active snapshot
+   after promotion" — that third case no longer exists as a separate fallible step now that
+   promotion is one atomic rename (see "On success, promotion is ONE atomic rename..." above), so
+   `RETIRED_SNAPSHOT_FILES` now covers exactly the two REMAINING cases below, both genuinely
+   independent `rm` calls on a candidate being ABANDONED, not promoted):
+
+   The two cases are: a failed deletion of a PARTIAL candidate, per step 3's own collection/hash-
+   failure handling above, before it ever became a fully-hashed candidate at all; and a failed
+   deletion of a fully-hashed candidate on ordinary compaction failure, per "On failure" step 2
+   below — in EITHER case, if a LATER compaction attempt's own single `PROVISIONAL_SNAPSHOT_FILE`
+   slot then gets reassigned to a new candidate, the earlier failed-to-delete file is referenced by
+   nothing at all, tracked by neither the active/provisional slots nor anything else. Both route
+   through the exact same set on their own deletion failure, never two separate ad hoc mechanisms.
+   Phase 3's terminal cleanup (every terminal path) attempts `rm -f` on every path ever added to
+   this one set, giving each a final retry at session end.
 
    **Retired- and provisional-snapshot durability — real fix for one, honest disclosure for the
    other (new — closes a real gap found during design review, and corrects an overclaim: an earlier
@@ -836,35 +933,19 @@ isolation from the round loop" below.
    only ever described as in-memory session-scoped facts, "analogous in spirit to
    `LEAKED_THREAD_IDS`" without ever receiving the SAME durable-field treatment that name actually
    has.**
-   - **`RETIRED_SNAPSHOT_FILES` — made genuinely durable for TWO of the three deletion points; the
-     third needs its own honest treatment (corrected — closes a real gap found during design review:
-     an earlier revision claimed uniformly "the round's own JSONL line has not yet been appended" for
-     ALL three deletion points, which is true for the partial-candidate failure (step 3) and the
-     abandoned-candidate failure (step 6 below) — both discovered before that round's own line is
-     ever written — but FALSE for the OLD-active-snapshot deletion after promotion (step 5.4): by
-     that point, step 5.3's own JSONL append has ALREADY happened, and the append-only contract
-     forbids ever modifying an already-committed line).** For the two genuinely pre-append cases,
-     the fix stands as designed: the path is added to a new array field, `retired_snapshot_files`, on
-     that SAME round's own line (present only when non-empty), and Phase 3's terminal cleanup plus
-     continuity recovery are both extended to union in every path ever recorded in this field across
-     the session's log — the same "durable backstop, in-memory set is not the sole source of truth"
-     pattern already established for `LEAKED_THREAD_IDS`. **For the post-append case (old-snapshot
-     deletion failure after promotion) specifically:** the path cannot go on the round that already
-     committed — it is instead attached to the NEXT round's own `retired_snapshot_files` field,
-     whenever that round's own line eventually gets appended (a one-round-deferred, best-effort
-     backfill, not a violation of append-only). **The disclosed gap here is broader than just "no
-     next round exists" (corrected — closes a real gap found during design review: an earlier
-     revision disclosed this only for the compaction round being the session's own literal LAST
-     round — but the identical loss also occurs on a NON-terminal interruption, one where a next
-     round WAS expected, if that next round's own session state or process is itself interrupted
-     before ITS OWN line ever gets appended; a next round merely being dispatched later is not
-     enough — it has to actually complete its own append for the deferred backfill to land).** If
-     EITHER the compaction round that triggered this failure turns out to be the session's own last
-     round (an immediately CLEAN or otherwise terminal outcome, with no further round ever
-     dispatched), OR a next round WAS dispatched but a subsequent interruption prevents that round's
-     own line from ever being appended — in both cases, this specific case shares the exact same
-     accepted, disclosed, bounded-impact residual gap as `PROVISIONAL_SNAPSHOT_FILE` below, for the
-     identical underlying reason (no later completed line exists to attach a durability marker to).
+   - **`RETIRED_SNAPSHOT_FILES` — made genuinely durable for both of its now-two deletion points
+     (simplified — the post-append "old-snapshot deletion after promotion" case this earlier
+     revision handled separately no longer exists as a distinct fallible step now that promotion is
+     a single atomic rename — see "On success, promotion is ONE atomic rename..." above — so there
+     is no longer a post-append case to give separate, deferred treatment to here).** Both of the
+     two remaining cases — a failed deletion of a PARTIAL candidate (step 3) and a failed deletion of
+     an abandoned fully-hashed candidate (step 6 below) — are discovered strictly BEFORE that round's
+     own JSONL line is ever written, so the fix is uniform and immediate for both: the path is added
+     to a new array field, `retired_snapshot_files`, on that SAME round's own line (present only
+     when non-empty), and Phase 3's terminal cleanup plus continuity recovery are both extended to
+     union in every path ever recorded in this field across the session's log — the same "durable
+     backstop, in-memory set is not the sole source of truth" pattern already established for
+     `LEAKED_THREAD_IDS`. No deferred, next-round backfill is needed anymore for this field at all.
    - **`PROVISIONAL_SNAPSHOT_FILE` — two genuinely different windows, not one (corrected — closes a
      real gap found during design review: an earlier revision described this window as "ENTIRELY
      within one round's own processing, before that round's own JSONL line is ever appended at all,"
@@ -922,19 +1003,20 @@ isolation from the round loop" below.
           corruption or loss, unrelated to anything this recovery can resolve on its own — hard stop,
           `🛑 SNAPSHOT INTEGRITY FAILURE`, exactly as the base mechanism already requires, never
           silently proceeded past.
-       2. If it matches `snapshot_digest_after`: promotion already completed (this also correctly
-          covers the before/after-identical edge case above, since the observable bytes are already
-          correct either way). If `candidate_snapshot_path` STILL exists on disk too (a stray leftover
-          — e.g. a move that succeeded but left a hard-linked duplicate, or a retry of an already-
-          completed move), it is no longer needed: delete it, folding a failed deletion into
-          `retired_snapshot_files` per the existing rule. Proceed normally.
-       3. If it matches `snapshot_digest_before` (still the OLD file — promotion has NOT completed):
-          check `candidate_snapshot_path`. If it exists and verifies against `snapshot_digest_after`,
-          the crash landed in exactly this window — complete the interrupted promotion now (move it
-          into the active path; on a failed deletion of whatever is currently at the active path,
-          fold into `retired_snapshot_files` per the existing rule). If the candidate is missing, or
-          present but fails to verify, neither the promoted state nor a valid pre-promotion candidate
-          can be produced — hard stop, `🛑 SNAPSHOT INTEGRITY FAILURE`, never silently continued.
+       2. If it matches `snapshot_digest_after`: the atomic rename already completed (this also
+          correctly covers the before/after-identical edge case above, since the observable bytes
+          are already correct either way; by definition of the atomic rename above,
+          `candidate_snapshot_path` cannot still exist once its own `mv` has succeeded — its content
+          was moved, not copied — so there is nothing further to check or clean up here). Proceed
+          normally.
+       3. If it matches `snapshot_digest_before` (still the OLD file — the atomic rename has NOT yet
+          run): check `candidate_snapshot_path`. If it exists and verifies against
+          `snapshot_digest_after`, the crash landed in exactly this window — run the SAME
+          `mv "$candidate_snapshot_path" "$SNAPSHOT_FILE"` now to complete it (this either fully
+          succeeds or fully fails, per the same atomicity guarantee — no partial state to fold into
+          `retired_snapshot_files`). If the candidate is missing, or present but fails to verify,
+          neither the promoted state nor a valid pre-promotion candidate can be produced — hard stop,
+          `🛑 SNAPSHOT INTEGRITY FAILURE`, never silently continued.
 6. **On failure (any `ok:false` reason, including `artifact_too_large`) — self-contained fallback,
    never this round's own terminal outcome, and NEVER a separate JSONL append (closes a real
    one-object-per-round contract violation found during design review — an earlier draft implied
@@ -1055,13 +1137,16 @@ relying on memory alone:
 - A successful compaction's `compacted_from_thread` field (already logged, see "Logging" below) is
   itself sufficient to reconstruct that the named thread is abandoned and needs the same treatment
   as a `LEAKED_THREAD_IDS` entry, purely by reading the JSONL log.
-- A FAILED compaction attempt's own threadId (when one exists) is additionally recorded as a
+- A FAILED compaction attempt's own threadId(s) (when any exist) are additionally recorded as a
   REQUIRED field **on that same round's own single JSONL line** (never a separate append, and never
-  best-effort — see "On failure" step 6 above) — `compaction_attempt_failed_thread`. This is
-  deliberately NOT treated like `kept_last_message_path`'s best-effort convention: since this field
-  is what makes the "never permanently unaccounted-for" guarantee actually true, making it skippable
-  would silently contradict that guarantee the moment in-memory `LEAKED_THREAD_IDS` state is lost —
-  it inherits the SAME mandatory append-verify guarantee as the rest of that round's line.
+  best-effort — see "On failure" step 6 above) — `compaction_attempt_failed_thread`, an ARRAY of 1
+  or 2 thread ids (see "Reconciling with `references/retry-guards.md`'s OWN full escalation
+  topology" above — `[A]` alone when the fresh-B escalation was never reached, `[A, B]` when both
+  threads were abandoned). This is deliberately NOT treated like `kept_last_message_path`'s
+  best-effort convention: since this field is what makes the "never permanently unaccounted-for"
+  guarantee actually true, making it skippable would silently contradict that guarantee the moment
+  in-memory `LEAKED_THREAD_IDS` state is lost — it inherits the SAME mandatory append-verify
+  guarantee as the rest of that round's line.
 - Phase 3 and the final-verdict artifact's own thread enumeration (`references/keep-evidence.md`'s
   retention rules; the `threads[]` array in the durable result artifact) are both extended to union
   in every `compacted_from_thread` and `compaction_attempt_failed_thread` value found anywhere in
@@ -1092,6 +1177,23 @@ failure" step 6 above — never a separate line). **`round_wall_seconds` for a r
 failed compaction attempt covers the WHOLE round timeline** — from immediately before the
 compaction attempt's own dispatch through the fallback dispatch's own completion — consistent with
 its existing definition as coordinator-measured wall time for the entire round, not per-dispatch.
+
+**Applies to a retry-then-succeed round too, not only a round that falls all the way through to the
+fallback (new — closes a real gap found during design review: the coverage and
+`COMPACTION_BASELINE_TOKENS` carry-forward fixes above already establish that an EARLIER failed
+fresh sub-attempt's own data is real and worth keeping even once a LATER retry on the same thread
+succeeds — but this field was specified only for the case where the round's overall outcome is
+itself a failure falling through to step 6, so a retry-then-succeed round's earlier failed
+sub-attempt's own elapsed time, output tokens, and any other non-baseline usage fields were silently
+dropped, understating that successful round's real total cost the same way the original gap did for
+an all-the-way-failed round.)** Fixed: whenever a compaction round's PATH TO SUCCESS included one or
+more earlier failed sub-attempts (thread A's own first response, and/or thread B's, per
+"Reconciling with `references/retry-guards.md`'s OWN full escalation topology" above) that each
+carried an `execution` object, those are ALSO preserved — as `compaction_attempt_execution`, an
+array of one `execution` object per failed sub-attempt, in attempt order — on this SAME successful
+round's own line, alongside `compacted_from_thread` and the snapshot-lineage fields. (On a round
+that instead falls all the way through to the fallback, this field keeps its original single/array
+shape covering whichever sub-attempts failed there.)
 
 **Surfaced in the final report, not just durably logged (new — closes a real gap found during
 design review: an earlier draft made this field durable in the JSONL log but never extended the
@@ -1246,9 +1348,12 @@ shared reducer" above), and `snapshot_digest_before`/`snapshot_digest_after` fie
 candidate lifecycle" above) — each present only on the round(s) they actually apply to (a round can
 carry the `compaction_attempt_*` trio alone, if compaction failed and this round proceeded via the
 fallback `--resume`, with none of the other three fields; or the other three together, on an actual
-compaction restart round; a round could in principle carry both groups, if a first compaction
-attempt failed before a later one in the same round succeeded — not expected in practice since the
-threshold check runs at most once per round, but the schema does not forbid it). A compaction
+compaction restart round; a round now regularly carries BOTH groups together — not merely "in
+principle" — whenever thread A's own sub-attempt failed and a later sub-attempt (a resume retry, or
+thread B, per "Reconciling with `references/retry-guards.md`'s OWN full escalation topology" above)
+succeeded within that SAME round: `compaction_attempt_failed_thread`/`compaction_attempt_execution`/
+`compaction_attempt_coverage` record the earlier failed sub-attempt(s), alongside
+`compacted_from_thread`/the snapshot-lineage fields for the eventual success). A compaction
 restart round's `target.scope` is whatever scope flag was actually used (not `"resume"`) —
 consistent with how round 1 already records its own scope. `finding_id`/`claim_id` numbering
 continues incrementing globally across the compaction boundary — never reset — so the existing
