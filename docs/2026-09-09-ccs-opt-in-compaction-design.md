@@ -293,7 +293,15 @@ re-parse the rendered prose at all.**
      and `severity` is one of the schema's own legal values — but an empty string is a legal value
      for `summary`/`evidence`/`file` under that same schema (confirmed directly: the wrapper's own
      semantic validator checks only JSON type for these three fields, never non-emptiness, unlike
-     `verification`, which it does check for non-emptiness) and is NOT rejected here.** An earlier
+     `verification`, which it does check for non-emptiness) and is NOT rejected here.** **`line` must
+     ALSO be checked here, not just resolved and rendered (new — closes a real gap found during
+     design review: step 2 above already resolves `line` as one of the fields, and step 4's own
+     canonical template renders it, but this completeness check never validated it at all — the
+     actual verdict schema requires `line` and constrains it to either `null` or an integer `>= 1`,
+     so a resolver/transformation bug that drops or corrupts this ONE field would silently pass this
+     check and send an incomplete or malformed digest, undetected.)** Fixed: `line` is additionally
+     checked here — present, and either `null` or an integer `>= 1`, matching the schema's own exact
+     constraint — never merely resolved-and-trusted. An earlier
      revision required non-empty, which would have let one legitimately (if unusually) blank-field
      finding — accepted by the wrapper as schema-valid — permanently fail this check for as long as
      that claim stays open, disabling compaction for the whole rest of that session over a case that
@@ -1999,6 +2007,28 @@ it is an internal sub-step of producing round R's one real outcome. The base ski
 non-compaction failure handling for a REAL group's `ok:false` response remains governed by
 `retry-guards.md`'s existing, unmodified rules. Same category of required change as the
 `schema_version` bump and the other two companion amendments above, not a new one.
+
+**This amendment must ALSO cover a SECOND, separate piece of `retry-guards.md`'s own contract — the
+no-threadId-fresh-retry and fresh-B escalation rules are explicitly scoped to a group's OWN true
+first-ever attempt, "only possible on round 1" — not merely the terminal-outcome substitution just
+described (new — closes a real gap found during design review: a compaction restart's own candidate
+dispatch is STRUCTURALLY always at session round 2 or later — even the earliest possible trigger,
+round 1 itself exceeding threshold per "checking after EVERY completed round including round 1"
+above, produces a COMPACTION round that is itself round 2 — yet the candidate's own bullets 2-4 rely
+directly on `retry-guards.md`'s own "no entry yet → one fresh retry" and "exhausted resumes → one
+fresh fallback" mechanics, which that reference's own literal text scopes to a group's genuine first
+attempt, explicitly calling that "only possible on round 1." The terminal-outcome amendment above
+never addressed this SEPARATE round-1-only scoping restriction at all.)** Fixed: the SAME companion
+amendment additionally clarifies that, for a compaction candidate specifically, `retry-guards.md`'s
+own "no entry yet" / "true first-ever attempt" language is keyed on the CANDIDATE's own independent
+thread-history tracking (see "A candidate's OWN no-threadId-at-all failure needs its own predicate,
+separate from `GROUP_THREADS`" above) — NOT on the session's own round-index, and NOT on
+`GROUP_THREADS` (which keeps meaning the OLD, pre-existing thread throughout a compaction attempt,
+per "Failure isolation from the round loop" above). A compaction candidate is its own independent
+"first attempt" lifecycle for these SPECIFIC mechanics, by construction, REGARDLESS of what round
+number in the session it actually occurs at — the base skill's own ordinary round-1 groups keep
+`retry-guards.md`'s literal round-1 scoping exactly as written; this is a scoped exception for
+compaction candidates only, not a change to what "round 1" means for an ordinary group.
 
 ### Preserving failed-attempt telemetry (new — closes a real cost-accounting gap found during design review)
 
