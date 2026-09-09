@@ -414,10 +414,33 @@ isolation from the round loop" below.
    `.DS_Store` and a worktrees directory. Since Codex's own investigation during a turn can see
    whatever actually sits in its CWD regardless of what git status flags, an ignored-but-present file
    would silently defeat this whole cleanliness guarantee even though the check reports success.)**
-   Fixed: the cleanliness check additionally passes `--ignored=matching` (`git status --short
-   --untracked-files=all --ignored=matching`, same anchored/sanitized invocation) — cleanliness means
-   the directory holds NOTHING beyond its own `.git` metadata, ignored or not, never merely "nothing
-   git would normally flag."
+
+   **`git status`, in ANY combination of flags, can never prove the directory holds nothing —
+   committed content is invisible to it entirely (corrected — closes a real, more fundamental gap
+   found during design review, confirmed live: `git status --short --untracked-files=all
+   --ignored=matching` reports changes RELATIVE TO `HEAD` — it says nothing whatsoever about content
+   that is already fully committed with a clean working tree. Run against an ordinary clean repo with
+   real committed files and a valid `HEAD`, this command produces EXACTLY ZERO bytes of output —
+   confirmed directly — while `git ls-files` and `git rev-parse --verify -q HEAD` both show real,
+   substantial content is present. If `CLEAN_REPO_DIR` ever accumulated an actual commit through any
+   bug or unexpected process, every `git status`-based cleanliness check, however many flags it
+   carries, would report "clean" while real files sit there for Codex's own investigation to find.)**
+   Fixed: replace the `git status`-based check entirely with two direct facts `git status` cannot
+   provide: (1) the directory contains NO entries at all other than `.git` itself (a literal
+   directory listing — e.g. `find "$CLEAN_REPO_DIR" -mindepth 1 -maxdepth 1 ! -name .git`, through the
+   same anchored/sanitized invocation pattern, expected to produce no output), and (2) the repository
+   itself has NEVER been given a commit (`git rev-parse --verify -q HEAD` expected to FAIL/exit
+   nonzero — `CLEAN_REPO_DIR` is never supposed to have a commit at any point in its lifecycle, so a
+   valid `HEAD` existing at all is itself conclusive proof of unexpected pollution, regardless of
+   what any file-level check shows). Cleanliness means BOTH checks pass — a bare, freshly-`git init`'d
+   directory with no files and no commits — never inferred from the absence of DIFFS. **A residual,
+   disclosed risk this does not close: `references/snapshot-integrity.md`'s own
+   `scripts/lib/git-safe.sh` sanitization (e.g. neutralizing a repo-local `core.fsmonitor` hook that
+   could otherwise execute a command) protects the WRAPPER's own git invocations specifically — it
+   says nothing about whatever Codex itself might independently choose to read or execute from
+   `.git/config` during its own investigation of this same CWD. Hardening Codex's own sandboxed
+   behavior against a hypothetically malicious `.git` directory is a base-sandbox-model concern well
+   beyond this design's own scope — disclosed, not solved, here.**
 
    **Corrects a false claim made while fixing this: there is no "original round-1 creation-time
    check" for this addition to also apply to (new — closes a real gap found during design review: an
@@ -428,7 +451,7 @@ isolation from the round loop" below.
    directly; it never runs ANY cleanliness check of its own, at creation time or otherwise. The
    phrasing this fix's own OPENING sentence used — "re-run the same cleanliness check `CLEAN_REPO_DIR`
    was created to satisfy" — repeated the identical false premise.)** Corrected: this compaction-owned
-   recheck (and its own `--ignored=matching` extension) is the ONLY point at which `CLEAN_REPO_DIR`'s
+   recheck (in its current, fully-corrected form above) is the ONLY point at which `CLEAN_REPO_DIR`'s
    cleanliness is EVER verified in this whole mechanism — starting from the FIRST compaction attempt
    onward. Round 1's own very first artifact dispatch against `CLEAN_REPO_DIR`, and any session that
    never triggers compaction at all, remain fully exposed to exactly this same pollution risk with NO
@@ -1616,10 +1639,17 @@ isolation from the round loop" below.
         what the session ultimately reviews. A failed COMPACTION attempt's fallback explicitly does
         NOT do this — it abandons the candidate thread and diff entirely, falling back to a
         DIFFERENT thread reviewing DIFFERENT (older) content.** Fixed: `compaction_attempt_coverage`
-        is still recorded on the round's own JSONL line whenever a real wrapper dispatch was
-        attempted and returned `ok:false` — `coverage.source` when present, or the `"unknown"`
-        sentinel when absent, exactly as before — but purely as a durable, best-effort AUDIT record
-        of what that abandoned attempt's own collection situation was. **It is explicitly EXCLUDED
+        is still recorded on the round's own JSONL line whenever a real FRESH `--uncommitted` wrapper
+        dispatch specifically was attempted and returned `ok:false` — `coverage.source` when present,
+        or the `"unknown"` sentinel when absent, exactly as before — but purely as a durable,
+        best-effort AUDIT record of what that abandoned attempt's own collection situation was. **This
+        is scoped to a failed FRESH `--uncommitted` dispatch alone — never a failed `--resume` call
+        within the same round's own retry machinery, which never carries coverage at all and
+        correctly gets no entry here regardless of the round's overall scope (see "Scoped to a failed
+        FRESH `--uncommitted` dispatch specifically, never a failed `--resume` call" in the
+        append-verify section below for the full reasoning — an earlier revision here left this
+        broader "whenever a real wrapper dispatch was attempted" phrasing unqualified, contradicting
+        that later, more precise scoping).** It is explicitly EXCLUDED
         from the shared reducer's convergence-gating computation** — the CLEAN gate, continuity
         recovery, and the final artifact's own `coverage` field all consider ONLY successful fresh
         `--uncommitted` dispatches' coverage (round 1, or a compaction restart that actually
@@ -1749,24 +1779,42 @@ itself a failure falling through to step 6, so a retry-then-succeed round's earl
 sub-attempt's own elapsed time, output tokens, and any other non-baseline usage fields were silently
 dropped, understating that successful round's real total cost the same way the original gap did for
 an all-the-way-failed round.)** Fixed: whenever a compaction round's PATH TO SUCCESS included one or
-more earlier failed sub-attempts (thread A's own first response, and/or thread B's, per
-"Reconciling with `references/retry-guards.md`'s OWN full escalation topology" above) that each
-carried an `execution` object, those are ALSO preserved — as `compaction_attempt_execution`, the
-SAME always-an-array shape established above, one entry per failed sub-attempt, in attempt order —
-on this SAME successful round's own line, alongside `compacted_from_thread` and the snapshot-lineage
-fields. (On a round that instead falls all the way through to the fallback, this field is populated
-the identical way, covering whichever sub-attempts failed there — one shape, used uniformly on
-every round that has anything to record in it.)
+more earlier failed sub-attempts that each carried an `execution` object, those are ALSO preserved —
+as `compaction_attempt_execution`, the SAME always-an-array shape established above, one entry per
+failed sub-attempt, in attempt order — on this SAME successful round's own line, alongside
+`compacted_from_thread` and the snapshot-lineage fields. **Concretely, exactly two sub-cases can
+produce this, never a "B retries" case (corrected — closes a real gap found during design review: an
+earlier revision said this could include "thread A's own first response, and/or thread B's" — but
+per "Thread B's own single dispatch gets NONE of bullets 1-3's retry machinery" above, B is single-
+shot by construction: it either succeeds on its one attempt or is immediately exhausted, so there is
+no possible "B's own first response failed, then B itself went on to succeed" scenario for this
+field to preserve telemetry from.)**: (a) candidate A's own retry-then-succeed (A's first response
+failed, A itself — the SAME thread — succeeded on a later resume retry), or (b) candidate A was
+exhausted entirely (its own failed attempt(s), possibly several across bullets 1-3) and thread B then
+succeeded on its own single, unretried attempt — in case (b), the preserved `execution` entries
+belong to A's own failed attempt(s), never to B (B's own successful attempt has no failed response of
+its own to preserve). (On a round that instead falls all the way through to the fallback, this field
+is populated the identical way, covering whichever sub-attempts failed there — one shape, used
+uniformly on every round that has anything to record in it.)
 
 **Surfaced in the final report, not just durably logged (new — closes a real gap found during
 design review: an earlier draft made this field durable in the JSONL log but never extended the
 Final Report's own execution-telemetry bullet to actually mention it, silently omitting a failed
 attempt's real cost from the user-facing accounting the design otherwise claims to preserve).** The
 Final Report's existing execution-telemetry section is extended to also list, for any round that
-carries a `compaction_attempt_execution` value, a clearly labeled separate line — e.g. "Round R also
-attempted a compaction restart that failed after using `<input>`/`<output>` tokens (`<elapsed>`s)
-before falling back" — distinct from that round's own real (fallback) `execution`/`usage` reporting,
-never merged into it.
+carries a `compaction_attempt_execution` value, a clearly labeled separate line — distinct from that
+round's own real `execution`/`usage` reporting, never merged into it. **The wording must branch on
+this round's own real outcome, never assume "before falling back" unconditionally (corrected — closes
+a real gap found during design review: an earlier revision's example line — "Round R also attempted a
+compaction restart that failed after using `<input>`/`<output>` tokens (`<elapsed>`s) before falling
+back" — hardcoded a fallback outcome, but per "Applies to a retry-then-succeed round too" above, this
+same field also appears on a round whose real outcome is SUCCESS, where nothing ever "fell back" at
+all.)**: for a round whose real outcome is the fallback, "Round R also attempted a compaction restart
+that failed after using `<input>`/`<output>` tokens (`<elapsed>`s) before falling back"; for a round
+whose real outcome is a success (candidate A's own retry-then-succeed, or A exhausted then B
+succeeded), "Round R's compaction restart succeeded after an earlier attempt used
+`<input>`/`<output>` tokens (`<elapsed>`s)" — in both cases reporting each preserved sub-attempt's own
+figures, never conflated with the round's own real dispatch numbers.
 
 ### A failed compaction attempt is a superseded attempt, not a novel evidence-lifecycle case (new — closes a real gap found during design review)
 
