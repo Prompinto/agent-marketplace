@@ -495,15 +495,43 @@ isolation from the round loop" below.
    --git-dir` AND `git rev-parse --git-common-dir`, each resolved to its own canonical absolute path,
    must BOTH equal `CLEAN_REPO_DIR/.git`'s own canonical absolute path — verifying the actual GIT-LEVEL
    fact that matters (no metadata is borrowed from anywhere, by any mechanism) rather than continuing
-   to enumerate every possible filesystem-level trick that could produce that same effect. The
-   ordinary-directory/non-symlink check above is kept as a cheap, redundant first-line filter, but this
-   git-dir/common-dir identity check is the check that actually closes the class of gap, regardless of
-   how a future indirection mechanism might be implemented. Cleanliness means ALL SEVEN checks
+   to enumerate every possible filesystem-level trick that could produce that same effect.
+
+   **This claim of "closes the class of gap... by any mechanism" was itself proven wrong one round
+   later — `git-dir`/`common-dir` identity says nothing about OBJECT borrowing, a THIRD, independent
+   indirection mechanism (new — closes a real gap found during design review, confirmed live: per
+   git's own `gitrepository-layout(5)` documentation, an `objects/info/alternates` file — nested
+   INSIDE the already-permitted `.git` directory, at `.git/objects/info/alternates` — lets git borrow
+   OBJECTS from a listed external repository's own object store, entirely independent of `--git-dir`/
+   `--git-common-dir`, which stay pointed at the local `.git` throughout. Reproduced directly: with
+   such a file present, ALL SEVEN checks above still pass (empty entry listing, correct
+   `is-inside-work-tree`, correct own toplevel, correct `git-dir`/`common-dir` identity, unborn `HEAD`)
+   while `git cat-file -p` successfully reads real content from the FOREIGN repository's own object
+   store.)** Fixed: an eighth check — `.git/objects/info/alternates` (relative to the local `.git`
+   directory just confirmed above) must NOT exist (or, if present, must be empty) — closing this
+   specific, now-confirmed mechanism the same way every other confirmed one in this section has been
+   closed.
+
+   **A candid scope statement, after three consecutive rounds each surfacing a DIFFERENT git
+   indirection mechanism (gitfile/symlink, `commondir`, now `alternates`): this checklist-based
+   approach cannot claim to be an EXHAUSTIVE, adversarially-hardened defense against every conceivable
+   git extension point (hooks, submodules, custom refs, sparse-checkout redirection, and others not
+   yet enumerated here could each be its own future mechanism) — closing each CONFIRMED gap as it is
+   found is the practical, honest bar this design holds itself to, not a claim that no further
+   mechanism could ever exist.** This is a defensible scope, not merely a shortcut: `CLEAN_REPO_DIR`
+   is created once by this skill's own trusted Phase 0 setup, and these checks exist to catch
+   UNEXPECTED, ACCIDENTAL drift (a stray file, an unrelated bug elsewhere touching the path) — not to
+   defend against a sophisticated, deliberately adversarial actor with enough local write access to
+   plant a crafted `.git` directory in the first place, since that same actor would already have
+   comparable access to sabotage the session through many OTHER paths this design has no power to
+   close either (this matches the same trust boundary `references/git-safe.sh`'s own documented
+   non-goals already draw elsewhere in this codebase). Cleanliness means ALL EIGHT checks
    pass — a bare, freshly-`git init`'d, genuinely-independent, non-symlinked, self-contained git repo
-   directory with no files, no commits, and no borrowed metadata of any kind — never inferred from the
-   absence of DIFFS, never from a `git rev-parse` failure whose EXACT cause was never actually
-   confirmed, never from mere membership in SOME working tree, and never from filesystem-level identity
-   checks alone without confirming the git metadata itself is genuinely local. **A
+   directory with no files, no commits, no borrowed metadata, and no borrowed objects — never inferred
+   from the absence of DIFFS, never from a `git rev-parse` failure whose EXACT cause was never actually
+   confirmed, never from mere membership in SOME working tree, and never from filesystem-level or
+   git-dir/common-dir identity checks alone without also confirming no object-level borrowing is
+   configured. **A
    residual, disclosed risk this does not close: `references/snapshot-integrity.md`'s own
    `scripts/lib/git-safe.sh` sanitization (e.g. neutralizing a repo-local `core.fsmonitor` hook that
    could otherwise execute a command) protects the WRAPPER's own git invocations specifically — it
@@ -512,18 +540,18 @@ isolation from the round loop" below.
    behavior against a hypothetically malicious `.git` directory is a base-sandbox-model concern well
    beyond this design's own scope — disclosed, not solved, here.**
 
-   **A second residual, disclosed risk: a check-then-use race remains between these seven checks
+   **A second residual, disclosed risk: a check-then-use race remains between these eight checks
    completing and the wrapper's own LATER, separate use of the same `$CWD` pathname (new — closes a
    real gap found during design review: these checks all resolve the pathname locally, then dispatch
    happens afterward — the wrapper itself independently re-resolves `$CWD` twice more, once for its
    own `git -C "$CWD"` calls and once for its `cd "$CWD"` launch step. If `CLEAN_REPO_DIR` were
    replaced or swapped for a symlink in the narrow window between these checks finishing and either of
-   those later resolutions, none of the seven checks would have observed it.)** This is inherent to any
+   those later resolutions, none of the eight checks would have observed it.)** This is inherent to any
    "verify a pathname locally, then hand it to a separately-invoked process" pattern and cannot be
    fully closed without a mechanism this design does not have available (e.g. resolving to a file
    descriptor and passing THAT to the wrapper, rather than a re-resolvable pathname — a change to the
    wrapper's own invocation contract, out of scope here). Accepted as a narrow, low-probability,
-   disclosed residual window — the seven checks close every gap that persists BETWEEN separate,
+   disclosed residual window — the eight checks close every gap that persists BETWEEN separate,
    independent uses of the same session-lived pathname (the realistic threat this design addresses),
    not a race against a change happening in the same instant as dispatch itself.
 
@@ -545,7 +573,7 @@ isolation from the round loop" below.
    would mean adding a new check to the base skill's own Phase 0/Phase 1 setup, which this document
    does not own).
 
-   If any of the seven checks is not clean, this is
+   If any of the eight checks is not clean, this is
    treated exactly like any other compaction failure (log the narration, fall through to the normal
    `--resume` fallback) — never dispatch against a `CLEAN_REPO_DIR` whose emptiness wasn't just
    reconfirmed. Only once this check passes does the `--uncommitted` dispatch against `CLEAN_REPO_DIR`
@@ -1996,6 +2024,22 @@ unavailable) (`<elapsed>`s) before falling back." This one rule uniformly covers
 usage (both values reported), partial usage (one reported, one marked unavailable), and no usage at
 all (both marked unavailable, collapsing to the simpler "usage unavailable" wording as a natural
 special case rather than a separately-maintained one).
+
+**"Present" must mean "present AND valid," reusing the EXISTING malformed-usage validation, never a
+bare key-existence check (new — closes a real gap found during design review, confirmed live: this
+design already established, for `COMPACTION_BASELINE_TOKENS`, that `input_tokens` can be present but
+UNUSABLE — a string, `null`, negative, or otherwise non-integer value, per "Handling missing OR
+malformed usage data" above — and the wrapper preserves such a value completely unvalidated,
+confirmed directly: a `turn.completed` event carrying `{"input_tokens":"not-a-number",
+"output_tokens":null}` is retained byte-for-byte. The rule just fixed only checked whether each KEY
+exists in the object, so it would render these malformed values LITERALLY — "not-a-number input
+tokens," "null output tokens" — as if they were usable counts, precisely the failure mode the
+existing validation elsewhere in this design exists to prevent.)** Fixed: apply the SAME existing
+non-negative-integer validation this design already uses for `COMPACTION_BASELINE_TOKENS` to each
+token value independently here too — a present key whose value fails that validation is treated
+IDENTICALLY to an absent key (its own "unavailable" wording), never rendered as a literal malformed
+value. One validation rule, reused everywhere a preserved token value is ever reported or acted on,
+never a second, looser one invented just for this report line.
 
 ### A failed compaction attempt is a superseded attempt, not a novel evidence-lifecycle case (new — closes a real gap found during design review)
 
