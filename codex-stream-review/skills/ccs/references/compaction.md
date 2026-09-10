@@ -353,7 +353,7 @@ nothing to reconcile and this step simply runs first as originally stated.
 ### Step 1 — build and verify `COMPACT_DIGEST`
 
 Build `COMPACT_DIGEST` via the structured-data-first construction in "Digest construction and
-verification" above; abort to the normal `--resume` fallback (step 6 below) immediately if its
+verification" above; abort to the normal `--resume` fallback (see "On failure" below) immediately if its
 own structural verification fails.
 
 ### Step 2 — non-repo-artifact sessions are a SEPARATE case, handled BEFORE the scope branches below
@@ -455,7 +455,7 @@ this feature to close (doing so would mean adding a new check to the base skill'
 Phase 1 setup, which this file does not own).
 
 If any of the eight checks is not clean, this is treated exactly like any other compaction
-failure (log the narration, fall through to the normal `--resume` fallback in step 6 below) —
+failure (log the narration, fall through to the normal `--resume` fallback in "On failure" below) —
 never dispatch against a `CLEAN_REPO_DIR` whose emptiness wasn't just reconfirmed. Only once this
 check passes does the `--uncommitted` dispatch against `CLEAN_REPO_DIR` proceed, producing an
 empty diff as designed, with the wrapper's own no-diff branch falling back to reviewing the focus
@@ -464,7 +464,7 @@ text — now containing both the artifact and the digest.
 **This recheck runs before EVERY separate fresh dispatch for a non-repo-artifact session** — the
 original attempt, the no-threadId fresh retry (see "Retry topology" below), and thread B's own
 fresh dispatch alike — never assumed still valid from an earlier check moments or minutes in the
-past. **Also required immediately before the step-6 fallback dispatch**, whenever this session is
+past. **Also required immediately before the "On failure" fallback dispatch**, whenever this session is
 non-repo-artifact: if it fails there, this is logged as a disclosed risk, never a hard stop, since
 the fallback is this round's own real, required outcome with no further fallback beneath it.
 Ordinary, non-compaction `--resume` rounds sharing this identical base-skill property (no round
@@ -473,12 +473,12 @@ an inherited, pre-existing limitation this feature does not newly introduce.
 
 **Fail CLOSED wherever a real alternative still exists.** Candidate A's own resume-retries and
 the bullet-3 same-thread retry (see "Retry topology" below) treat a failed recheck exactly like
-any other compaction failure — abandon this compaction attempt, fall through to step 6's
+any other compaction failure — abandon this compaction attempt, fall through to the "On failure"
 fallback, never dispatch into a KNOWN-polluted directory. This abandonment unconditionally adds
 A's own already-known thread id to `LEAKED_THREAD_IDS`/`compaction_attempt_failed_thread` before
 falling through — this is a LOCAL, pre-dispatch check failure, never a wrapper response, so the
 abandonment is entirely local knowledge, nothing to discover from a response. The "log and
-continue, disclosed risk" treatment is reserved ONLY for the step-6 fallback dispatch itself and
+continue, disclosed risk" treatment is reserved ONLY for the "On failure" fallback dispatch itself and
 any retry OF that fallback — the true last resort, genuinely having nowhere further to fall back
 to. The ORIGINAL fresh dispatches (candidate A's first attempt, the no-threadId retry, thread B)
 keep their existing hard "fall through to the normal compaction failure path" behavior when this
@@ -569,7 +569,7 @@ compaction inherits this exact property unchanged.
 - **Ownership, for `--uncommitted`/`--base` (where a real candidate exists):** the candidate file
   is a NEW, separate temp file — the ACTIVE (old) `SNAPSHOT_FILE`/`SNAPSHOT_DIGEST` used for
   round-2+ revalidation is left completely untouched while the candidate merely sits on disk. On
-  compaction failure (step 6 below): delete the candidate file immediately (it was never used for
+  compaction failure (see "On failure" below): delete the candidate file immediately (it was never used for
   anything) and continue revalidating rounds against the untouched original active snapshot.
 - **Collection/hash failure itself.** Mirrors `references/snapshot-integrity.md`'s own Phase 0
   step 5 / Phase 1 post-sizing allocation, which already checks every collection command's own
@@ -577,7 +577,7 @@ compaction inherits this exact property unchanged.
   diff`/`shasum` collection fails, or the resulting digest fails the 64-hex-character validation,
   this is treated exactly like any other compaction failure — delete whatever partial candidate
   file may exist (on a failed deletion here, add its path to `RETIRED_SNAPSHOT_FILES` — see
-  "Retired-snapshot tracking" below), log the narration note, and go straight to step 6's normal
+  "Retired-snapshot tracking" below), log the narration note, and go straight to the "On failure" section's normal
   `--resume` fallback. No dispatch is even attempted with an uncollectible candidate.
 - **Concrete provisional-resource tracking.** A new session-scoped fact,
   `PROVISIONAL_SNAPSHOT_FILE` (analogous to `LEAKED_THREAD_IDS`), is set the moment a candidate
@@ -796,7 +796,7 @@ meaning "the old thread" throughout, per "Failure isolation from the round loop"
 B's own, deliberately simpler treatment is Task 12.
 
 1. **`artifact_too_large` first, regardless of threadId presence:** never retried. This candidate
-   attempt is immediately exhausted — fall straight through to step 6's fallback (this design's
+   attempt is immediately exhausted — fall straight through to the "On failure" fallback (this design's
    own failure-isolation principle means this is never surfaced as its own distinct outcome,
    unlike the base skill's `🛑 INPUT TOO LARGE` for an ordinary round).
 2. **Else, if THIS SPECIFIC response captured no threadId AND the current candidate has NEVER
@@ -836,8 +836,8 @@ B's own, deliberately simpler treatment is Task 12.
    before failing]). If this retry's own response DID capture a threadId, add it to
    `LEAKED_THREAD_IDS`/`compaction_attempt_failed_thread` exactly like any other abandoned
    thread; only when this retry's response ALSO captured no threadId is there genuinely nothing
-   to add. Delete this retry's own candidate too, when one exists. Fall straight through to step
-   6's fallback. **The fresh-B escalation (Task 12) is never reached from this bullet**,
+   to add. Delete this retry's own candidate too, when one exists. Fall straight through to the
+   "On failure" fallback. **The fresh-B escalation (Task 12) is never reached from this bullet**,
    regardless of what the retry's own second failure looks like.
 3. **Else (a threadId WAS captured for the current candidate, either by this response or an
    earlier one in the same sequence): if THIS specific response itself lacks a threadId despite
@@ -850,7 +850,7 @@ B's own, deliberately simpler treatment is Task 12.
    reason: exhausted. **Always record the ALREADY-KNOWN thread id on exhaustion here** — this
    bullet's own precondition guarantees one exists, unlike bullet 2's genuinely-uncertain case —
    add it to `LEAKED_THREAD_IDS`/`compaction_attempt_failed_thread` unconditionally, then fall
-   straight through to step 6's fallback (never `⚠️ COULD NOT VERIFY`, per this design's own
+   straight through to the "On failure" fallback (never `⚠️ COULD NOT VERIFY`, per this design's own
    failure-isolation principle — see below). Only if this one retry SUCCEEDS does the candidate
    continue as this round's own live, active attempt, exactly as if no no-ID hiccup had ever
    occurred.
@@ -863,7 +863,7 @@ B's own, deliberately simpler treatment is Task 12.
 The fresh-B escalation is reached ONLY via bullet 4's own ordinary path — a genuinely NEW
 resume-safe failure that carries a threadId on its OWN first occurrence for this candidate (never
 via a no-ID recovery scenario per bullet 3) — never via bullet 1 or bullet 2's own exhaustion
-either, both of which fall straight to step 6's fallback without ever creating a second candidate
+either, both of which fall straight to the "On failure" fallback without ever creating a second candidate
 thread.
 
 **Thread B's OWN dispatch reconstructs the COMPLETE compaction focus text, identically to
@@ -888,7 +888,7 @@ exhaustion, with no retry of B, no no-threadId recovery attempt for B, and absol
 escalation to a third candidate/thread. If B's own failed response captured a threadId, add it to
 `LEAKED_THREAD_IDS`/`compaction_attempt_failed_thread` (alongside A's own); if not, there is
 genuinely nothing further to add for B. Delete B's own candidate, when one exists. Fall straight
-through to step 6's fallback.
+through to the "On failure" fallback.
 
 `compaction_attempt_failed_thread` becomes an ARRAY of 1 or 2 thread ids — just `[A]` when B was
 never reached, `[A, B]` when both were abandoned — rather than a single value; every consumer of
