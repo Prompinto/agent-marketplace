@@ -488,6 +488,33 @@ recheck fails.
 `references/non-repo-artifact.md`), so this recheck never interacts with any group-count merge
 logic.
 
+### Step 3 — repo-diff sessions: snapshot candidate lifecycle
+
+Re-collection handling depends on round 1's original scope, as before.
+
+**Disclosed limitation, inherited from round 1's own identical property, not new to
+compaction.** The candidate below is collected and hashed by Claude's OWN local git invocation,
+BEFORE the wrapper is ever dispatched; the wrapper then independently re-collects its own
+`DIFF_TEXT` internally, at its own later moment, since it accepts no snapshot/payload argument at
+all — if the source changes in that gap, the candidate Claude hashed and the content the fresh
+thread actually reviewed can diverge, and every later verification of the candidate (including
+the live pre-promotion checks in "Ordering on success" below) only proves the candidate itself
+wasn't corrupted AFTER Claude collected it, never that it equals what the dispatch truly
+reviewed. This is especially pronounced for untracked files, whose CONTENT is collected by the
+wrapper but whose entry in this design's own snapshot may only track their names. This is the
+SAME accepted non-goal `references/snapshot-integrity.md` already documents for round 1's own
+original collect-then-dispatch gap ("not a defense against a deliberately changed source") —
+compaction inherits this exact property unchanged.
+
+- **`--uncommitted`:** re-collect the diff into a NEW candidate `SNAPSHOT_FILE`, hash it into a
+  candidate `SNAPSHOT_DIGEST` (same mechanism as `references/snapshot-integrity.md`'s own Phase 0
+  step 5 / Phase 1 post-sizing allocation) — the working tree may genuinely have changed since
+  round 1, so this is the one case re-collection is meaningful for.
+- **`--base <ref>`:** re-collect `${ref}...HEAD` again into a new candidate the same way — this
+  DOES pick up any new commits landed on `HEAD` since round 1, but does **not** reflect
+  uncommitted working-tree changes (disclosed limitation: a fix applied but not yet committed
+  will not appear in this re-collection).
+
 ## Scope (v1)
 
 - **Single-reviewer only (`GROUP="main"`).** Parallel mode is explicitly out of scope for v1 —
