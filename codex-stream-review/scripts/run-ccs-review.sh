@@ -496,23 +496,37 @@ while [ $# -gt 0 ]; do
       # Public, opt-in flag (documented in SKILL.md): the local path Claude itself created via
       # `mktemp` (RECEIPT_SCHEDULE_FILE) holding this thread's private REVIEW_RECEIPT_SCHEDULE
       # mapping. build_review_prompt() `cat`s this file's content directly into the most-trusted,
-      # final position of the prompt, outside every <$BOUNDARY> pair -- so validate its CONTENT
-      # SHAPE here (not just presence), the same "fail closed wherever a real alternative exists"
-      # precedent as --resume/--cleanup's own leading-dash rejection: a wrong path (typo, stale
-      # value, a future caller's mistake) must never get its content silently emitted into the
-      # trusted zone unchecked. A real schedule file's first line is always the literal
-      # `REVIEW_RECEIPT_SCHEDULE` header the generation snippet itself writes -- this is a cheap
-      # content-shape check, not full cryptographic proof, but it catches an arbitrary unrelated
-      # file (this codebase's own tests confirm SKILL.md itself, or any plain text file, obviously
-      # doesn't start with that exact header line).
+      # final position of the prompt, outside every <$BOUNDARY> pair -- so validate its FULL SHAPE
+      # here (not just presence, and not just line 1 -- a header-only prefix followed by arbitrary
+      # content would otherwise still pass and get fully emitted into that trusted zone), the same
+      # "fail closed wherever a real alternative exists" precedent as --resume/--cleanup's own
+      # leading-dash rejection. `-f` (regular file only) runs BEFORE any read -- a directory is
+      # "readable" too, and reading one produces a raw non-JSON diagnostic on stderr ahead of any
+      # bad_args JSON (the same class of stray-output defect --receipt-slot's own overflow guard
+      # exists to prevent); a FIFO could also block this parser indefinitely. A genuinely-generated
+      # schedule file always has EXACTLY 71 lines: line 1 the literal header, lines 2-71 each an
+      # `<N>: <24 lowercase hex chars>` entry -- this is a cheap content-shape check, not
+      # cryptographic proof, but it catches both an arbitrary unrelated file and a header-only
+      # prefix with junk appended after it.
       [ $# -ge 2 ] || { printf '{"ok":false,"reason":"bad_args","detail":"--receipt-schedule-file requires a value"}\n'; exit 1; }
-      if [ ! -r "$2" ]; then
-        DETAIL_JSON="$(printf '%s' "$2" | jq -Rs '"--receipt-schedule-file does not exist or is not readable: " + .')"
+      if [ ! -f "$2" ]; then
+        DETAIL_JSON="$(printf '%s' "$2" | jq -Rs '"--receipt-schedule-file is not a regular file: " + .')"
         printf '{"ok":false,"reason":"bad_args","detail":%s}\n' "$DETAIL_JSON"
         exit 1
       fi
-      if [ "$(head -n 1 -- "$2")" != "REVIEW_RECEIPT_SCHEDULE" ]; then
-        DETAIL_JSON="$(printf '%s' "$2" | jq -Rs '"--receipt-schedule-file does not start with the REVIEW_RECEIPT_SCHEDULE header: " + .')"
+      if [ ! -r "$2" ]; then
+        DETAIL_JSON="$(printf '%s' "$2" | jq -Rs '"--receipt-schedule-file is not readable: " + .')"
+        printf '{"ok":false,"reason":"bad_args","detail":%s}\n' "$DETAIL_JSON"
+        exit 1
+      fi
+      RECEIPT_SCHEDULE_SHAPE_OK=1
+      [ "$(wc -l < "$2" | tr -d ' ')" = "71" ] || RECEIPT_SCHEDULE_SHAPE_OK=0
+      [ "$(head -n 1 -- "$2")" = "REVIEW_RECEIPT_SCHEDULE" ] || RECEIPT_SCHEDULE_SHAPE_OK=0
+      if [ "$RECEIPT_SCHEDULE_SHAPE_OK" -eq 1 ]; then
+        [ "$(tail -n +2 -- "$2" | grep -cE '^[0-9]+: [0-9a-f]{24}$')" = "70" ] || RECEIPT_SCHEDULE_SHAPE_OK=0
+      fi
+      if [ "$RECEIPT_SCHEDULE_SHAPE_OK" -ne 1 ]; then
+        DETAIL_JSON="$(printf '%s' "$2" | jq -Rs '"--receipt-schedule-file does not match the expected 71-line REVIEW_RECEIPT_SCHEDULE shape: " + .')"
         printf '{"ok":false,"reason":"bad_args","detail":%s}\n' "$DETAIL_JSON"
         exit 1
       fi

@@ -455,11 +455,22 @@ else
 fi
 unset FAKE_CODEX_SCENARIO
 
-# --- --receipt-schedule-file: content-shape validation, then a real accepted
-# dispatch. build_review_prompt() cats this file's content straight into the
-# prompt's trusted zone, so the parser must reject anything that isn't
-# actually a generated schedule (missing file, or present but missing the
-# literal REVIEW_RECEIPT_SCHEDULE header line) before it ever gets there.
+# --- --receipt-schedule-file: full-shape content validation, then a real
+# accepted dispatch. build_review_prompt() cats this file's content straight
+# into the prompt's trusted zone, so the parser must reject anything that
+# isn't actually a generated schedule -- missing file, not a regular file, or
+# present but not shaped as exactly a REVIEW_RECEIPT_SCHEDULE header followed
+# by 70 well-formed `<N>: <24 hex chars>` entries -- before it ever gets there.
+gen_valid_schedule_file() {
+  {
+    echo "REVIEW_RECEIPT_SCHEDULE"
+    local i
+    for i in $(seq 1 70); do
+      printf '%d: %024x\n' "$i" "$i"
+    done
+  } > "$1"
+}
+
 OUT="$(pd_run fresh --receipt-schedule-file "/tmp/ccs-test-nonexistent-schedule-$$")"
 if printf '%s' "$OUT" | jq -e '.reason == "bad_args"' >/dev/null 2>&1; then
   pass "--receipt-schedule-file nonexistent path rejected as bad_args"
@@ -477,14 +488,42 @@ else
 fi
 rm -f "$WRONG_SCHEDULE_FILE"
 
+# A correct header line followed by arbitrary junk (not 70 well-formed
+# entries) must still be rejected -- the check must inspect the WHOLE file,
+# not bail out after line 1.
+BYPASS_SCHEDULE_FILE="$(mktemp)"
+{ echo "REVIEW_RECEIPT_SCHEDULE"; echo "not a real entry"; } > "$BYPASS_SCHEDULE_FILE"
+OUT="$(pd_run fresh --receipt-schedule-file "$BYPASS_SCHEDULE_FILE")"
+if printf '%s' "$OUT" | jq -e '.reason == "bad_args"' >/dev/null 2>&1; then
+  pass "--receipt-schedule-file with a correct header but malformed/wrong-count entries rejected as bad_args"
+else
+  fail "--receipt-schedule-file with a correct header but malformed entries should be rejected, got: $OUT"
+fi
+rm -f "$BYPASS_SCHEDULE_FILE"
+
+# A directory is "readable" too -- the regular-file check must reject it
+# BEFORE any read is attempted, so no raw command diagnostic (e.g. from
+# `head`/`wc`/`grep` failing to read a directory) ever reaches stderr ahead
+# of the clean bad_args JSON. Checked directly against stderr, not just OUT
+# (which already merges both streams) -- same verification style as Task 4's
+# own --receipt-slot overflow fixture.
+STDERR_CAPTURE="$(mktemp)"
+DIR_OUT="$(printf '%s' x | PATH="$FAKE_BIN_DIR:$PATH" HOME="$FAKE_HOME" "$WRAPPER" --cwd "$PD_REPO" --uncommitted --receipt-schedule-file /tmp 2>"$STDERR_CAPTURE")"
+if printf '%s' "$DIR_OUT" | jq -e '.reason == "bad_args"' >/dev/null 2>&1 && [ ! -s "$STDERR_CAPTURE" ]; then
+  pass "--receipt-schedule-file pointed at a directory rejected as bad_args, no stray stderr line ahead of it"
+else
+  fail "--receipt-schedule-file pointed at a directory should be rejected cleanly, got stdout: $DIR_OUT / stderr: $(cat "$STDERR_CAPTURE")"
+fi
+rm -f "$STDERR_CAPTURE"
+
 VALID_SCHEDULE_FILE="$(mktemp)"
-printf 'REVIEW_RECEIPT_SCHEDULE\n1: abc123\n' > "$VALID_SCHEDULE_FILE"
+gen_valid_schedule_file "$VALID_SCHEDULE_FILE"
 export FAKE_CODEX_SCENARIO=normal
 OUT="$(pd_run fresh --receipt-schedule-file "$VALID_SCHEDULE_FILE")"
 if printf '%s' "$OUT" | tail -1 | jq -e '.ok == true' >/dev/null 2>&1; then
-  pass "--receipt-schedule-file with a valid header accepted, dispatch succeeds"
+  pass "--receipt-schedule-file with a genuine 71-line shape accepted, dispatch succeeds"
 else
-  fail "--receipt-schedule-file with a valid header should be accepted, got: $OUT"
+  fail "--receipt-schedule-file with a genuine 71-line shape should be accepted, got: $OUT"
 fi
 unset FAKE_CODEX_SCENARIO
 rm -f "$VALID_SCHEDULE_FILE"
