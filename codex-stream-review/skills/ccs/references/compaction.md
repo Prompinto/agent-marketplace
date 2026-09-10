@@ -1227,6 +1227,140 @@ too, rather than leaving compaction as the one mechanism relying on memory alone
   addition to whatever `GROUP_THREADS`/`LEAKED_THREAD_IDS` memory currently holds (see Task 21
   for the exact `SKILL.md` edit).
 
+## Preserving failed-attempt telemetry
+
+Several `ok:false` reasons (`timeout`, `nonzero_exit`, `missing_task_complete`, `invalid_json`,
+and others) still launch `codex exec` and so still carry a genuine `execution` object (elapsed
+time, and usage when available) even on failure. Fixed: when a failed compaction attempt's own
+response carries an `execution` object, it is preserved on round R's own JSONL line (alongside
+`compaction_attempt_failed_thread`, per "On failure" above — never a separate line) as
+`compaction_attempt_execution` — **always an array, one `execution` object per failed sub-attempt
+that carried one, in attempt order, even when there is only ever a single entry** — there is
+exactly ONE shape, always, never varying by how many sub-attempts actually occurred.
+`round_wall_seconds` for a round that included a failed compaction attempt covers the WHOLE round
+timeline — from immediately before the compaction attempt's own dispatch through the fallback
+dispatch's own completion — consistent with its existing definition as coordinator-measured wall
+time for the entire round, not per-dispatch.
+
+**Applies to a retry-then-succeed round too, not only a round that falls all the way through to
+the fallback.** Whenever a compaction round's PATH TO SUCCESS included one or more earlier failed
+sub-attempts that each carried an `execution` object, those are ALSO preserved — as
+`compaction_attempt_execution`, the SAME always-an-array shape — on this SAME successful round's
+own line, alongside `compacted_from_thread` and the snapshot-lineage fields. Exactly the THREE
+sub-cases from "Retry topology" above can produce this (never a "B retries" case, since B is
+single-shot by construction): (a) candidate A's own retry-then-succeed via `--resume`; (b)
+candidate A's own bullet-2 no-threadId fresh retry succeeding; or (c) candidate A was exhausted
+entirely and thread B then succeeded on its own single, unretried attempt — in case (c)
+specifically, the preserved `execution` entries belong to A's own failed attempt(s), never to B.
+
+**Surfaced in the final report, not just durably logged.** The Final Report's existing
+execution-telemetry section (`references/execution-telemetry.md` section 6) is extended to also
+list, for any round that carries a `compaction_attempt_execution` value, a clearly labeled
+separate line — distinct from that round's own real `execution`/`usage` reporting, never merged
+into it. The wording branches on this round's own real outcome, never assumes "before falling
+back" unconditionally:
+- For a round whose real outcome is the fallback: *"Round R also attempted a compaction restart
+  that failed after using `<input>`/`<output>` tokens (`<elapsed>`s) before falling back."*
+- For a round whose real outcome is a success (any of the three sub-cases above): *"Round R's
+  compaction restart succeeded after an earlier attempt used `<input>`/`<output>` tokens
+  (`<elapsed>`s)."*
+
+Both templates report each preserved sub-attempt's own figures, never conflated with the round's
+own real dispatch numbers. **Both templates must also handle a preserved `execution` entry that
+has NO `usage` object at all** — `references/execution-telemetry.md`'s own established contract
+allows an `execution` object to legitimately carry only `elapsed_seconds` with `usage` entirely
+absent; whenever a preserved entry lacks a `usage` object, both templates substitute that
+reference's own established "usage unavailable" wording in place of the `<input>`/`<output>`
+tokens portion — e.g. *"Round R also attempted a compaction restart that failed after
+`<elapsed>`s (usage unavailable) before falling back."*
+
+**A partial `usage` object (only one of `input_tokens`/`output_tokens` present) is handled
+independently per-value, not all-or-nothing.** The wrapper's own `build_execution_json()`
+retains a non-empty `usage` object exactly as received with no member validation — a real, valid
+response carrying only `{"input_tokens": 12}` (no `output_tokens` key at all) is preserved as-is.
+Report each of `<input>`/`<output>` independently — whichever value is actually present in
+`usage` is reported normally; whichever is absent (whether because `usage` itself is completely
+missing, or present but missing just that one member) is reported with its own "unavailable"
+wording — e.g. *"Round R also attempted a compaction restart that failed after using 12 input
+tokens (output tokens unavailable) (`<elapsed>`s) before falling back."* This one rule uniformly
+covers all three shapes: full usage (both values reported), partial usage (one reported, one
+marked unavailable), and no usage at all (both marked unavailable, collapsing to the simpler
+"usage unavailable" wording as a natural special case).
+
+**"Present" must mean "present AND valid," reusing the EXISTING malformed-usage validation, never
+a bare key-existence check.** `input_tokens`/`output_tokens` can be present but UNUSABLE (a
+string, `null`, negative, or otherwise non-integer value) — apply the SAME non-negative-integer
+validation this file already uses for `COMPACTION_BASELINE_TOKENS` (see "Trigger" above) to each
+token value independently here too; a present key whose value fails that validation is treated
+IDENTICALLY to an absent key (its own "unavailable" wording), never rendered as a literal
+malformed value.
+
+## A failed compaction attempt is a superseded attempt, not a novel evidence-lifecycle case
+
+A round with a failed compaction attempt followed by its own fallback `--resume` has TWO physical
+dispatches. This is exactly the EXISTING "superseded attempt within a round" case
+`references/retry-guards.md` already defines for an ordinary round's own retries — apply it
+unchanged, inventing nothing new. The failed compaction attempt's own raw event-log file (when
+`--capture-evidence` is ON) is deleted, not retained, exactly like any other superseded attempt's;
+its own last-message file (when `--keep-evidence` is ON) is never kept, exactly like any other
+superseded attempt's — only the round's FINAL attempt (the fallback dispatch) participates
+normally in whichever of the two flags is ON. This also avoids any path collision: the compaction
+attempt and the fallback each get their own temp files under the existing per-attempt allocation
+scheme, exactly as two retries of the same round already would.
+
+## Logging
+
+The compaction round is logged like any other round, with these additions, each present only on
+the round(s) they actually apply to:
+- `compacted_from_thread` — top-level, the abandoned thread's id, on a successful compaction
+  round.
+- `compaction_attempt_failed_thread` / `compaction_attempt_execution` /
+  `compaction_attempt_coverage` — an optional trio, present when a compaction attempt failed
+  (falling through to the fallback) OR when the round's own path to success included an earlier
+  failed sub-attempt (see "Retry topology" above's three sub-cases). **ONLY sub-case (iii)
+  (candidate A genuinely abandoned, thread B succeeds) ever populates
+  `compaction_attempt_failed_thread`** — sub-cases (i) and (ii) both involve the SAME thread
+  succeeding after an earlier failure of its own, so nothing was ever abandoned; recording it
+  there would cause it to be double-cleaned, or falsely reported as leaked. All three sub-cases
+  MAY (conditionally, never unconditionally) populate `compaction_attempt_execution` (present
+  only when the earlier failed response actually carried an `execution` object) and
+  `compaction_attempt_coverage` (present only when that earlier failed response was itself a
+  fresh `--uncommitted` dispatch). A round can carry the `compaction_attempt_*` trio ALONE (a
+  failed attempt, fallback succeeded or not), the OTHER three (`compacted_from_thread` +
+  `snapshot_digest_before`/`snapshot_digest_after`) alone (a clean first-attempt success), or
+  BOTH groups together (any of the three sub-cases above).
+- `snapshot_digest_before` / `snapshot_digest_after` — top-level, on a successful compaction
+  round (identical values for `--commit` scope, by construction — see "Restart mechanism" step 3
+  above).
+- `candidate_snapshot_path` — top-level, present only on a round whose own compaction attempt
+  SUCCEEDED under `--uncommitted`/`--base` scope, alongside `snapshot_digest_after`.
+- `coverage_source` — generalized (see "Restart mechanism" step 4 above) to also cover a
+  successful `--uncommitted` compaction restart, not only round 1.
+- `compaction_attempt_failure_count` — present on TWO kinds of rounds: a round whose own
+  compaction attempt fell through to the fallback (the counter's current value after
+  incrementing), and a round whose own compaction attempt SUCCEEDED (the explicit value `0`,
+  representing the reset).
+- `compaction_disabled_reason` — present only on the ONE round that ever sets this latch, never
+  repeated on later rounds once set. Exactly one of `"baseline_at_or_above_threshold"`,
+  `"baseline_unusable"`, `"repeated_fresh_dispatch_failure"`, `"byte_budget_exceeded"`.
+- `retired_snapshot_files` — an array, present only when non-empty, on whichever round's own line
+  is being written when a snapshot-file deletion failure is discovered (or a deferred backfill
+  from continuity recovery attaches to it).
+- `target.scope_value` — round 1's own line only, whenever `--compact` was given: the literal
+  `--base`/`--commit` argument value, omitted for `--uncommitted`.
+- `target.resolved_commit_sha` — round 1's own line only, `--commit` scope, whenever resolution
+  succeeded.
+- `target.original_scope_framing` — round 1's own line only, whenever `--compact` was given
+  (regardless of scope): the Why + task-specific Scope text captured once, before round 1's own
+  first dispatch attempt, excluding any pasted artifact text, never overwritten by a later
+  retry's own different focus.
+
+`finding_id`/`claim_id` numbering continues incrementing globally across the compaction boundary —
+never reset — so the existing claim-ledger reducer keeps working over the whole log unmodified.
+
+**Shipping this feature requires bumping `schema_version`** — see Task 21 for the exact
+`SKILL.md` edit (from `2` to `3`, per this plan's own Global Constraints).
+
 ## Scope (v1)
 
 - **Single-reviewer only (`GROUP="main"`).** Parallel mode is explicitly out of scope for v1 —
