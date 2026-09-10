@@ -922,6 +922,151 @@ round's own real, live, active thread. All three sub-cases MAY (conditionally, n
 unconditionally) populate `compaction_attempt_execution`/`compaction_attempt_coverage` — see
 "Preserving failed-attempt telemetry" below.
 
+## Ordering on success
+
+Durability before any thread or snapshot file is touched, with immediate provisional tracking to
+close the intermediate-window leak an unprotected implementation would leave open (between
+"dispatch returns ok:true" and "JSONL append verified," the new thread and candidate snapshot
+must NOT be tracked nowhere — a `🛑 REVIEW LOG INTEGRITY FAILURE` in that window would otherwise
+leak both, since that failure's own cleanup only ever sweeps `GROUP_THREADS`/`LEAKED_THREAD_IDS`
+and the currently-active snapshot):
+
+1. This dispatch returns `ok:true` (never inferred from "a threadId exists" — several `ok:false`
+   failure reasons also carry a `threadId`).
+2. **Immediately** (before doing anything else with this result): add the new thread id to
+   `LEAKED_THREAD_IDS` provisionally (the candidate snapshot, when one exists, is ALREADY tracked
+   as `PROVISIONAL_SNAPSHOT_FILE` from the moment it was collected — see "Restart mechanism" step
+   3 above — nothing new to do for it here). Both are now covered by every existing terminal
+   cleanup sweep (including a `🛑 REVIEW LOG INTEGRITY FAILURE` that might fire in step 3 below),
+   even though neither has been "promoted" yet.
+3. Process this round's findings normally (`SKILL.md`'s Phase 2 steps 2-6, including the
+   coverage merge from "Restart mechanism" step 4 above), then append this round's JSONL line —
+   `target.scope` = the scope flag actually used (never `"resume"`), plus
+   `compacted_from_thread: <old thread id>` and the snapshot-lineage fields from "Restart
+   mechanism" step 3 above — and run the EXISTING append-verify hard stop exactly as any other
+   round does, EXTENDED per the branch-aware table below.
+
+### The append-verify extension — branch-aware, never one fixed field list
+
+The base skill's own verifier only confirms the appended line carries the expected round NUMBER —
+it says nothing about which FIELDS that line carries. This extension confirms exactly the fields
+THAT SPECIFIC outcome requires, never a one-size-fits-all list (a non-repo-artifact session and
+`--commit` scope never allocate a candidate at all; several `ok:false` reasons structurally never
+carry a `threadId` at all):
+
+- **Success, `--uncommitted`/`--base` scope (a real candidate was allocated):** REQUIRE
+  `compacted_from_thread`, `candidate_snapshot_path`, `snapshot_digest_before`,
+  `snapshot_digest_after`, `compaction_attempt_failure_count` (must equal `0`).
+- **Success, non-repo-artifact or `--commit` scope (no candidate ever allocated):** the same set
+  MINUS `candidate_snapshot_path`, whose absence here is the CORRECT state, not a defect.
+- **Success, whenever the ROUND's OWN scope is `--uncommitted`** (including a non-repo-artifact
+  session, which dispatches AS `--uncommitted` under the hood) — **regardless of whether the
+  SPECIFIC call that ultimately produced success was itself a fresh `--uncommitted` dispatch or a
+  later `--resume` retry of it:** ALSO REQUIRE `coverage_source`, either a real value or the
+  `"unknown"` sentinel, never simply absent — checked against the round's own recorded
+  `target.scope`, never against which specific call within that round happened to succeed (this
+  is what makes the retry-then-succeed carry-forward case, whose FINAL successful call is itself
+  a `--resume`, correctly still require this field). Never for `--base`/`--commit` scope
+  specifically (never non-repo-artifact) — neither ever emits `coverage.source` at all.
+- **Success reached after ANY earlier failed sub-attempt** (A's own resume retry-then-succeed,
+  A's own no-threadId fresh-retry success, or A-exhausted-then-B-succeeds — the same three
+  sub-cases from "Retry topology" above): ALSO REQUIRE `compaction_attempt_failed_thread` (the
+  array covering whichever earlier sub-attempt(s) were GENUINELY abandoned before this round's
+  real success — correctly EMPTY/absent for sub-cases (i) and (ii), since in EITHER, the SAME
+  thread that had the earlier failed response is what goes on to succeed),
+  `compaction_attempt_execution` whenever the underlying earlier failed response(s) actually carried it, and
+  `compaction_attempt_coverage` ONLY for whichever of those earlier failed response(s) was itself
+  a fresh `--uncommitted` dispatch — never for a failed `--resume` call among them (see
+  "Preserving failed-attempt telemetry" below).
+- **Attempted-and-failed, falling through to the fallback:** REQUIRE
+  `compaction_attempt_failure_count` — EXCEPT when the failure was `byte_budget_exceeded` (see
+  "Byte-budget preflight" above), which deliberately never increments this counter, so its
+  absence here is likewise the correct state. REQUIRE `compaction_attempt_failed_thread`
+  ADDITIONALLY, **keyed on whether a threadId was ACTUALLY captured for each abandoned attempt,
+  never on a fixed reason-category exclusion list** (`interrupted` can ALSO occasionally lack a
+  threadId, per "Retry topology" above's own corrected candidate-retry predicate — checked
+  per-occurrence, exactly like that predicate itself). When every abandoned sub-attempt's own
+  response genuinely captured no threadId at all, this field is correctly absent.
+- **Any round that newly sets `compaction_disabled_reason` this round** (baseline over threshold,
+  baseline unusable, failure count reaching its bound, or byte budget exceeded): that field is
+  ADDITIONALLY REQUIRED whenever the round's own processing actually reached that decision this
+  round.
+- **Any round whose own processing discovers a genuinely pre-append snapshot-deletion failure
+  this round** (a partial-candidate or abandoned-candidate deletion failure — the two LIVE,
+  within-a-round cases; promotion itself is a single atomic rename with no separate post-append
+  deletion step): `retired_snapshot_files` is ADDITIONALLY REQUIRED, non-empty. **Also required,
+  additionally non-empty, on whichever round actually carries a DEFERRED backfill from an earlier
+  recovery-discovered candidate deletion failure** (see "Restart mechanism" step 3's own
+  post-append-window recovery step 2 above).
+- **Round 1's own line, whenever `--compact` was given for this session:**
+  `target.original_scope_framing` is REQUIRED on round 1's own line whenever `--compact` was given for
+  the session (regardless of scope); `target.scope_value` is ADDITIONALLY REQUIRED specifically
+  for `--base`/`--commit` scope (never for `--uncommitted`). `target.resolved_commit_sha` is
+  REQUIRED additionally, specifically for `--commit` scope, WHENEVER resolution succeeded (never
+  required when resolution itself failed verification and round 1 deliberately fell back to the
+  original unpinned literal value instead — see "Restart mechanism" step 3 above).
+
+**Presence and type are not enough on their own — every durability-critical field must also
+match the VALUE Claude itself already computed for this transition, not merely its shape.**
+Wherever this round's own processing already computed an authoritative value BEFORE the append
+(every field on the list above qualifies — that is precisely why each is being appended in the
+first place), the verify step compares the appended value against that already-known value:
+`compaction_attempt_failure_count` must equal the just-incremented (or, on success, `0`) value
+Claude itself computed this round, never merely "any integer"; `snapshot_digest_before`/
+`snapshot_digest_after` must equal the digests Claude itself hashed; `candidate_snapshot_path`
+must equal the literal `mktemp` path Claude itself allocated this round; `compaction_disabled_reason`
+must equal the SPECIFIC cause that actually triggered it this round, not merely be one of
+the 4 valid strings; `compaction_attempt_execution`, when the underlying failed response(s)
+actually carried it, must be present and non-empty, never silently dropped.
+
+**`compaction_attempt_coverage` follows a STRICTER rule than `compaction_attempt_execution`, but
+ONLY for `--uncommitted`-scope sub-attempts.** Required whenever a real fresh `--uncommitted`
+wrapper dispatch was attempted and itself FAILED — candidate A's own original attempt, the
+no-threadId fresh retry, or thread B's own dispatch, each only when it uses `--uncommitted` scope
+and itself fails — either the real `coverage.source` value or the `"unknown"` sentinel for that
+entry, never simply absent. A failed `--resume` call is never a fresh `--uncommitted` dispatch
+and correctly gets NO entry here, regardless of the round's overall scope. A round whose FIRST
+fresh `--uncommitted` attempt succeeds directly has no failed sub-attempt at all, and correctly
+has no `compaction_attempt_coverage` entry — its own coverage is reported via `coverage_source`
+instead, never this field. For a `--base`/`--commit`-scope sub-attempt, no entry is ever required
+or expected.
+
+A missing, malformed, OR value-mismatched required field for whichever of these branches actually
+applies is treated with the SAME severity as a wrong round number — a hard stop,
+`🛑 REVIEW LOG INTEGRITY FAILURE`, never a soft warning. A field this round's own outcome does NOT
+require is correctly absent and must never be flagged as missing. If this append fails
+verification: the new thread and candidate snapshot are ALREADY tracked as provisional/leaked
+(step 2 above) and get cleaned up by the existing `🛑 REVIEW LOG INTEGRITY FAILURE` path exactly
+like any other leaked resource — nothing extra to do here, and nothing new leaks.
+
+### Promotion — only after the append is verified
+
+**Only after that append is verified**: (a) promote — remove the NEW thread id from its
+provisional `LEAKED_THREAD_IDS` entry and make it the active `GROUP_THREADS` entry instead; add
+the OLD thread id to `LEAKED_THREAD_IDS` in its place (never an immediate `--cleanup` — see
+"Interaction with `--keep-evidence`" below); (b) **only for `--uncommitted`/`--base` scope, where
+a real candidate exists** (non-repo-artifact and `--commit` scope allocate NO candidate at all —
+`SNAPSHOT_FILE`/`SNAPSHOT_DIGEST` are already correct, having never changed, so this whole
+sub-step is simply skipped for those two scopes): immediately before the rename, re-verify BOTH
+sides of the transition, not only the destination — checking only the OLD active file would leave
+the CANDIDATE itself unverified at this late point, even though it was collected and hashed much
+earlier:
+- Re-hash whatever currently exists at the active `SNAPSHOT_FILE` path and confirm it still
+  matches `snapshot_digest_before`.
+- Re-hash `candidate_snapshot_path` and confirm it still matches `snapshot_digest_after`.
+
+If EITHER check fails: hard stop, `🛑 SNAPSHOT INTEGRITY FAILURE` — this is genuine,
+newly-discovered corruption unrelated to compaction itself, and promoting over it (or promoting a
+corrupted candidate) would erase or misrepresent the only evidence of it. Only once BOTH pass:
+promote the candidate snapshot via the single atomic `mv "$candidate_snapshot_path"
+"$SNAPSHOT_FILE"` rename described in "Restart mechanism" step 3 above. On success, ALSO advance
+the remembered `SNAPSHOT_DIGEST` to `snapshot_digest_after` in this same step. A failure of this
+`mv` itself is handled per "Restart mechanism" step 3's own "failed `mv` occurring LIVE" rule —
+retried up to 2 more times, then `🛑 SNAPSHOT INTEGRITY FAILURE` if still failing — never the
+ordinary "On failure" compaction-fallback path below, which structurally cannot apply once this
+round's own success line is already committed. Each retry attempt REPEATS both live checks above
+first, immediately before that specific attempt's own `mv`.
+
 ## Scope (v1)
 
 - **Single-reviewer only (`GROUP="main"`).** Parallel mode is explicitly out of scope for v1 —
