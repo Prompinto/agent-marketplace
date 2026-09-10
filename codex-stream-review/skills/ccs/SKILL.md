@@ -7,7 +7,7 @@ description: Claude executes a task then runs a Claude+Codex adversarial cross-r
 
 **Usage:** `codex-stream-review:ccs <task description>` — this skill is not invocable as a bare
 `/ccs` slash command; it is invoked plugin-qualified, like every other plugin-supplied skill. Leave
-the task description empty to review the work just done in this session. Three independent, optional
+the task description empty to review the work just done in this session. Four independent, optional
 prefixes — each may appear alone, together in any combination and order, or neither (see Phase 0 Step 0 for the
 exact parsing rule):
 `codex-stream-review:ccs --capture-evidence <task description>` — opt-in investigation-evidence
@@ -23,7 +23,13 @@ default `20`, automatically and permanently escalating back to `20` the moment a
 include a `HIGH`/`CRITICAL` severity item, and — only while `MAX_ROUNDS` is still `5` — a new
 terminal status, `🟡 MINOR ISSUES ACKNOWLEDGED`, becomes reachable for stopping early once every
 still-open claim is cleanly `LOW`/`MEDIUM` severity (see Phase 2's "Converge loop" heading and its
-Guards section below for the exact mechanics). Omit all three and
+Guards section below for the exact mechanics). `codex-stream-review:ccs --compact <task
+description>` — opt-in thread compaction: after any round whose own
+`execution.usage.input_tokens` crosses `COMPACT_THRESHOLD` (8,000,000), abandon the old Codex
+thread and start a fresh one seeded with a compact digest of the claim ledger instead of the old
+thread's full accumulated history (see `references/compaction.md`, read only when this flag is
+used, for the complete mechanics — forces single-group `main` for the whole session, per
+"Determine review mode" below). Omit all four and
 `/ccs` behaves exactly as documented everywhere else in this file, with zero added fields anywhere.
 Any other free text is the TASK.
 
@@ -82,6 +88,12 @@ its full mechanics. `run-ccs-review.sh` reports best-effort elapsed time and (wh
 emits it) token usage per dispatch, and this skill separately records a coordinator-measured
 `round_wall_seconds` per round — never authoritative billing/quota data, never a "model" identity
 value, no caller-facing configuration.
+
+**Opt-in thread compaction is supported** (`--compact`) — see `references/compaction.md` for its
+full mechanics, read only when this flag is used. Independent of `--capture-evidence`/
+`--keep-evidence`/`--quick` — any subset of the four flags may be ON for a session, in any order
+(see Phase 0 Step 0 for the exact parsing rule). Forces single-group `main` for the whole
+session — see "Determine review mode" below.
 
 **Parallel multi-reviewer mode is supported** (see Phase 1 below): every group — including the
 single-reviewer case, `GROUP="main"` (see the N=1 note above) — keeps its own persistent, resumable
@@ -378,11 +390,11 @@ keep-evidence gate for why). See "Phase 3 — Terminal path" below.
 
 ## Reference files this skill must read in full — when and why
 
-Two of the five below are conditional (read only if the session actually uses that flag — if OFF,
+Three of the six below are conditional (read only if the session actually uses that flag — if OFF,
 never read or act on that file: zero behavior change from every other place in this skill). Three
 apply unconditionally to every invocation, with no OFF state — for those three, the "read it now"
 instruction isn't signaling a special trigger, just naming the one point in the run before which
-each must be read. Every one of the five is read once, before Phase 1 ever dispatches, and its
+each must be read. Every one of the six is read once, before Phase 1 ever dispatches, and its
 procedure is required at the specific later points listed under it — skipping the read leaves
 those points undocumented.
 
@@ -400,6 +412,15 @@ this run (order relative to capture-evidence above doesn't matter if both are ON
 before Phase 1 ever dispatches). Required at four later points: Phase 1 Step 0's
 `LAST_MESSAGE_KEEP_FILE` allocation, Step 1's `--keep-last-message` flag, Phase 2's keep-or-delete
 step, Phase 3's conditional cleanup-skip.
+
+### Opt-in thread compaction (opt-in via `--compact`)
+Once Phase 0 Step 0 determines `--compact` is ON for this session, read
+`codex-stream-review/skills/ccs/references/compaction.md` in full before doing anything else in
+this run (order relative to the other conditional/always-on files above doesn't matter — all
+files this section lists must be read before Phase 1 ever dispatches). Required at every later
+point that reference file itself names: the threshold check after every completed round (before
+building the next round's dispatch), the restart mechanism (when triggered), the retry topology
+(when a compaction attempt's own dispatch fails), and the Logging/Final-Report additions.
 
 ### Snapshot integrity (always on, no opt-in)
 Applies to every `codex-stream-review:ccs` invocation that gets past Phase 0's early-exit checks.
@@ -509,39 +530,46 @@ up using `--capture-evidence` at all):**
   deletes nothing, or fails outright — and is NOT a guaranteed TTL: it promises "gone by roughly 30
   days after its `mtime`," never exact 30-day precision, and a directory a session is still
   actively writing into (i.e. anything younger than 30 days) is never at risk from this sweep.
-- **Capture-evidence / keep-evidence / quick-mode decision:** three independent, optional prefixes
+- **Capture-evidence / keep-evidence / quick-mode decision:** four independent, optional prefixes
   may each be present, in any combination and order, at the front of the task text this skill was
   actually invoked with (or empty, to review the work just done, per "Usage" above):
-  `--capture-evidence`, `--keep-evidence`, and `--quick`. Determine all three with the same loop,
-  applied to whatever text remains after each strip — this handles any subset of the three, in any
+  `--capture-evidence`, `--keep-evidence`, `--quick`, and `--compact`. Determine all four with the
+  same loop,
+  applied to whatever text remains after each strip — this handles any subset of the four, in any
   order, or none, and stays
-  correct if a future fourth flag is ever added the same way, rather than hardcoding just today's
+  correct if a future fifth flag is ever added the same way, rather than hardcoding just today's
   fixed orderings:
-  Strip any number of leading `--capture-evidence`/`--keep-evidence`/`--quick` prefixes from the
+  Strip any number of leading `--capture-evidence`/`--keep-evidence`/`--quick`/`--compact` prefixes
+  from the
   task text,
   in whatever order they appear: each time the remaining text starts with `--capture-evidence `
   (or is exactly that string with nothing after it), record **capture-evidence is ON** and remove
   the prefix; each time it starts with `--keep-evidence ` (or is exactly that string), record
   **keep-evidence is ON** and remove the prefix; each time it starts with `--quick ` (or is exactly
-  that string), record **quick-mode is ON** and remove the prefix. Stop the first time none of the
-  three prefixes matches — the
+  that string), record **quick-mode is ON** and remove the prefix; each time it starts with
+  `--compact ` (or is exactly that string), record **compact-mode is ON** and remove the prefix.
+  Stop the first time none of the
+  four prefixes matches — the
   remaining text is the effective task text for every rule below and everywhere else in this file.
-  For a session that gave all three flags with nothing else after them, this is the empty string, which
+  For a session that gave all four flags with nothing else after them, this is the empty string, which
   "Usage" above already treats as "review the work just done."
 
-  A flag never detected during the loop is OFF for this session. **The three decisions are
-  independent booleans — `CAPTURE_EVIDENCE`, `KEEP_EVIDENCE`, and `QUICK_MODE` — never a single
+  A flag never detected during the loop is OFF for this session. **The four decisions are
+  independent booleans — `CAPTURE_EVIDENCE`, `KEEP_EVIDENCE`, `QUICK_MODE`, and `COMPACT_MODE` —
+  never a single
   combined state:**
   any subset may end up ON, regardless of which order the caller typed them in.
   Whichever ends up OFF proceeds precisely as documented elsewhere in this file with no added
   behavior for it. Either way, this is a one-time decision Claude makes now and remembers for the
   whole run — every later place in this file that gates on "capture-evidence is on/off",
-  "keep-evidence is on/off", or "quick-mode is on/off" means Claude already knows the answer and must write the concrete
+  "keep-evidence is on/off", "quick-mode is on/off", or "compact-mode is on/off" means Claude already knows the answer and must write the concrete
   literal branch (e.g. either include the `--capture-eventlog "<path>"`/`--keep-last-message
   "<path>"` argument as literal text on every dispatch, or omit it entirely; either include or omit
   the `investigation_evidence`/`kept_last_message_path` JSONL field; use `MAX_ROUNDS = 5` or
-  `MAX_ROUNDS = 20` as Phase 2's starting cap) into each command it actually
-  constructs — there is no shell variable carrying any of the three decisions between tool calls, and no
+  `MAX_ROUNDS = 20` as Phase 2's starting cap; either check each completed round's
+  `execution.usage.input_tokens` against `COMPACT_THRESHOLD` and restart the Codex thread when
+  `COMPACT_MODE` is on, or skip that check entirely when it is off) into each command it actually
+  constructs — there is no shell variable carrying any of the four decisions between tool calls, and no
   per-round re-check within one `/ccs` run (`QUICK_MODE` itself never changes mid-run once
   determined here; only the separate, session-scoped `MAX_ROUNDS`/`ESCALATED` facts Phase 2
   maintains on top of it can change, per that section's own escalation rule).
@@ -674,6 +702,13 @@ number (1, 2, 3, …), written literally.
 **Non-repo artifact round? Skip this entirely — always single-group `main`, never parallel.** See
 Phase 0 step 4 above for why: there is no diff to size and nothing to partition by file count
 against a freshly-`git init`'d, zero-file `CLEAN_REPO_DIR`.
+
+**`--compact` session? Also skip this entirely — always single-group `main`, never parallel,
+for the WHOLE session.** When `COMPACT_MODE` is ON (Phase 0 Step 0's decision), this is a hard
+override, not a rejection of the `--compact` request — a review that would otherwise size as
+parallel still runs, just without parallel mode, for the whole session, whenever `--compact` was
+given (see `references/compaction.md`'s "Scope (v1)" section). Parallel mode is explicitly out
+of scope for v1 of thread compaction.
 
 **Genuine repo/code-diff round — before round 1 ever dispatches, assess the review scope**
 (the sizing heuristic below is needed because `run-ccs-review.sh` has no file-filter flag of its
