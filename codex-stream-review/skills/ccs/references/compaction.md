@@ -571,6 +571,124 @@ compaction inherits this exact property unchanged.
   round-2+ revalidation is left completely untouched while the candidate merely sits on disk. On
   compaction failure (step 6 below): delete the candidate file immediately (it was never used for
   anything) and continue revalidating rounds against the untouched original active snapshot.
+- **Collection/hash failure itself.** Mirrors `references/snapshot-integrity.md`'s own Phase 0
+  step 5 / Phase 1 post-sizing allocation, which already checks every collection command's own
+  exit status and the resulting digest's shape before trusting it: if the candidate's own `git
+  diff`/`shasum` collection fails, or the resulting digest fails the 64-hex-character validation,
+  this is treated exactly like any other compaction failure — delete whatever partial candidate
+  file may exist (on a failed deletion here, add its path to `RETIRED_SNAPSHOT_FILES` — see
+  "Retired-snapshot tracking" below), log the narration note, and go straight to step 6's normal
+  `--resume` fallback. No dispatch is even attempted with an uncollectible candidate.
+- **Concrete provisional-resource tracking.** A new session-scoped fact,
+  `PROVISIONAL_SNAPSHOT_FILE` (analogous to `LEAKED_THREAD_IDS`), is set the moment a candidate
+  is successfully collected and hashed, and cleared the moment that candidate is either promoted
+  (success) or deleted (failure/collection error) — never left ambiguous in between.
+  `SKILL.md`'s Phase 3 terminal cleanup (every terminal path, including
+  `🛑 REVIEW LOG INTEGRITY FAILURE`) is extended to also remove `PROVISIONAL_SNAPSHOT_FILE`
+  whenever one is currently set, exactly like it already removes the active `SNAPSHOT_FILE` (see
+  Task 21 for the exact `SKILL.md` edit).
+- **Snapshot lineage.** The one JSONL line that performs a compaction restart records both
+  `snapshot_digest_before` and `snapshot_digest_after` (identical for `--commit` scope, by
+  construction) — pure audit trail. This deliberately, narrowly overrides
+  `references/snapshot-integrity.md`'s existing "one canonical subject, no external-drift
+  detection" contract, only for this Claude-orchestrated, fully-disclosed re-snapshot event,
+  never by anything auto-detected — shipping this feature requires a companion amendment to that
+  reference file (see Task 17).
+
+**On success, promotion is ONE atomic rename onto the fixed `SNAPSHOT_FILE` path, never a
+separate delete-then-move.** `SNAPSHOT_FILE` is, and remains, ONE fixed literal path for the
+entire session, exactly like `REPO_ROOT`/`SESSION_ID` — promotion NEVER reassigns which path
+Claude calls `SNAPSHOT_FILE`; it always physically replaces that fixed path's own content.
+Concretely, only after this round's JSONL append is verified (see "Ordering on success" below):
+`mv "$candidate_snapshot_path" "$SNAPSHOT_FILE"` — a single `rename(2)` syscall (both paths
+guaranteed on the same filesystem, both under the same session-scoped `/tmp` area), which POSIX
+guarantees ATOMICALLY replaces the destination, unlinking its previous content as part of the
+SAME operation — there is no OS-visible intermediate state where the active path is empty.
+
+**`SNAPSHOT_DIGEST` must ALSO be advanced on a successful rename.** The instant the `mv` above
+completes successfully, Claude's own remembered `SNAPSHOT_DIGEST` literal is updated to
+`snapshot_digest_after` — both remembered facts (`SNAPSHOT_FILE`'s path staying constant,
+`SNAPSHOT_DIGEST` advancing to the new value) change together, in the same step, never one
+without the other. Otherwise the very next round's ordinary revalidation would hash the
+newly-promoted file, get a digest that no longer matches the STILL-remembered old
+`SNAPSHOT_DIGEST`, and incorrectly raise `🛑 SNAPSHOT INTEGRITY FAILURE` on a perfectly
+successful, intended promotion.
+
+**A failed `mv` occurring LIVE, after this round's own success line is ALREADY committed, is
+MANDATORY to retry, not optional — there is no fallback path available anymore, because the
+durable record has already committed to this outcome.** Retry it up to 2 more times with a brief
+pause (matching this skill's other bounded-retry conventions), RE-RUNNING the live active-file
+and candidate integrity checks (see "Ordering on success" below) before each retry attempt, not
+only the first. If ALL retries are exhausted and the `mv` still fails, this is a genuinely broken
+state — hard stop, `🛑 SNAPSHOT INTEGRITY FAILURE`, since the durable log's own claim can no
+longer be honored on disk. The OLD content is guaranteed untouched by a failed rename (rename
+either fully happens or doesn't, never partially), so this hard stop is at least never compounded
+by additional data loss.
+
+**The candidate file keeps using `mktemp` for a fresh, unpredictable, atomically-created path**
+exactly like every other snapshot allocation in this design (never a deterministic,
+`.candidate`-suffixed path derived from the active `SNAPSHOT_FILE`'s own name — that would
+reintroduce a symlink/predictable-path attack `mktemp`'s existing random allocation exists to
+prevent, since `/tmp` resolves to the world-writable sticky `/private/tmp` on macOS). The
+resulting random path is durably recorded, as a new field, `candidate_snapshot_path`, on that
+same round's own JSONL line at the moment of the append (a pre-append-decided value, known the
+instant the candidate is collected) — see "Ordering on success" below for continuity recovery's
+use of this field.
+
+**Retired-snapshot tracking is general-purpose, covering two deletion points that remain
+fallible on their own.** Both cases are genuinely independent `rm` calls on a candidate being
+ABANDONED, not promoted (promotion, above, is a single atomic rename with no separate old-file
+deletion step): a failed deletion of a PARTIAL candidate (per "Collection/hash failure itself"
+above), and a failed deletion of a fully-hashed candidate on ordinary compaction failure (per "On
+failure" below). In EITHER case, if a LATER compaction attempt's own single
+`PROVISIONAL_SNAPSHOT_FILE` slot then gets reassigned to a new candidate, the earlier
+failed-to-delete file is referenced by nothing at all. Both route through the exact same
+session-scoped set, `RETIRED_SNAPSHOT_FILES` (analogous to `LEAKED_THREAD_IDS`) — the path is
+also added to a new array field, `retired_snapshot_files`, on that SAME round's own line
+(present only when non-empty), since both cases are discovered strictly BEFORE that round's own
+JSONL line is ever written. `SKILL.md`'s Phase 3 terminal cleanup plus continuity recovery are
+both extended to union in every path ever recorded in this field across the session's log — the
+same durable-backstop pattern already established for `LEAKED_THREAD_IDS` (see Task 21).
+
+**`PROVISIONAL_SNAPSHOT_FILE` has TWO genuinely different windows.** The FAILURE-path window (and
+the SUCCESS path before its own append) is entirely pre-append: disclosed, accepted as a residual
+gap, not fully closed — an interruption in this narrow window can leave one orphaned candidate
+file (and, on the success sub-case specifically, one orphaned thread — the newly-created thread
+is ALSO only tracked in-memory via `LEAKED_THREAD_IDS` until that same append lands, the identical,
+already-accepted gap every ordinary round's own thread creation already has before ITS OWN first
+append) with no recorded path to retry its cleanup. This window can span up to TWO
+candidate/thread pairs when the fresh-B escalation is reached (see "Retry topology" below), since
+A is added to `LEAKED_THREAD_IDS` in-memory-only before B is ever dispatched.
+
+The POST-append window (success path only, between the verified append and the promotion `mv`) is
+genuinely CLOSED, not merely disclosed, via the durably-recorded `candidate_snapshot_path` above.
+Recovery for this window (part of continuity recovery, see `SKILL.md`'s "Review history log" →
+"Read (continuity)") never skips the mandatory verify-before-trust step
+`references/snapshot-integrity.md` already requires: search the WHOLE log for the most recent
+round carrying `compacted_from_thread`/`snapshot_digest_after`/`candidate_snapshot_path` (never
+just the latest line — once even one ordinary round completes after a successful compaction, the
+latest line no longer carries these fields), reconstruct the remembered `SNAPSHOT_DIGEST` from
+THAT round's own recorded values, then:
+1. Hash whatever currently exists at the active path. If it is missing, or matches NEITHER
+   `snapshot_digest_before` NOR `snapshot_digest_after` — genuine, unexplained corruption — hard
+   stop, `🛑 SNAPSHOT INTEGRITY FAILURE`.
+2. If it matches `snapshot_digest_after`: still check `candidate_snapshot_path` before concluding
+   nothing remains to do — in the before/after-identical edge case (`snapshot_digest_before ==
+   snapshot_digest_after`), a crash after the success append but BEFORE the `mv` ever executed
+   leaves the OLD, unpromoted file already "matching" `snapshot_digest_after` purely because the
+   two digests happen to be equal, with the candidate still sitting, unrenamed, on disk. If
+   `candidate_snapshot_path` still exists on disk: delete it (it is no longer needed either way).
+   A failed deletion here cannot fold into `retired_snapshot_files` (that field can only be added
+   AT APPEND TIME, but recovery runs later) — instead, attach this failed path to the NEXT round
+   that actually dispatches and appends its own line (best-effort backfill); if no further round
+   is ever dispatched, this shares the same accepted, disclosed, bounded-impact residual gap as
+   the pre-append window above.
+3. If it matches `snapshot_digest_before` (the rename has NOT yet run): check
+   `candidate_snapshot_path`. If it exists and verifies against `snapshot_digest_after`, run the
+   SAME `mv` now to complete it, with the IDENTICAL retry-then-hard-stop treatment as the live
+   promotion case above (re-verifying both files before each retry attempt); on success, advance
+   `SNAPSHOT_DIGEST` the same way. If the candidate is missing, or present but fails to verify
+   BEFORE any `mv` is even attempted: hard stop, `🛑 SNAPSHOT INTEGRITY FAILURE`.
 
 ## Scope (v1)
 
