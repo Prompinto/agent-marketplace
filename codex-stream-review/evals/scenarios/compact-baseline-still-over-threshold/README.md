@@ -52,7 +52,14 @@ bash codex-stream-review/evals/check-result.sh <result.json> compact-baseline-st
   A, and not some third, newly-minted thread. This is the specific causal link the guard claims:
   the round whose own baseline latched the guard (round 2, thread B) is the SAME thread every
   later round keeps resuming, never a fresh restart again.
-- The session's own `.jsonl` log: round 2's own line carries
-  `"compaction_disabled_reason":"baseline_at_or_above_threshold"`; round 3's own line carries no
-  `compacted_from_thread`/`candidate_snapshot_path` fields at all (manual check — not mechanically
-  asserted by `expect.sh`, since `<result.json>` has no per-round JSONL content).
+- The session's own `.jsonl` log (located as `<result.json>`'s sibling, same `<session-id>`
+  basename — the same lookup `flags-capture-only/expect.sh` already uses): `expect.sh`
+  mechanically asserts round 1's own line does NOT carry `compaction_disabled_reason` (never
+  mis-attributed to the TRIGGERING round), round 2's own line carries
+  `"compaction_disabled_reason":"baseline_at_or_above_threshold"` (the compaction round's OWN
+  baseline is what latched it), and round 3's own line carries neither
+  `compaction_disabled_reason` (read forward, never re-recorded) nor
+  `compacted_from_thread`/`candidate_snapshot_path` (no second compaction attempt was made, local
+  re-collection included, not merely no second network dispatch). This is the mechanically-checked
+  proof of the actual CAUSE (round 2's own over-threshold baseline), not just the downstream
+  dispatch-pattern effect the invocation-log/thread checks above establish.

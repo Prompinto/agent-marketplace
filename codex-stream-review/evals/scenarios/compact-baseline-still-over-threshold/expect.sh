@@ -37,7 +37,13 @@ if [ -n "$CURRENT_ID" ] && [ -n "$LEAKED_ID" ] && [ "$CURRENT_ID" = "$LEAKED_ID"
 fi
 
 if [ ! -f "$INVOCATION_LOG" ]; then
-  echo "compact-baseline-still-over-threshold: WARN -- invocation log not found at $INVOCATION_LOG (ephemeral, skipping)" >&2
+  # This is a controlled synthetic run (setup.sh creates this log deterministically), never a
+  # live/flaky dispatch -- unlike a real production /ccs run, a missing log here means the
+  # fixture harness itself is broken, so it must FAIL, not WARN-and-skip. Skipping would let a
+  # result.json with plausible thread metadata pass this whole scenario without ever proving the
+  # actual dispatch-mode/no-second-compaction-attempt behavior.
+  echo "compact-baseline-still-over-threshold: FAIL -- invocation log not found at $INVOCATION_LOG (setup.sh should always create this for this scenario)" >&2
+  FAIL=1
 else
   FRESH_COUNT="$(grep -c '^mode=fresh ' "$INVOCATION_LOG" || true)"
   RESUME_COUNT="$(grep -c '^mode=resume ' "$INVOCATION_LOG" || true)"
@@ -60,6 +66,45 @@ else
 
   RESUME_ID="$(grep '^mode=resume ' "$INVOCATION_LOG" | sed -E 's/^mode=resume thread_id=([^ ]*).*/\1/' | sed -n '1p')"
   check "round 3's resume dispatch targets thread B specifically (current), not A, and not a third fresh thread" "$RESUME_ID" "$CURRENT_ID"
+fi
+
+# Verify the actual CAUSE, not just the downstream dispatch-pattern effect: thread
+# continuity/counts alone can't rule out a buggy implementation that unconditionally disables
+# compaction after ANY successful restart -- read the session's own JSONL log (sibling of
+# RESULT_FILE, same <session-id> basename, per the same convention flags-capture-only/expect.sh
+# already uses) and confirm round 2's OWN line -- not round 1's, not round 3's -- is the one
+# that recorded the latch, with the correct reason.
+RESULT_DIR="$(dirname "$RESULT_FILE")"
+SESSION_ID="$(jq -r '.session_id' "$RESULT_FILE")"
+JSONL_FILE="$RESULT_DIR/$SESSION_ID.jsonl"
+
+if [ ! -f "$JSONL_FILE" ]; then
+  echo "compact-baseline-still-over-threshold: FAIL -- expected sibling JSONL log at $JSONL_FILE, not found" >&2
+  FAIL=1
+else
+  ROUND1_LINE="$(jq -c 'select(.round == 1)' "$JSONL_FILE" | head -n 1)"
+  ROUND2_LINE="$(jq -c 'select(.round == 2)' "$JSONL_FILE" | head -n 1)"
+  ROUND3_LINE="$(jq -c 'select(.round == 3)' "$JSONL_FILE" | head -n 1)"
+
+  if [ -z "$ROUND1_LINE" ] || [ -z "$ROUND2_LINE" ] || [ -z "$ROUND3_LINE" ]; then
+    echo "compact-baseline-still-over-threshold: FAIL -- expected round 1, 2, and 3 lines all present in $JSONL_FILE" >&2
+    FAIL=1
+  else
+    check "round 1's line does NOT carry compaction_disabled_reason (never mis-attributed to the TRIGGERING round)" \
+      "$(jq -r 'has("compaction_disabled_reason")' <<<"$ROUND1_LINE")" "false"
+
+    check "round 2's line HAS compaction_disabled_reason (the compaction round's OWN baseline latched it)" \
+      "$(jq -r 'has("compaction_disabled_reason")' <<<"$ROUND2_LINE")" "true"
+    check "round 2's compaction_disabled_reason value" \
+      "$(jq -r '.compaction_disabled_reason // ""' <<<"$ROUND2_LINE")" "baseline_at_or_above_threshold"
+
+    check "round 3's line does NOT re-carry compaction_disabled_reason (latch is read forward, not re-recorded)" \
+      "$(jq -r 'has("compaction_disabled_reason")' <<<"$ROUND3_LINE")" "false"
+    check "round 3's line has no compacted_from_thread (no second compaction attempt, local re-collection included)" \
+      "$(jq -r 'has("compacted_from_thread")' <<<"$ROUND3_LINE")" "false"
+    check "round 3's line has no candidate_snapshot_path (no second compaction attempt, local re-collection included)" \
+      "$(jq -r 'has("candidate_snapshot_path")' <<<"$ROUND3_LINE")" "false"
+  fi
 fi
 
 exit "$FAIL"
