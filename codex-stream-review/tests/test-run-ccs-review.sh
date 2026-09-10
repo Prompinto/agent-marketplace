@@ -414,6 +414,30 @@ pd_assert_reason "$OUT" "timeout" "timeout (resume)"
 pd_assert_threadid_present "$OUT" "timeout (resume)"
 unset FAKE_CODEX_SCENARIO FAKE_CODEX_SLEEP_SECS
 
+# --- --receipt-slot: argument validation, then a real accepted dispatch.
+OUT="$(pd_run fresh --receipt-slot 0)"
+if printf '%s' "$OUT" | jq -e '.reason == "bad_args"' >/dev/null 2>&1; then
+  pass "--receipt-slot 0 rejected as bad_args"
+else
+  fail "--receipt-slot 0 should be rejected, got: $OUT"
+fi
+
+OUT="$(pd_run fresh --receipt-slot abc)"
+if printf '%s' "$OUT" | jq -e '.reason == "bad_args"' >/dev/null 2>&1; then
+  pass "--receipt-slot abc (non-numeric) rejected as bad_args"
+else
+  fail "--receipt-slot abc should be rejected, got: $OUT"
+fi
+
+export FAKE_CODEX_SCENARIO=normal
+OUT="$(pd_run fresh --receipt-slot 5)"
+if printf '%s' "$OUT" | tail -1 | jq -e '.ok == true' >/dev/null 2>&1; then
+  pass "--receipt-slot 5 (valid) accepted, dispatch succeeds"
+else
+  fail "--receipt-slot 5 should be accepted, got: $OUT"
+fi
+unset FAKE_CODEX_SCENARIO
+
 # --- no_thread_started: fresh dispatch only (--resume has no thread.started
 # concept) -- fake-codex never emits thread.started, forcing the wrapper's
 # own real (hardcoded) THREAD_WAIT_SECS=10s poll to genuinely time out. This

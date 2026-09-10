@@ -283,6 +283,14 @@ build_review_prompt() {
   echo "asked to review a diff you cannot actually find anywhere in your own context. Never guess"
   echo "true when you are uncertain whether you actually saw the material in question."
   echo ""
+  if [ -n "$RECEIPT_SLOT" ]; then
+    echo ""
+    echo "Your context may contain a block labeled REVIEW_RECEIPT_SCHEDULE with numbered tokens."
+    echo "Report material_receipt_index: $RECEIPT_SLOT and the exact token value at position"
+    echo "$RECEIPT_SLOT in that schedule, in the material_receipt field. If you cannot locate that"
+    echo "schedule, or cannot find entry $RECEIPT_SLOT in it, set both material_receipt and"
+    echo "material_receipt_index to null instead of guessing."
+  fi
   echo "Respond with ONLY valid JSON matching this exact shape, no prose, no markdown code fences."
   echo "line, severity, and the top-level summary are ALWAYS present keys -- use null for any of them"
   echo "that don't apply, never omit the key itself. severity must be exactly one of \"low\", \"medium\","
@@ -389,6 +397,7 @@ CODEX_PID=""
 # `mktemp -d` assignment below runs, never an env value inherited from
 # whatever invoked this script.
 SAFE_GIT_HOME=""
+RECEIPT_SLOT=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -460,6 +469,20 @@ while [ $# -gt 0 ]; do
       # failure instead of only knowing THAT it failed.
       [ $# -ge 2 ] || { printf '{"ok":false,"reason":"bad_args","detail":"--keep-last-message requires a value"}\n'; exit 1; }
       KEEP_LAST_MESSAGE_PATH="$2"; shift 2 ;;
+    --receipt-slot)
+      # Public, opt-in flag (documented in SKILL.md): the non-secret slot NUMBER Claude has
+      # already pre-committed via a durable JSONL receipt_issued append, BEFORE this dispatch was
+      # ever constructed. build_review_prompt() renders this into its own trusted zone as a fixed,
+      # N-parameterized instruction -- never restates a live token value, only the index to look up.
+      [ $# -ge 2 ] || { printf '{"ok":false,"reason":"bad_args","detail":"--receipt-slot requires a value"}\n'; exit 1; }
+      case "$2" in
+        ''|*[!0-9]*)
+          DETAIL_JSON="$(printf '%s' "$2" | jq -Rs '"--receipt-slot must be a positive integer, got: " + .')"
+          printf '{"ok":false,"reason":"bad_args","detail":%s}\n' "$DETAIL_JSON"
+          exit 1 ;;
+      esac
+      [ "$2" -ge 1 ] || { printf '{"ok":false,"reason":"bad_args","detail":"--receipt-slot must be >= 1"}\n'; exit 1; }
+      RECEIPT_SLOT="$2"; shift 2 ;;
     *)
       DETAIL_JSON="$(printf '%s' "$1" | jq -Rs '"unknown argument: " + .')"
       printf '{"ok":false,"reason":"bad_args","detail":%s}\n' "$DETAIL_JSON"
