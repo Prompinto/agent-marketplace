@@ -514,6 +514,63 @@ compaction inherits this exact property unchanged.
   DOES pick up any new commits landed on `HEAD` since round 1, but does **not** reflect
   uncommitted working-tree changes (disclosed limitation: a fix applied but not yet committed
   will not appear in this re-collection).
+- **`--commit <value>`:** re-collecting this scope's diff is byte-identical every time ONLY WHEN
+  `<value>` is itself an immutable, already-resolved commit SHA — the wrapper's own argument
+  parser accepts any git revision expression (confirmed directly: it rejects only a
+  leading-dash value, never validates or resolves the value to a fixed SHA), so `--commit HEAD`
+  or `--commit main` is legal and can resolve to a genuinely different commit by the time a
+  compaction restart happens, if that ref moved since round 1. Fixed: resolve `git rev-parse
+  <value>` — through the SAME anchored, sanitized `env -i`/isolated-`HOME` invocation this skill
+  already uses for every direct git call outside the wrapper (see `SKILL.md`'s "Determine review
+  mode" for the canonical pattern) — into `target.resolved_commit_sha`, and use THAT resolved
+  SHA, not the original literal `<value>`, for round 1's OWN scope-dependent
+  sizing/snapshot-collection/dispatch, in addition to every later compaction restart.
+
+  **Verify the resolution is a single, clean commit SHA before ever pinning to it.** Plain
+  `git rev-parse <value>` does NOT always emit one commit object — for a range-shaped value the
+  wrapper's own `--commit` branch already handles successfully today (e.g. `HEAD^..HEAD`),
+  `rev-parse` emits the positive commit PLUS a separate `^<parent>` exclusion line; feeding that
+  two-line output back in as a single `--commit` argument fails git resolution outright (exit
+  128). After resolving, verify the output is EXACTLY one line matching a bare commit-SHA shape
+  (`^[0-9a-f]{7,64}$`). **If it matches:** pin to it as designed. **If it does NOT** (multiple
+  lines, a range, or anything else non-SHA-shaped): do NOT pin at all — round 1 dispatches with
+  the ORIGINAL literal `<value>` exactly as the wrapper already does today (zero behavior change
+  for this narrow case), no `target.resolved_commit_sha` is recorded, and compaction is simply
+  never attempted for the rest of THIS session under this scope (every later threshold check
+  no-ops immediately, falling through as if compaction were never enabled) — disclosed as an
+  accepted, narrow limitation: ref-drift protection and compaction restart are both unavailable
+  specifically for a `--commit` value that isn't a single resolvable commit.
+
+  **Round 1 itself must be pinned too, not only the compaction restart.** The resolve-once-
+  then-pin discipline applies from round 1 onward, uniformly — resolution happens exactly once,
+  before ANY scope-dependent collection for this session (round 1's own sizing/snapshot/dispatch
+  included), and the resulting SHA is the ONLY value ever used for a real git operation under
+  `--commit` scope for the rest of the session. The original literal `<value>` the user typed is
+  retained purely as `target.scope_value`, for audit/display, never used for a git operation
+  again after this one resolution. This closes the loop completely: from round 1 through every
+  possible compaction restart, `--commit` scope operates on one single, immutable commit for the
+  whole session. No candidate snapshot is ever allocated for `--commit` scope; the ORIGINAL
+  round-1 `SNAPSHOT_FILE`/`SNAPSHOT_DIGEST` remains the active snapshot, untouched, through every
+  subsequent round including any compaction restart.
+- **Durably persisting the original scope ARGUMENT, not just its category.** Round 1's own
+  JSONL line (not only a compaction round's) gains a new field, `target.scope_value` — the
+  literal `<ref>`/`<value>` string for `--base`/`--commit` scope, omitted for `--uncommitted`
+  (which has no such argument) — plus, for `--commit` specifically, `target.resolved_commit_sha`
+  as above. A compaction restart under `--base` scope reuses the EXACT durably-recorded
+  `scope_value`, never a freshly-typed or re-derived one; a compaction restart under `--commit`
+  scope uses the durably-recorded `resolved_commit_sha` instead. **Disclosed limitation,
+  inherent to `--base <ref>` where `<ref>` names a movable branch:** re-dispatching with the same
+  literal `<ref>` string can still resolve to a different merge-base if that branch has advanced
+  since round 1 — the same "not a defense against a deliberately changed source" non-goal
+  `references/snapshot-integrity.md` already accepts elsewhere; `--base`'s own resolved
+  merge-base is NOT separately pinned/verified here, since its scope is defined relative to the
+  CURRENT `HEAD` by design — pinning `--base` further would change what `--base` scope actually
+  MEANS, out of scope for this feature to alter.
+- **Ownership, for `--uncommitted`/`--base` (where a real candidate exists):** the candidate file
+  is a NEW, separate temp file — the ACTIVE (old) `SNAPSHOT_FILE`/`SNAPSHOT_DIGEST` used for
+  round-2+ revalidation is left completely untouched while the candidate merely sits on disk. On
+  compaction failure (step 6 below): delete the candidate file immediately (it was never used for
+  anything) and continue revalidating rounds against the untouched original active snapshot.
 
 ## Scope (v1)
 
