@@ -1758,8 +1758,8 @@ meaning.
   it.** Never treated as a clean sign-off, and never given the ordinary bounded-resume-retry
   treatment every other threadId-bearing failure gets. (As of this task, that section does not yet
   exist in `references/retry-guards.md` — it is added by the next task in this project's
-  implementation plan; that file's current text still describes its two existing resume-safe
-  reasons as exhaustive, which this task does not change.)
+  implementation plan; that file's current text describes its two branching cases (no `threadId`,
+  or `threadId` with a resume-safe reason) as exhaustive, which this task does not change.)
 - **Partial or unknown source coverage ≠ CLEAN, and is not the same failure as NOT
   CONVERGED/COULD NOT VERIFY.** If round 1's `coverage_source.status` (the N-group merged value
   for a parallel round — see "Coverage is a Round-1-only property" above) is unresolved `"partial"`
