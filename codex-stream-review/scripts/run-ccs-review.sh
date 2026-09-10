@@ -312,7 +312,6 @@ build_review_prompt() {
   fi
   if [ -n "$RECEIPT_SCHEDULE_PATH" ]; then
     echo ""
-    echo "REVIEW_RECEIPT_SCHEDULE"
     printf '%s' "$RECEIPT_SCHEDULE_CONTENT"
   fi
 }
