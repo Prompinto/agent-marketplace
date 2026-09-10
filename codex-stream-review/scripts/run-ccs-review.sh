@@ -310,6 +310,11 @@ build_review_prompt() {
     echo "This scope has no diff, so there is nothing further below -- your review target is the"
     echo "\"## Context\" section above."
   fi
+  if [ -n "$RECEIPT_SCHEDULE_PATH" ]; then
+    echo ""
+    echo "REVIEW_RECEIPT_SCHEDULE"
+    cat "$RECEIPT_SCHEDULE_PATH"
+  fi
 }
 
 # --cleanup <threadId>: the CALLER's explicit end-of-review step (Task 5's
@@ -398,6 +403,7 @@ CODEX_PID=""
 # whatever invoked this script.
 SAFE_GIT_HOME=""
 RECEIPT_SLOT=""
+RECEIPT_SCHEDULE_PATH=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -486,6 +492,15 @@ while [ $# -gt 0 ]; do
           exit 1 ;;
       esac
       RECEIPT_SLOT="$2"; shift 2 ;;
+    --receipt-schedule-file)
+      # Public, opt-in flag (documented in SKILL.md): the local path Claude itself created via
+      # `mktemp` (RECEIPT_SCHEDULE_FILE) holding this thread's private REVIEW_RECEIPT_SCHEDULE
+      # mapping. No further validation needed beyond having a value -- it is a path Claude fully
+      # controls, never caller-supplied `--focus`/stdin content. build_review_prompt() reads and
+      # embeds its content directly, after the diff/artifact -- never through FOCUS_FILE, so this
+      # content never reaches the review-history JSONL log's own `target.focus` field.
+      [ $# -ge 2 ] || { printf '{"ok":false,"reason":"bad_args","detail":"--receipt-schedule-file requires a value"}\n'; exit 1; }
+      RECEIPT_SCHEDULE_PATH="$2"; shift 2 ;;
     *)
       DETAIL_JSON="$(printf '%s' "$1" | jq -Rs '"unknown argument: " + .')"
       printf '{"ok":false,"reason":"bad_args","detail":%s}\n' "$DETAIL_JSON"

@@ -674,43 +674,6 @@ up using `--capture-evidence` at all):**
    call) — see that section below for where it actually runs. Either way, this happens exactly
    once, before round 1 ever dispatches, and is never re-collected afterward.
 
-**Receipt schedule generation (always allocated once per material-bearing seed — round 1's own
-fresh dispatch, or later a `no_material_reviewed` fresh restart's brand-new thread — see
-`references/retry-guards.md`'s new rule for when a restart happens).** Full mechanics in the
-design doc's §2.2/§2.3 if this summary is ever unclear, but the exact procedure is:
-
-```bash
-SESSION_ID="<literal from Phase 0>"
-RECEIPT_SCHEDULE_FILE=$(mktemp "/tmp/ccs-${SESSION_ID}-receipt-schedule.txt.XXXXXX")
-SCHEDULE_BLOCK="REVIEW_RECEIPT_SCHEDULE"
-for i in $(seq 1 70); do
-  TOKEN="$(head -c 32 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 24)"
-  SCHEDULE_BLOCK="$SCHEDULE_BLOCK
-$i: $TOKEN"
-done
-printf '%s\n' "$SCHEDULE_BLOCK" > "$RECEIPT_SCHEDULE_FILE"
-echo "RECEIPT_SCHEDULE_FILE=$RECEIPT_SCHEDULE_FILE"
-```
-
-`N = 70` is fixed (see this plan's Global Constraints and the design doc's §2.2 derivation:
-`MAX_ROUNDS(20) × up to 3 attempts/round = 60`, plus margin) — never a different value.
-`RECEIPT_SCHEDULE_FILE` is written ONCE here and never touched again for this thread's lifetime —
-remembered as a session-scoped literal fact for this THREAD specifically (not the whole session:
-a fresh restart's new thread gets its OWN new `RECEIPT_SCHEDULE_FILE`, a separate file, never
-reusing the old thread's). **This file's content is NEVER included in any `FOCUS_FILE`
-construction, never excerpted into round 2+'s own History text, and never part of any JSONL
-line** — it exists purely as Claude's own local, private record of the schedule, mirroring
-`SNAPSHOT_FILE`'s own treatment exactly.
-
-**Embedding into the seed's own payload.** The `REVIEW_RECEIPT_SCHEDULE` block (the exact content
-just written to `RECEIPT_SCHEDULE_FILE`, read back via `cat "$RECEIPT_SCHEDULE_FILE"`) is appended
-to round 1's own `FOCUS_FILE` content (Phase 1 Step 0's Round 1 focus-text construction, described
-above), positioned immediately AFTER the Why/Scope/collaboration-frame text — representative of
-the payload having been fully transmitted, not embedded before real content. (This is Claude's own
-`FOCUS_FILE` text, not `run-ccs-review.sh`'s own diff/artifact collection — the wrapper never sees
-or constructs this block; Claude writes it directly into the same file it already writes Why/Scope
-text into.)
-
 ---
 
 ## Phase 1 — Round dispatch
@@ -951,43 +914,6 @@ Remember both `SNAPSHOT_FILE` and `SNAPSHOT_DIGEST` as literal facts for the res
 same way `REPO_ROOT`/`SESSION_ID` already are — never re-collected after this point (see
 `references/snapshot-integrity.md` for why this is a deliberate non-goal, not an oversight).
 
-**Receipt schedule generation (always allocated once per material-bearing seed — round 1's own
-fresh dispatch, or later a `no_material_reviewed` fresh restart's brand-new thread — see
-`references/retry-guards.md`'s new rule for when a restart happens).** Full mechanics in the
-design doc's §2.2/§2.3 if this summary is ever unclear, but the exact procedure is:
-
-```bash
-SESSION_ID="<literal from Phase 0>"
-RECEIPT_SCHEDULE_FILE=$(mktemp "/tmp/ccs-${SESSION_ID}-receipt-schedule.txt.XXXXXX")
-SCHEDULE_BLOCK="REVIEW_RECEIPT_SCHEDULE"
-for i in $(seq 1 70); do
-  TOKEN="$(head -c 32 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 24)"
-  SCHEDULE_BLOCK="$SCHEDULE_BLOCK
-$i: $TOKEN"
-done
-printf '%s\n' "$SCHEDULE_BLOCK" > "$RECEIPT_SCHEDULE_FILE"
-echo "RECEIPT_SCHEDULE_FILE=$RECEIPT_SCHEDULE_FILE"
-```
-
-`N = 70` is fixed (see this plan's Global Constraints and the design doc's §2.2 derivation:
-`MAX_ROUNDS(20) × up to 3 attempts/round = 60`, plus margin) — never a different value.
-`RECEIPT_SCHEDULE_FILE` is written ONCE here and never touched again for this thread's lifetime —
-remembered as a session-scoped literal fact for this THREAD specifically (not the whole session:
-a fresh restart's new thread gets its OWN new `RECEIPT_SCHEDULE_FILE`, a separate file, never
-reusing the old thread's). **This file's content is NEVER included in any `FOCUS_FILE`
-construction, never excerpted into round 2+'s own History text, and never part of any JSONL
-line** — it exists purely as Claude's own local, private record of the schedule, mirroring
-`SNAPSHOT_FILE`'s own treatment exactly.
-
-**Embedding into the seed's own payload.** The `REVIEW_RECEIPT_SCHEDULE` block (the exact content
-just written to `RECEIPT_SCHEDULE_FILE`, read back via `cat "$RECEIPT_SCHEDULE_FILE"`) is appended
-to round 1's own `FOCUS_FILE` content (Phase 1 Step 0's Round 1 focus-text construction, described
-above), positioned immediately AFTER the Why/Scope/collaboration-frame text — representative of
-the payload having been fully transmitted, not embedded before real content. (This is Claude's own
-`FOCUS_FILE` text, not `run-ccs-review.sh`'s own diff/artifact collection — the wrapper never sees
-or constructs this block; Claude writes it directly into the same file it already writes Why/Scope
-text into.)
-
 Full mechanics — what parallel mode actually is, the scope-sizing table, when to use
 multiple reviewers, and how convergence works across groups — live in `references/parallel-mode.md`.
 
@@ -1036,6 +962,61 @@ before) — harmless, since these are ephemeral per-run files cleaned up at the 
 `THREAD_ID=<uuid>` signal on stderr, well before the round's final JSON appears on stdout, so
 keeping the streams in separate files (one `OUT_FILE`/`ERR_FILE` pair per group) prevents any
 stderr noise from ever contaminating the JSON parse.
+
+**Receipt schedule generation — this `GROUP`'s round-1 fresh dispatch only, or later a
+`no_material_reviewed` fresh restart's brand-new thread for this same `GROUP` (see
+`references/retry-guards.md`'s new rule for when a restart happens); NEVER regenerated on an
+ordinary round 2+/resumed dispatch to a thread that already has one — that dispatch reuses the
+exact same `RECEIPT_SCHEDULE_FILE` literal allocated here, unchanged.** One independent schedule
+per dispatched group — in parallel mode, each group's own thread gets its own schedule, never one
+schedule shared across groups (unlike `SNAPSHOT_FILE`/`SNAPSHOT_DIGEST` above, which are genuinely
+session-wide because every group reviews the identical snapshot). Full mechanics in the design
+doc's §2.2/§2.3 if this summary is ever unclear, but the exact procedure — run once, for this
+`GROUP`, only on the dispatch that first establishes its thread:
+
+```bash
+SESSION_ID="<literal from Phase 0>"
+GROUP="<this group's literal, same value as this Step 0 block's own GROUP above>"
+RECEIPT_SCHEDULE_FILE=$(mktemp "/tmp/ccs-${SESSION_ID}-${GROUP}-receipt-schedule.txt.XXXXXX")
+SCHEDULE_BLOCK="REVIEW_RECEIPT_SCHEDULE"
+for i in $(seq 1 70); do
+  TOKEN="$(head -c 32 /dev/urandom | shasum -a 256 | head -c 24)"
+  SCHEDULE_BLOCK="$SCHEDULE_BLOCK
+$i: $TOKEN"
+done
+printf '%s\n' "$SCHEDULE_BLOCK" > "$RECEIPT_SCHEDULE_FILE"
+echo "RECEIPT_SCHEDULE_FILE=$RECEIPT_SCHEDULE_FILE"
+```
+
+`shasum -a 256` (the same hashing tool `SNAPSHOT_DIGEST` above already uses, not a new dependency)
+always emits exactly 64 lowercase hex characters before the trailing `  -` filename marker, so
+`head -c 24` always has 64 real characters to draw from and always succeeds — unlike
+`base64 | tr -dc 'A-Za-z0-9'`, which strips `+`/`/`/`=` first and can leave fewer than 24
+characters behind for an unlucky random block (confirmed: an adversarial `/dev/urandom` read can
+degrade that pipeline to as little as 1 surviving character). `N = 70` is fixed (see this plan's
+Global Constraints and the design doc's §2.2 derivation: `MAX_ROUNDS(20) × up to 3 attempts/round =
+60`, plus margin) — never a different value. `RECEIPT_SCHEDULE_FILE` is written ONCE here per
+`(SESSION_ID, GROUP)` and never touched again for that group's thread lifetime — remembered as a
+session-scoped literal fact for THIS group's thread specifically (not the whole session: a fresh
+restart's new thread for this group gets its OWN new `RECEIPT_SCHEDULE_FILE`, a separate file,
+never reusing the old thread's). **This file's content is NEVER included in any `FOCUS_FILE`
+construction, never excerpted into round 2+'s own History text, and never part of any JSONL
+line** — it exists purely as Claude's own local, private record of the schedule, mirroring
+`SNAPSHOT_FILE`'s own treatment exactly.
+
+**Dispatching it.** The ONE dispatch that first establishes this group's thread — round 1's own
+fresh dispatch, or later a `no_material_reviewed` fresh restart's brand-new first dispatch — passes
+`--receipt-schedule-file "<the literal RECEIPT_SCHEDULE_FILE path just allocated for this GROUP>"`
+as an additional `run-ccs-review.sh` argument on that same dispatch (pairing with that dispatch's
+own `--receipt-slot <N>` argument). `build_review_prompt()` reads this file's content directly and
+embeds it — labeled `REVIEW_RECEIPT_SCHEDULE`, positioned as the literal last thing in the
+prompt, after the diff/artifact — never through `FOCUS_FILE`, so it is never captured by Phase 2
+step 6's `FOCUS_LOG_TEXT` read and never reaches the review-history JSONL log. **Never re-passed on
+any later dispatch to the same thread** (a resumed round, or a bounded resume retry) — the schedule
+is embedded exactly once, matching the design's own "never repeated in any later prompt, fresh or
+resumed" rule; every later dispatch relies on the model's own retained thread history to still see
+it. (Full mechanics for exactly which dispatches pass this flag belong to Task 7, not yet
+dispatched.)
 
 Then, using the Write tool (never a shell redirect — see the sentinel idiom above), write this
 round's focus text — the exact intended content, no trailing sentinel needed (see the sentinel
@@ -1913,7 +1894,7 @@ trustworthy one).
 3. **Clean up session-level temp files:**
    ```bash
    rm -f "<literal REPO_ROOT_FILE>" "<literal INSTALL_PATH_FILE>" "<literal SNAPSHOT_FILE>"
-   rm -f "<every RECEIPT_SCHEDULE_FILE ever allocated this session, one per thread that got one>"
+   rm -f "<every RECEIPT_SCHEDULE_FILE ever allocated this session, one per GROUP per thread that got one>"
    # only if this session ever actually allocated them (most sessions never do — see Phase 0 step 4):
    rm -rf "<the exact literal CLEAN_REPO_DIR path, if one was allocated this session>"
    rm -rf "<the exact literal FAKE_GIT_HOME path, if one was allocated this session>"
@@ -1925,11 +1906,12 @@ trustworthy one).
    conditional on session type, so this `rm -f` needs no guard. **When `--compact` was used this
    session**, also `rm -f` `PROVISIONAL_SNAPSHOT_FILE` and every path ever recorded in any round's
    own `retired_snapshot_files` array — only if `--compact` was used this session and either was
-   ever set/recorded. **A session may have allocated more than one `RECEIPT_SCHEDULE_FILE`** — round
-   1's own thread gets one, and each `no_material_reviewed` fresh restart's brand-new thread gets
-   its own separate one (see "Receipt schedule generation" above) — every one of them must be
-   removed here, never just the most recent, since each durably holds still-secret unused token
-   values that must not outlive the run.
+   ever set/recorded. **A session may have allocated more than one `RECEIPT_SCHEDULE_FILE`** — every
+   dispatched `GROUP` gets its own (never one shared across groups in parallel mode), and each
+   `no_material_reviewed` fresh restart's brand-new thread for a given group adds a further separate
+   one (see "Receipt schedule generation" above) — every one of them, for every group, must be
+   removed here, never just the most recent or just `GROUP="main"`'s, since each durably holds
+   still-secret unused token values that must not outlive the run.
 
 4. **Write the durable final-verdict artifact (Phase 5 Item B) — a third instance of the same
    directory/session-id-prefix pattern `--keep-evidence` already established** (that flag's own
