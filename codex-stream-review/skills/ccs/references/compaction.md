@@ -44,6 +44,71 @@ Starting as opt-in (not always-on, unlike snapshot integrity/the claim ledger) i
 this is a genuinely new failure surface (see "Restart mechanism" and "Digest construction" below)
 that has not yet been validated against real reviews the way the always-on mechanisms have.
 
+## Trigger
+
+**Round-ownership terminology.** Call the round whose completed usage triggers this check the
+TRIGGERING round. Compaction, when triggered, is attempted for the VERY NEXT round dispatched
+afterward — call it the COMPACTION round. Every later use of "round R" in this file's "Restart
+mechanism" section, and everywhere else in this file discussing the compaction attempt itself,
+means the COMPACTION round — never the triggering round the decision was based on. The triggering
+round was already processed and logged normally, before this check ever runs; nothing about it is
+retroactively changed.
+
+**When this check runs.** After EVERY completed round — including round 1 itself: round 1's OWN
+resulting thread is already a real, resumable thread the moment round 1 completes, and its usage
+is already known then, so restricting the check to round 2+ would force at least one wasted
+`--resume` turn against an already-oversized round-1 thread whenever round 1 alone exceeds the
+threshold. If `COMPACT_MODE` is ON: check that just-completed round's own
+`execution.usage.input_tokens` against `COMPACT_THRESHOLD = 8,000,000` (a fixed constant, not
+user-configurable in v1 — see "Scope (v1)" below). If exceeded, compact before building the next
+round's dispatch — if round 1 itself triggers this, round 2 becomes the COMPACTION round
+immediately (running the existing mandatory round-2+ active-snapshot revalidation first, per
+"Restart mechanism" step 0 below, then the fresh compaction path), never a wasted ordinary
+`--resume` first.
+
+**Handling missing OR malformed usage data.** `execution.usage.input_tokens` is documented as
+best-effort and may be entirely absent even on a genuinely successful round (see
+`references/execution-telemetry.md`). If the most recently completed round's response has no
+`execution.usage.input_tokens` to check: skip the threshold check for this round (never treat
+missing data as "under threshold," which would make an opt-in `--compact` session silently never
+compact at all, and never as "over threshold" either) — log one narration line noting the check
+was skipped, and re-attempt the check normally at the next round where usage data is available.
+A PRESENT value must also be validated before comparison, never trusted as-is: `input_tokens`,
+when present, must additionally be validated as a non-negative integer before ever being compared
+to `COMPACT_THRESHOLD` — a string, `null`, a negative number, or any other non-integer shape is
+treated exactly like the ABSENT case (skip, narrate, re-attempt next round). This matters because
+`jq`'s own type-ordering ranks any string above any number, so a raw comparison against a
+malformed value like `"not-a-number"` would otherwise spuriously compare GREATER than
+8,000,000 and trigger an unnecessary, expensive fresh restart.
+
+**Benefit-free-restart-loop guard (the `COMPACTION_BASELINE_TOKENS` circuit breaker).** A
+successful COMPACTION round is, itself, just another completed round — its own usage gets
+checked by this same trigger. If the underlying diff/claims content is simply large enough that
+even a FRESH restart's own single-turn usage is already at or above `COMPACT_THRESHOLD` — not
+because of accumulated resumed-thread history, but because the content itself is that big — then
+the very next round would trigger compaction again, and again, every round, each one paying the
+full fresh-restart cost with ZERO benefit. Fixed: record `COMPACTION_BASELINE_TOKENS` — the
+COMPACTION round's OWN, freshly-restarted `execution.usage.input_tokens` (never the TRIGGERING
+round's own usage — the triggering round's usage is, by definition, already `>=
+COMPACT_THRESHOLD`, since that is what triggered it; recording that value as the baseline would
+make the check below true unconditionally, disabling compaction after every single first
+successful restart) — every time a compaction round's OWN dispatch succeeds.
+
+If THAT (the compaction round's own, freshly-restarted) baseline is itself already `>=
+COMPACT_THRESHOLD`, compaction is disabled for the remainder of the session (narrated once,
+clearly, the same way the byte-budget exhaustion limitation is — see "Byte-budget preflight"
+below) — record `compaction_disabled_reason: "baseline_at_or_above_threshold"` on that same
+round's own JSONL line (see "Logging" below for the full durability rule). If the fresh baseline
+IS comfortably under threshold (the common, intended case), ordinary accumulation-based
+triggering simply resumes for future rounds exactly as designed, no special-casing needed.
+
+**Fail closed when the compaction round's OWN telemetry is unusable — never assume the restart
+helped.** If the compaction round's own `input_tokens` is unusable (per the missing/malformed
+rule above), `COMPACTION_BASELINE_TOKENS` is NOT left unset — it is treated IDENTICALLY to a
+baseline that IS `>= COMPACT_THRESHOLD`: record `compaction_disabled_reason: "baseline_unusable"`
+and disable compaction for the remainder of the session. An unverifiable baseline is treated as a
+failed one, not a free pass.
+
 ## Scope (v1)
 
 - **Single-reviewer only (`GROUP="main"`).** Parallel mode is explicitly out of scope for v1 —
