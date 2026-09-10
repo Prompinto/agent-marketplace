@@ -35,16 +35,17 @@
       same as every dispatch — see `references/capture-evidence.md` and
       `references/keep-evidence.md`).
 
-      **This retry is a schedule-(re)generation trigger — but a delayed DELIVERY of the schedule
-      already allocated in Step 0, never a second generation.** `RECEIPT_SCHEDULE_FILE` for this
-      GROUP was already allocated once in Phase 1 Step 0 before the original attempt (see `SKILL.md`'s
-      "Receipt schedule generation", written ONCE per `(SESSION_ID, GROUP)`) — the original attempt
-      failed before it ever established a thread, so it never actually delivered that schedule to
-      Codex. THIS retry is therefore the dispatch that first establishes this group's thread: perform
-      the ordinary receipt-slot-issuance procedure (`SKILL.md`'s "Receipt slot issuance" section) and
-      pass BOTH `--receipt-slot "$NEXT_SLOT"` and `--receipt-schedule-file "$RECEIPT_SCHEDULE_FILE"`
-      (the SAME file already allocated for this GROUP in Step 0 — never a newly-generated one) on
-      this retry dispatch.
+      **This retry is a schedule-(re)generation trigger — a genuinely fresh thread, and the
+      schedule already allocated for the original attempt must never be reused.** The original
+      attempt's `RECEIPT_SCHEDULE_FILE` (Phase 1 Step 0) may already have been read by the launched
+      `codex exec` process before the wrapper ever detected failure — `run-ccs-review.sh` writes the
+      complete prompt (schedule included) and launches the process BEFORE any `thread.started`
+      detection runs, so a `no_thread_started` (or any other) failure reason does not prove the
+      schedule was never delivered. Generate a genuinely NEW `RECEIPT_SCHEDULE_FILE` for this retry
+      (the original allocation is abandoned, never reused); perform the ordinary
+      receipt-slot-issuance procedure (`SKILL.md`'s "Receipt slot issuance" section) and pass BOTH
+      `--receipt-slot "$NEXT_SLOT"` and `--receipt-schedule-file "$RECEIPT_SCHEDULE_FILE"` (the new
+      file) on this retry dispatch.
 
       **If this is round 1 and the reason
       is `no_thread_started`, capture coverage from the failing attempt BEFORE dispatching that

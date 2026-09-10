@@ -971,8 +971,9 @@ happens); a compaction restart's brand-new thread (`references/compaction.md`'s 
 dispatch, or its retry topology's own fresh candidate-A retry / thread-B dispatch); and
 `references/retry-guards.md`'s own round-1 no-`GROUP_THREADS`-entry-yet fresh retry and its
 post-resume-retry-exhaustion fresh fallback (that file's own two genuinely-fresh-thread cases —
-see each for whether it reuses this group's already-allocated `RECEIPT_SCHEDULE_FILE` or allocates
-a brand-new one). **NEVER regenerated on an ordinary round 2+/resumed dispatch to a thread that
+each allocates a brand-new `RECEIPT_SCHEDULE_FILE`, never reusing the original attempt's, since a
+failed dispatch does not prove its own schedule was never delivered to a launched `codex exec`
+process — see that file for why). **NEVER regenerated on an ordinary round 2+/resumed dispatch to a thread that
 already has one — that dispatch reuses the exact same `RECEIPT_SCHEDULE_FILE` literal allocated
 here, unchanged.** The 70-slot budget (`N = 70` below) is PER-THREAD, not per-session — every
 fresh-thread event, wherever in this file or its references one occurs, gets its OWN independent
