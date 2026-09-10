@@ -5,7 +5,7 @@ scenarios: the compaction analogue of `retry-exhausted-round1-fresh-fallback`, e
 compaction's own three-thread shape (the pre-compaction OLD thread, exhausted candidate A,
 successful candidate B) instead of that scenario's two.
 
-**Targets:** `references/compaction.md`'s "Retry topology" section's bullet-4 ordinary
+**Targets:** `references/compaction.md`'s "Retry topology" section's bullet-3 ordinary
 escalation -- candidate A's own fresh dispatch captures a real threadId, both of its bounded
 `--resume` retries are exhausted (3 consecutive failures total), then the fresh-B escalation
 dispatches ONE new, single, unretried attempt as thread B, which succeeds. Confirms
@@ -65,7 +65,7 @@ Sequence:
       captured despite the failure.
    b. **Wait 5s**, `--resume A --timeout 300`, `exit_nonzero` -- fails the same way.
    c. **Wait 15s**, `--resume A --timeout 300`, `exit_nonzero` -- fails the same way. Both
-      bounded resume retries now exhausted (bullet 4's ordinary escalation).
+      bounded resume retries now exhausted (bullet 3's ordinary escalation).
    d. **Fresh-B escalation**: dispatch thread B fresh (`--uncommitted`), abandoning A --
       `compaction_attempt_failed_thread=[A]`. `normal`, `input_tokens=400000` -- SUCCEEDS, CLEAN
       verdict, new real `threadId` (`B`).

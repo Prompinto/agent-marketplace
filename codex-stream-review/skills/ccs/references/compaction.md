@@ -1256,7 +1256,7 @@ sub-attempts that each carried an `execution` object, those are ALSO preserved â
 own line, alongside `compacted_from_thread` and the snapshot-lineage fields. Exactly the THREE
 sub-cases from "Retry topology" above can produce this (never a "B retries" case, since B is
 single-shot by construction): (a) candidate A's own retry-then-succeed via `--resume`; (b)
-candidate A's own bullet-2 no-threadId fresh retry succeeding; or (c) candidate A was exhausted
+candidate A's own bullet-1 no-threadId fresh retry succeeding; or (c) candidate A was exhausted
 entirely and thread B then succeeded on its own single, unretried attempt â€” in case (c)
 specifically, the preserved `execution` entries belong to A's own failed attempt(s), never to B.
 

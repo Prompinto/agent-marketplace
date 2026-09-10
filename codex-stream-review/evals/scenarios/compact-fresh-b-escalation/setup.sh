@@ -2,7 +2,7 @@
 # Scenario: compact-fresh-b-escalation
 # Targets: references/compaction.md's "Retry topology" fresh-B escalation -- candidate A's own
 # fresh dispatch gets a real threadId, then BOTH bounded --resume retries fail too (3
-# consecutive nonzero_exit failures total), exhausting A per bullet 4's ordinary escalation.
+# consecutive nonzero_exit failures total), exhausting A per bullet 3's ordinary escalation.
 # Falls back to ONE fresh retry with a brand NEW thread B, abandoning A --
 # compaction_attempt_failed_thread becomes [A]. B's own dispatch SUCCEEDS, becoming the new
 # active thread. The pre-existing OLD thread from round 1 is untouched throughout (it is never
@@ -40,7 +40,7 @@ Expected sequence:
      b. Wait 5s, --resume A --timeout 300, FAKE_CODEX_SCENARIO=exit_nonzero -- fails the same
         way.
      c. Wait 15s, --resume A --timeout 300, FAKE_CODEX_SCENARIO=exit_nonzero -- fails the same
-        way. Both bounded resume retries now exhausted (bullet 4's ordinary escalation: 3
+        way. Both bounded resume retries now exhausted (bullet 3's ordinary escalation: 3
         consecutive failures for candidate A).
      d. Fresh-B escalation: dispatch thread B fresh (--uncommitted), abandoning A --
         compaction_attempt_failed_thread=[A]. FAKE_CODEX_SCENARIO=normal,
