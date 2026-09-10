@@ -429,6 +429,23 @@ else
   fail "--receipt-slot abc should be rejected, got: $OUT"
 fi
 
+# An oversized value must be rejected as clean bad_args JSON with no stray
+# stderr line (e.g. bash's own "integer expression expected") ahead of it --
+# confirms the digit-length bound runs before any native arithmetic.
+OUT="$(pd_run fresh --receipt-slot 9999)"
+if printf '%s' "$OUT" | jq -e '.reason == "bad_args"' >/dev/null 2>&1; then
+  pass "--receipt-slot 9999 (oversized) rejected as clean bad_args JSON, no stray stderr line ahead of it"
+else
+  fail "--receipt-slot 9999 should be rejected as clean bad_args JSON, got: $OUT"
+fi
+
+OUT="$(pd_run fresh --receipt-slot 01)"
+if printf '%s' "$OUT" | jq -e '.reason == "bad_args"' >/dev/null 2>&1; then
+  pass "--receipt-slot 01 (leading zero) rejected as bad_args"
+else
+  fail "--receipt-slot 01 should be rejected, got: $OUT"
+fi
+
 export FAKE_CODEX_SCENARIO=normal
 OUT="$(pd_run fresh --receipt-slot 5)"
 if printf '%s' "$OUT" | tail -1 | jq -e '.ok == true' >/dev/null 2>&1; then

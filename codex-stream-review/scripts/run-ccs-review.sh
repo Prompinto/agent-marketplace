@@ -476,12 +476,15 @@ while [ $# -gt 0 ]; do
       # N-parameterized instruction -- never restates a live token value, only the index to look up.
       [ $# -ge 2 ] || { printf '{"ok":false,"reason":"bad_args","detail":"--receipt-slot requires a value"}\n'; exit 1; }
       case "$2" in
-        ''|*[!0-9]*)
+        # 1-3 digits, no leading zero (real slots are 1-70 per the design's N=70 schedule; this
+        # bound also keeps the value well clear of bash native-arithmetic overflow, and rejects
+        # a leading-zero value like "01" that would mismatch the schedule's own "1:", "2:" labels).
+        [1-9]|[1-9][0-9]|[1-9][0-9][0-9]) ;;
+        *)
           DETAIL_JSON="$(printf '%s' "$2" | jq -Rs '"--receipt-slot must be a positive integer, got: " + .')"
           printf '{"ok":false,"reason":"bad_args","detail":%s}\n' "$DETAIL_JSON"
           exit 1 ;;
       esac
-      [ "$2" -ge 1 ] || { printf '{"ok":false,"reason":"bad_args","detail":"--receipt-slot must be >= 1"}\n'; exit 1; }
       RECEIPT_SLOT="$2"; shift 2 ;;
     *)
       DETAIL_JSON="$(printf '%s' "$1" | jq -Rs '"unknown argument: " + .')"
