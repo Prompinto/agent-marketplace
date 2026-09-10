@@ -1420,9 +1420,11 @@ never reset — so the existing claim-ledger reducer keeps working over the whol
   the exact `SKILL.md` edit). Removing this restriction is future work, not a v1 goal.
   **This restriction is specific to `--compact`'s OWN trigger/detection logic, not to the restart
   PROCEDURE this section documents.** `references/retry-guards.md`'s `no_material_reviewed` rule
-  reuses this section's restart mechanism PER-GROUP, in any review mode including parallel — a
-  different, already-parallel-mode-compatible consumer of the same shared procedure; do not read
-  this bullet as blocking that reuse.
+  reuses this section's restart-mechanism SUCCESS-PATH construction (not its failure-handling/
+  retry-topology sections) for SINGLE-REVIEWER sessions only, for the same underlying reason this
+  bullet's own restriction exists (session-wide snapshot and scope-framing state, not yet
+  per-group) — in parallel mode, a group hitting `no_material_reviewed` reports
+  `⚠️ COULD NOT VERIFY` for that group directly, without attempting this restart.
 - **`MAX_ROUNDS` unaffected in meaning** — a compaction round consumes one increment of the round
   counter like any other round; no separate cap or exemption.
 

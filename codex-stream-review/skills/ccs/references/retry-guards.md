@@ -224,9 +224,20 @@ Claude's own Phase 2 receipt-mismatch/invalid-null-pair check — see `SKILL.md`
 1) is **never** resume-safe: the thread has just proven its own context is hollow, so resuming it
 would only reproduce the identical failure.
 
-**Recovery**: abandon that thread immediately (add to `LEAKED_THREAD_IDS`) and issue exactly ONE
-fresh restart, reusing `references/compaction.md`'s own COMPLETE "Restart mechanism" section
-verbatim — not a separately-invented lighter-weight version. This means:
+**Recovery — single-reviewer sessions only (`GROUP="main"`).** This full restart-with-
+mechanism-reuse recovery is available ONLY when this session is running single-reviewer
+(`GROUP="main"`) — mirroring `references/compaction.md`'s own "Scope (v1): Single-reviewer only"
+restriction, for the identical underlying reason: the reused mechanism depends on session-wide,
+single-instance state (`SNAPSHOT_FILE`/`SNAPSHOT_DIGEST`, `target.original_scope_framing`) that
+has no per-group equivalent today. Building genuine per-group isolation (a separate snapshot per
+group, group-keyed scope framing) is real infrastructure work, out of this task's scope — see the
+parallel-mode fallback below for what happens instead when this session has more than one group.
+
+For a single-reviewer session: abandon that thread immediately (add to `LEAKED_THREAD_IDS`) and
+issue exactly ONE fresh restart, reusing `references/compaction.md`'s "Restart mechanism" section's
+SUCCESS-PATH construction verbatim (Steps 0-4, plus "Ordering on success" for the promotion
+machinery) — not a separately-invented lighter-weight version, and — see the explicit override
+below — never that section's sibling "On failure"/"Retry topology" sections. This means:
 - The claim ledger digest is carried forward into the fresh thread's own seed, built from the
   durable JSONL log's own reducer state — never from the abandoned thread's own internal state.
 - The same snapshot-integrity revalidation/promotion machinery `--compact`'s own restart already
@@ -236,10 +247,23 @@ verbatim — not a separately-invented lighter-weight version. This means:
   (`RECEIPT_SCHEDULE_FILE`, per `SKILL.md`'s own schedule-generation procedure) — never reusing
   the abandoned thread's schedule.
 
-**If the ONE fresh restart is ALSO `no_material_reviewed`** (either detection route): stop and
-report `⚠️ COULD NOT VERIFY`, never attempt a third thread — matching this file's own existing
-round-1-fresh-fallback-then-give-up precedent, and `references/compaction.md`'s own
-candidate-A-to-thread-B single-shot-escalation-then-give-up pattern.
+**If the ONE fresh restart fails for ANY reason — not just a repeat `no_material_reviewed` — this
+is immediate, unconditional exhaustion.** A repeat `no_material_reviewed` (either detection route),
+or any other wrapper failure reason whatsoever (`timeout`, `nonzero_exit`, `no_thread_started`,
+`bad_args`, or anything else): stop and report `⚠️ COULD NOT VERIFY`, never attempt a third thread
+— matching this file's own existing round-1-fresh-fallback-then-give-up precedent, and
+`references/compaction.md`'s own candidate-A-to-thread-B single-shot-escalation-then-give-up
+pattern. **Explicit override, stated because this is the one place in this file where the default
+would otherwise apply:** this recovery reuses ONLY compaction's Restart-mechanism SUCCESS-PATH
+construction (digest carryforward from the JSONL reducer, snapshot-integrity revalidation/
+promotion, a fresh dispatch with a fresh receipt schedule) — it does NOT reuse compaction's own
+"On failure" fallback section (which would resume the abandoned OLD thread — explicitly forbidden
+here, since resuming ANYTHING after a `no_material_reviewed` restart's own failure would violate
+the "never resume a proven-hollow context" premise this whole feature exists to enforce), nor its
+"Retry topology" section (the bounded-resume-then-fresh-B escalation `--compact`'s own restart
+uses when ITS OWN attempt fails — specific to `--compact`'s own tolerance model, not appropriate
+here). Never a third thread, never a bounded-resume-retry of the new restart's own thread, never a
+fallback resume of the abandoned old thread.
 
 This recovery is triggered from `no_material_reviewed` REGARDLESS of what session round number it
 occurs at — unlike this file's own general round-1-only fresh-fallback restriction for ordinary
@@ -248,17 +272,18 @@ including round 2+, since resuming has already been proven useless and there is 
 "no fresh scope left" concern that applies here (this thread's own accumulated context has zero
 remaining value once proven hollow).
 
-**This reuse is PER-GROUP and fully compatible with parallel mode.** `references/compaction.md`'s
-own "Scope (v1)" section restricts `--compact` ITSELF to single-reviewer `main` — but that
-restriction is about `--compact`'s own triggering/detection complexity (each group crossing its
-own byte/token threshold at a different round), never about the underlying restart PROCEDURE
-(digest construction, snapshot revalidation/promotion, fresh dispatch with a fresh receipt
-schedule) this section reuses. This file's own failure handling is already explicitly per-group
-(see the "Per-group retry (parallel mode)" bullet above); when a SPECIFIC group's thread hits
-`no_material_reviewed`, every step of the reused restart procedure applies to THAT group's own
-thread/schedule/snapshot state only — exactly like this file's other per-group recovery rules —
-regardless of whether `--compact` is ON, OFF, or not applicable because this session is running in
-parallel mode.
+**Parallel-mode fallback: no restart attempted, immediate `⚠️ COULD NOT VERIFY` for that group
+only.** When this session is running in parallel mode (more than one group), the single-reviewer
+restriction above means this recovery is not available at all — a group hitting
+`no_material_reviewed` in a parallel round does not attempt any restart. That group immediately
+reports `⚠️ COULD NOT VERIFY`, matching this file's own existing pattern elsewhere for "no fresh
+scope left, stop and report COULD NOT VERIFY for that group" situations (see the round-2+
+no-`threadId` bullet and the resume-exhausted-on-round-2+ bullet above). This is a per-group
+terminal outcome, not a whole-round abort — consistent with how this file already treats an
+ordinary `ok:false` group failure (see the "Per-group retry (parallel mode)" bullet above): other
+groups in the same parallel round are unaffected, their own real, already-collected results are
+kept, and the round's overall status is worst-case-wins (`⚠️ COULD NOT VERIFY` for the round, since
+that is this file's own mandatory rule whenever any group ends there).
 
 ## Compaction-only exception (`--compact`, opt-in — see `references/compaction.md`)
 
