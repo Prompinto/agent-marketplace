@@ -304,10 +304,14 @@ no-threadId fresh retry, and thread B's own dispatch alike.
 **A real latch, not merely an implicit "it'll fail the same way again" claim.** Exceeding
 `COMPACT_BYTE_BUDGET` sets `compaction_disabled_reason` to `"byte_budget_exceeded"` — the SAME
 durable latch mechanism as the other two triggers (see "Trigger" above), naming WHICH component
-(claims vs. diff/artifact) drove the estimate over budget where determinable. Once set, every
-later triggering round's threshold check no-ops immediately, per the existing latch contract —
-skipping the local re-collection and re-measurement entirely, not merely skipping the network
-dispatch. This exceeding-budget failure does NOT increment `COMPACTION_CONSECUTIVE_FRESH_FAILURES`
+(claims vs. diff/artifact) drove the estimate over budget where determinable. THIS SAME attempt —
+the one whose own preflight measurement just exceeded the budget — is treated exactly like any
+other compaction failure: it falls through to the normal `--resume` fallback (see "On failure"
+above) immediately, without ever attempting the real fresh dispatch on a payload already known to
+be too large. Once set, every later triggering round's threshold check no-ops immediately, per the
+existing latch contract — skipping the local re-collection and re-measurement entirely, not merely
+skipping the network dispatch. This exceeding-budget failure does NOT increment
+`COMPACTION_CONSECUTIVE_FRESH_FAILURES`
 (see "Trigger" above) — it is a distinct, already-fully-diagnosed cause with its own immediate
 latch, not the slower two-strikes bound. A future revision could address the root cause (e.g.
 capping open-claim evidence length, or reintroducing LLM summarization) — explicitly out of scope
