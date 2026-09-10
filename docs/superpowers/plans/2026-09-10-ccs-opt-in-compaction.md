@@ -1,5 +1,19 @@
 # `codex-stream-review:ccs` Opt-In Thread Compaction (`--compact`) Implementation Plan
 
+> **STATUS: COMPLETE AND SUPERSEDED (historical record only) — 2026-09-10.** All 27 tasks below
+> were implemented, individually reviewed, and merged, then reconciled with `origin/main`'s own PR
+> #14, which independently removed `run-ccs-review.sh`'s self-imposed `PROMPT_SIZE_LIMIT_BYTES`
+> (131072-byte) preflight and its `artifact_too_large`/`INPUT_TOO_LARGE` outcome entirely — a
+> mechanism this plan (and the design document it argues from) assumed exists throughout its retry
+> topology (candidate A's four-bullet decision tree, headed by an `artifact_too_large` bullet, e.g.
+> Tasks 11/19/26 below) and byte-budget rationale (Global Constraints below). The merged
+> reconciliation updated the actual shipped reference files to a three-bullet topology with no
+> `artifact_too_large` case and a wrapper-cap-independent byte budget.
+> **`codex-stream-review/skills/ccs/references/compaction.md` and `references/retry-guards.md`, as
+> currently checked into the repo, are the current, correct design — this plan is retained only as
+> a historical record of how the feature was originally built and must not be used as a current
+> reference or as a template for further work.**
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development
 > (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use
 > checkbox (`- [ ]`) syntax for tracking.
@@ -4119,12 +4133,9 @@ own 54 rounds of review repeatedly closed this exact class of gap.
 
 ---
 
-## Execution Handoff
+## Execution Handoff (historical)
 
-Plan complete and saved to `docs/superpowers/plans/2026-09-10-ccs-opt-in-compaction.md`. Two
-execution options:
-
-1. **Subagent-Driven (recommended)** — dispatch a fresh subagent per task, review between tasks,
-   fast iteration. Use `superpowers:subagent-driven-development`.
-2. **Inline Execution** — execute tasks in this session using `superpowers:executing-plans`, batch
-   execution with checkpoints for review.
+All 27 tasks above were executed via `superpowers:subagent-driven-development`, individually
+reviewed, and merged — then reconciled with `origin/main`'s PR #14 (see the STATUS notice at the
+top of this document). There is no remaining execution decision to make; this section is retained
+only as a record of the choice that was made at the time.

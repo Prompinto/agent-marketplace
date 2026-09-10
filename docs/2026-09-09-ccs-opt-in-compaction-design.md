@@ -1,5 +1,17 @@
 # `codex-stream-review:ccs` — opt-in thread compaction design
 
+> **STATUS: SUPERSEDED (historical record only) — 2026-09-10.** This design was implemented and
+> merged. Independently, `origin/main`'s own PR #14 subsequently removed
+> `run-ccs-review.sh`'s self-imposed `PROMPT_SIZE_LIMIT_BYTES` (131072-byte) preflight and its
+> `artifact_too_large`/`INPUT_TOO_LARGE` outcome entirely — a mechanism this document's retry
+> topology (candidate A's four-bullet decision tree, headed by an `artifact_too_large` bullet) and
+> byte-budget rationale both assumed exists. The merged reconciliation updated the actual shipped
+> reference files to a three-bullet topology with no `artifact_too_large` case and a
+> wrapper-cap-independent byte budget — **`codex-stream-review/skills/ccs/references/compaction.md`
+> and `references/retry-guards.md`, as currently checked into the repo, are the current, correct
+> design; this document is retained only as a historical record of the original design rationale
+> and must not be used as a current reference for the retry topology or byte-budget sections.**
+
 ## Problem
 
 `run-ccs-review.sh` keeps one resumable Codex thread per reviewer alive for a whole `/ccs` run,
