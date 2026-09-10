@@ -332,6 +332,11 @@ old thread and starting a genuinely fresh one**. A compaction attempt is entirel
 its own success or failure is never itself reported as this round's terminal outcome (see
 "Failure isolation from the round loop" below).
 
+> This section's restart mechanism is reused verbatim by TWO triggers: `--compact`'s own
+> token-threshold trigger (below), and `references/retry-guards.md`'s `no_material_reviewed`
+> never-resume-safe rule (a genuinely different trigger, but the identical restart procedure —
+> digest carryforward, snapshot revalidation/promotion — applies unchanged either way).
+
 ### Step 0 — the existing snapshot revalidation always runs first, unconditionally
 
 Round R's own pre-dispatch snapshot check (`references/snapshot-integrity.md`) — validating the

@@ -212,6 +212,39 @@
     case a non-CLEAN round-level status (as this one always is, per the bullet above) means Phase
     3's keep-evidence gate skips that cleanup instead; see `SKILL.md`'s "Kept evidence on failure"
     section.
+
+## `no_material_reviewed` — never resume-safe, one bounded fresh restart
+
+Unlike every other threadId-bearing reason in the table above, `no_material_reviewed` (whether
+detected by the wrapper's own `schema_mismatch` extension for `material_reviewed:false`, or by
+Claude's own Phase 2 receipt-mismatch/invalid-null-pair check — see `SKILL.md`'s own Phase 2 step
+1) is **never** resume-safe: the thread has just proven its own context is hollow, so resuming it
+would only reproduce the identical failure.
+
+**Recovery**: abandon that thread immediately (add to `LEAKED_THREAD_IDS`) and issue exactly ONE
+fresh restart, reusing `references/compaction.md`'s own COMPLETE "Restart mechanism" section
+verbatim — not a separately-invented lighter-weight version. This means:
+- The claim ledger digest is carried forward into the fresh thread's own seed, built from the
+  durable JSONL log's own reducer state — never from the abandoned thread's own internal state.
+- The same snapshot-integrity revalidation/promotion machinery `--compact`'s own restart already
+  uses applies here too, inheriting that feature's own already-accepted tradeoff (a restart may
+  review the CURRENT state of a possibly-since-changed working tree).
+- The fresh restart's own new thread gets its own fresh receipt schedule
+  (`RECEIPT_SCHEDULE_FILE`, per `SKILL.md`'s own schedule-generation procedure) — never reusing
+  the abandoned thread's schedule.
+
+**If the ONE fresh restart is ALSO `no_material_reviewed`** (either detection route): stop and
+report `⚠️ COULD NOT VERIFY`, never attempt a third thread — matching this file's own existing
+round-1-fresh-fallback-then-give-up precedent, and `references/compaction.md`'s own
+candidate-A-to-thread-B single-shot-escalation-then-give-up pattern.
+
+This recovery is triggered from `no_material_reviewed` REGARDLESS of what session round number it
+occurs at — unlike this file's own general round-1-only fresh-fallback restriction for ordinary
+resume-exhausted failures, `no_material_reviewed`'s fresh restart is available on ANY round,
+including round 2+, since resuming has already been proven useless and there is no round-2+
+"no fresh scope left" concern that applies here (this thread's own accumulated context has zero
+remaining value once proven hollow).
+
 ## Compaction-only exception (`--compact`, opt-in — see `references/compaction.md`)
 
 Two narrow, explicitly-scoped exceptions apply ONLY when `--compact` is ON for this session AND
