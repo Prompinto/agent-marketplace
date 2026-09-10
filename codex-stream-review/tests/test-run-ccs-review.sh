@@ -455,6 +455,40 @@ else
 fi
 unset FAKE_CODEX_SCENARIO
 
+# --- --receipt-schedule-file: content-shape validation, then a real accepted
+# dispatch. build_review_prompt() cats this file's content straight into the
+# prompt's trusted zone, so the parser must reject anything that isn't
+# actually a generated schedule (missing file, or present but missing the
+# literal REVIEW_RECEIPT_SCHEDULE header line) before it ever gets there.
+OUT="$(pd_run fresh --receipt-schedule-file "/tmp/ccs-test-nonexistent-schedule-$$")"
+if printf '%s' "$OUT" | jq -e '.reason == "bad_args"' >/dev/null 2>&1; then
+  pass "--receipt-schedule-file nonexistent path rejected as bad_args"
+else
+  fail "--receipt-schedule-file nonexistent path should be rejected, got: $OUT"
+fi
+
+WRONG_SCHEDULE_FILE="$(mktemp)"
+printf 'not a real schedule\n' > "$WRONG_SCHEDULE_FILE"
+OUT="$(pd_run fresh --receipt-schedule-file "$WRONG_SCHEDULE_FILE")"
+if printf '%s' "$OUT" | jq -e '.reason == "bad_args"' >/dev/null 2>&1; then
+  pass "--receipt-schedule-file without the REVIEW_RECEIPT_SCHEDULE header rejected as bad_args"
+else
+  fail "--receipt-schedule-file without the header should be rejected, got: $OUT"
+fi
+rm -f "$WRONG_SCHEDULE_FILE"
+
+VALID_SCHEDULE_FILE="$(mktemp)"
+printf 'REVIEW_RECEIPT_SCHEDULE\n1: abc123\n' > "$VALID_SCHEDULE_FILE"
+export FAKE_CODEX_SCENARIO=normal
+OUT="$(pd_run fresh --receipt-schedule-file "$VALID_SCHEDULE_FILE")"
+if printf '%s' "$OUT" | tail -1 | jq -e '.ok == true' >/dev/null 2>&1; then
+  pass "--receipt-schedule-file with a valid header accepted, dispatch succeeds"
+else
+  fail "--receipt-schedule-file with a valid header should be accepted, got: $OUT"
+fi
+unset FAKE_CODEX_SCENARIO
+rm -f "$VALID_SCHEDULE_FILE"
+
 # --- no_thread_started: fresh dispatch only (--resume has no thread.started
 # concept) -- fake-codex never emits thread.started, forcing the wrapper's
 # own real (hardcoded) THREAD_WAIT_SECS=10s poll to genuinely time out. This

@@ -495,11 +495,27 @@ while [ $# -gt 0 ]; do
     --receipt-schedule-file)
       # Public, opt-in flag (documented in SKILL.md): the local path Claude itself created via
       # `mktemp` (RECEIPT_SCHEDULE_FILE) holding this thread's private REVIEW_RECEIPT_SCHEDULE
-      # mapping. No further validation needed beyond having a value -- it is a path Claude fully
-      # controls, never caller-supplied `--focus`/stdin content. build_review_prompt() reads and
-      # embeds its content directly, after the diff/artifact -- never through FOCUS_FILE, so this
-      # content never reaches the review-history JSONL log's own `target.focus` field.
+      # mapping. build_review_prompt() `cat`s this file's content directly into the most-trusted,
+      # final position of the prompt, outside every <$BOUNDARY> pair -- so validate its CONTENT
+      # SHAPE here (not just presence), the same "fail closed wherever a real alternative exists"
+      # precedent as --resume/--cleanup's own leading-dash rejection: a wrong path (typo, stale
+      # value, a future caller's mistake) must never get its content silently emitted into the
+      # trusted zone unchecked. A real schedule file's first line is always the literal
+      # `REVIEW_RECEIPT_SCHEDULE` header the generation snippet itself writes -- this is a cheap
+      # content-shape check, not full cryptographic proof, but it catches an arbitrary unrelated
+      # file (this codebase's own tests confirm SKILL.md itself, or any plain text file, obviously
+      # doesn't start with that exact header line).
       [ $# -ge 2 ] || { printf '{"ok":false,"reason":"bad_args","detail":"--receipt-schedule-file requires a value"}\n'; exit 1; }
+      if [ ! -r "$2" ]; then
+        DETAIL_JSON="$(printf '%s' "$2" | jq -Rs '"--receipt-schedule-file does not exist or is not readable: " + .')"
+        printf '{"ok":false,"reason":"bad_args","detail":%s}\n' "$DETAIL_JSON"
+        exit 1
+      fi
+      if [ "$(head -n 1 -- "$2")" != "REVIEW_RECEIPT_SCHEDULE" ]; then
+        DETAIL_JSON="$(printf '%s' "$2" | jq -Rs '"--receipt-schedule-file does not start with the REVIEW_RECEIPT_SCHEDULE header: " + .')"
+        printf '{"ok":false,"reason":"bad_args","detail":%s}\n' "$DETAIL_JSON"
+        exit 1
+      fi
       RECEIPT_SCHEDULE_PATH="$2"; shift 2 ;;
     *)
       DETAIL_JSON="$(printf '%s' "$1" | jq -Rs '"unknown argument: " + .')"
