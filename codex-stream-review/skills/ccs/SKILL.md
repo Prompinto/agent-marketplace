@@ -7,7 +7,7 @@ description: Claude executes a task then runs a Claude+Codex adversarial cross-r
 
 **Usage:** `codex-stream-review:ccs <task description>` — this skill is not invocable as a bare
 `/ccs` slash command; it is invoked plugin-qualified, like every other plugin-supplied skill. Leave
-the task description empty to review the work just done in this session. Three independent, optional
+the task description empty to review the work just done in this session. Four independent, optional
 prefixes — each may appear alone, together in any combination and order, or neither (see Phase 0 Step 0 for the
 exact parsing rule):
 `codex-stream-review:ccs --capture-evidence <task description>` — opt-in investigation-evidence
@@ -23,7 +23,13 @@ default `20`, automatically and permanently escalating back to `20` the moment a
 include a `HIGH`/`CRITICAL` severity item, and — only while `MAX_ROUNDS` is still `5` — a new
 terminal status, `🟡 MINOR ISSUES ACKNOWLEDGED`, becomes reachable for stopping early once every
 still-open claim is cleanly `LOW`/`MEDIUM` severity (see Phase 2's "Converge loop" heading and its
-Guards section below for the exact mechanics). Omit all three and
+Guards section below for the exact mechanics). `codex-stream-review:ccs --compact <task
+description>` — opt-in thread compaction: after any round whose own
+`execution.usage.input_tokens` crosses `COMPACT_THRESHOLD` (8,000,000), abandon the old Codex
+thread and start a fresh one seeded with a compact digest of the claim ledger instead of the old
+thread's full accumulated history (see `references/compaction.md`, read only when this flag is
+used, for the complete mechanics — forces single-group `main` for the whole session, per
+"Determine review mode" below). Omit all four and
 `/ccs` behaves exactly as documented everywhere else in this file, with zero added fields anywhere.
 Any other free text is the TASK.
 
@@ -82,6 +88,12 @@ its full mechanics. `run-ccs-review.sh` reports best-effort elapsed time and (wh
 emits it) token usage per dispatch, and this skill separately records a coordinator-measured
 `round_wall_seconds` per round — never authoritative billing/quota data, never a "model" identity
 value, no caller-facing configuration.
+
+**Opt-in thread compaction is supported** (`--compact`) — see `references/compaction.md` for its
+full mechanics, read only when this flag is used. Independent of `--capture-evidence`/
+`--keep-evidence`/`--quick` — any subset of the four flags may be ON for a session, in any order
+(see Phase 0 Step 0 for the exact parsing rule). Forces single-group `main` for the whole
+session — see "Determine review mode" below.
 
 **Parallel multi-reviewer mode is supported** (see Phase 1 below): every group — including the
 single-reviewer case, `GROUP="main"` (see the N=1 note above) — keeps its own persistent, resumable
@@ -364,11 +376,11 @@ keep-evidence gate for why). See "Phase 3 — Terminal path" below.
 
 ## Reference files this skill must read in full — when and why
 
-Two of the five below are conditional (read only if the session actually uses that flag — if OFF,
+Three of the six below are conditional (read only if the session actually uses that flag — if OFF,
 never read or act on that file: zero behavior change from every other place in this skill). Three
 apply unconditionally to every invocation, with no OFF state — for those three, the "read it now"
 instruction isn't signaling a special trigger, just naming the one point in the run before which
-each must be read. Every one of the five is read once, before Phase 1 ever dispatches, and its
+each must be read. Every one of the six is read once, before Phase 1 ever dispatches, and its
 procedure is required at the specific later points listed under it — skipping the read leaves
 those points undocumented.
 
@@ -386,6 +398,15 @@ this run (order relative to capture-evidence above doesn't matter if both are ON
 before Phase 1 ever dispatches). Required at four later points: Phase 1 Step 0's
 `LAST_MESSAGE_KEEP_FILE` allocation, Step 1's `--keep-last-message` flag, Phase 2's keep-or-delete
 step, Phase 3's conditional cleanup-skip.
+
+### Opt-in thread compaction (opt-in via `--compact`)
+Once Phase 0 Step 0 determines `--compact` is ON for this session, read
+`codex-stream-review/skills/ccs/references/compaction.md` in full before doing anything else in
+this run (order relative to the other conditional/always-on files above doesn't matter — all
+files this section lists must be read before Phase 1 ever dispatches). Required at every later
+point that reference file itself names: the threshold check after every completed round (before
+building the next round's dispatch), the restart mechanism (when triggered), the retry topology
+(when a compaction attempt's own dispatch fails), and the Logging/Final-Report additions.
 
 ### Snapshot integrity (always on, no opt-in)
 Applies to every `codex-stream-review:ccs` invocation that gets past Phase 0's early-exit checks.
@@ -495,39 +516,46 @@ up using `--capture-evidence` at all):**
   deletes nothing, or fails outright — and is NOT a guaranteed TTL: it promises "gone by roughly 30
   days after its `mtime`," never exact 30-day precision, and a directory a session is still
   actively writing into (i.e. anything younger than 30 days) is never at risk from this sweep.
-- **Capture-evidence / keep-evidence / quick-mode decision:** three independent, optional prefixes
+- **Capture-evidence / keep-evidence / quick-mode decision:** four independent, optional prefixes
   may each be present, in any combination and order, at the front of the task text this skill was
   actually invoked with (or empty, to review the work just done, per "Usage" above):
-  `--capture-evidence`, `--keep-evidence`, and `--quick`. Determine all three with the same loop,
-  applied to whatever text remains after each strip — this handles any subset of the three, in any
+  `--capture-evidence`, `--keep-evidence`, `--quick`, and `--compact`. Determine all four with the
+  same loop,
+  applied to whatever text remains after each strip — this handles any subset of the four, in any
   order, or none, and stays
-  correct if a future fourth flag is ever added the same way, rather than hardcoding just today's
+  correct if a future fifth flag is ever added the same way, rather than hardcoding just today's
   fixed orderings:
-  Strip any number of leading `--capture-evidence`/`--keep-evidence`/`--quick` prefixes from the
+  Strip any number of leading `--capture-evidence`/`--keep-evidence`/`--quick`/`--compact` prefixes
+  from the
   task text,
   in whatever order they appear: each time the remaining text starts with `--capture-evidence `
   (or is exactly that string with nothing after it), record **capture-evidence is ON** and remove
   the prefix; each time it starts with `--keep-evidence ` (or is exactly that string), record
   **keep-evidence is ON** and remove the prefix; each time it starts with `--quick ` (or is exactly
-  that string), record **quick-mode is ON** and remove the prefix. Stop the first time none of the
-  three prefixes matches — the
+  that string), record **quick-mode is ON** and remove the prefix; each time it starts with
+  `--compact ` (or is exactly that string), record **compact-mode is ON** and remove the prefix.
+  Stop the first time none of the
+  four prefixes matches — the
   remaining text is the effective task text for every rule below and everywhere else in this file.
-  For a session that gave all three flags with nothing else after them, this is the empty string, which
+  For a session that gave all four flags with nothing else after them, this is the empty string, which
   "Usage" above already treats as "review the work just done."
 
-  A flag never detected during the loop is OFF for this session. **The three decisions are
-  independent booleans — `CAPTURE_EVIDENCE`, `KEEP_EVIDENCE`, and `QUICK_MODE` — never a single
+  A flag never detected during the loop is OFF for this session. **The four decisions are
+  independent booleans — `CAPTURE_EVIDENCE`, `KEEP_EVIDENCE`, `QUICK_MODE`, and `COMPACT_MODE` —
+  never a single
   combined state:**
   any subset may end up ON, regardless of which order the caller typed them in.
   Whichever ends up OFF proceeds precisely as documented elsewhere in this file with no added
   behavior for it. Either way, this is a one-time decision Claude makes now and remembers for the
   whole run — every later place in this file that gates on "capture-evidence is on/off",
-  "keep-evidence is on/off", or "quick-mode is on/off" means Claude already knows the answer and must write the concrete
+  "keep-evidence is on/off", "quick-mode is on/off", or "compact-mode is on/off" means Claude already knows the answer and must write the concrete
   literal branch (e.g. either include the `--capture-eventlog "<path>"`/`--keep-last-message
   "<path>"` argument as literal text on every dispatch, or omit it entirely; either include or omit
   the `investigation_evidence`/`kept_last_message_path` JSONL field; use `MAX_ROUNDS = 5` or
-  `MAX_ROUNDS = 20` as Phase 2's starting cap) into each command it actually
-  constructs — there is no shell variable carrying any of the three decisions between tool calls, and no
+  `MAX_ROUNDS = 20` as Phase 2's starting cap; either check each completed round's
+  `execution.usage.input_tokens` against `COMPACT_THRESHOLD` and restart the Codex thread when
+  `COMPACT_MODE` is on, or skip that check entirely when it is off) into each command it actually
+  constructs — there is no shell variable carrying any of the four decisions between tool calls, and no
   per-round re-check within one `/ccs` run (`QUICK_MODE` itself never changes mid-run once
   determined here; only the separate, session-scoped `MAX_ROUNDS`/`ESCALATED` facts Phase 2
   maintains on top of it can change, per that section's own escalation rule).
@@ -660,6 +688,13 @@ number (1, 2, 3, …), written literally.
 **Non-repo artifact round? Skip this entirely — always single-group `main`, never parallel.** See
 Phase 0 step 4 above for why: there is no diff to size and nothing to partition by file count
 against a freshly-`git init`'d, zero-file `CLEAN_REPO_DIR`.
+
+**`--compact` session? Also skip this entirely — always single-group `main`, never parallel,
+for the WHOLE session.** When `COMPACT_MODE` is ON (Phase 0 Step 0's decision), this is a hard
+override, not a rejection of the `--compact` request — a review that would otherwise size as
+parallel still runs, just without parallel mode, for the whole session, whenever `--compact` was
+given (see `references/compaction.md`'s "Scope (v1)" section). Parallel mode is explicitly out
+of scope for v1 of thread compaction.
 
 **Genuine repo/code-diff round — before round 1 ever dispatches, assess the review scope**
 (the sizing heuristic below is needed because `run-ccs-review.sh` has no file-filter flag of its
@@ -1291,6 +1326,23 @@ For each round, after Phase 1 delivers a result:
    was allocated, is already gone by this point too — deleted or moved as part of the keep-evidence
    step just run, not part of this cleanup list either.)
 
+**If `COMPACT_MODE` is ON for this session (Phase 0 Step 0's decision): before dispatching the
+NEXT round's Step 1 below, run `references/compaction.md`'s "Trigger" check now against the
+round just appended above.** This is a check-and-possibly-restart step interposed between this
+round's own completed append and the next round's own dispatch — never inside this round's own
+processing, and never before round 1's own dispatch (round 1 has no prior round's usage to check
+yet; the very first opportunity this check ever runs is immediately after round 1's own line is
+appended, deciding whether ROUND 2 becomes a compaction round). If the check triggers, follow
+`references/compaction.md`'s "Restart mechanism"/"Retry topology"/"On failure"/"Ordering on
+success" sections in full for that next round instead of an ordinary `--resume` dispatch — the
+resulting round still counts as one ordinary increment of the round loop (see
+`references/compaction.md`'s "Scope (v1)" section: `MAX_ROUNDS` is unaffected in meaning). When
+`COMPACT_MODE` is OFF, this paragraph is a complete no-op — proceed directly to the next round's
+Step 1 exactly as documented everywhere else in this file. **This check takes precedence over an
+otherwise-satisfied convergence check** — see the "`--compact` precedence" paragraph in
+"Convergence = 100% CLEAN" below for the exact interaction when the round just appended above was
+itself 100% CLEAN.
+
 ### Coverage is a Round-1-only property
 
 Since only a fresh `--uncommitted` dispatch ever reports `coverage.source` — regardless of
@@ -1372,6 +1424,37 @@ described above.
   below) hasn't happened yet at this point in the loop; a claim closed by THIS round's own
   `DISPOSITION` marker must count as closed for THIS round's own convergence check, not only
   starting next round. Never assume from memory across a 20-round run.
+
+**`--compact` precedence (checked here, before the arrow below ever fires):** do NOT stop the loop
+here — even though every condition above holds — when ALL of the following also hold: `COMPACT_MODE`
+is ON for this session; THIS round's own `execution.usage.input_tokens` crosses
+`COMPACT_THRESHOLD` (per `references/compaction.md`'s "Trigger" section); compaction is not
+already durably disabled for this session — no round up to and including THIS one has determined
+`compaction_disabled_reason`: neither any PRIOR round's own already-appended JSONL line
+(reconstructed the same way continuity recovery already does, see "Review history log" →
+"Read (continuity)" below) NOR THIS round's own just-decided, not-yet-appended value (e.g. THIS
+round being a compaction round whose own fresh-restart baseline is itself `>= COMPACT_THRESHOLD`,
+or whose own byte-budget preflight just failed — see `references/compaction.md`'s "Trigger"/
+"Byte-budget preflight" sections) — mirroring the claim-ledger-closure condition above, which
+merges in THIS round's own not-yet-appended judgments the exact same way, for the exact same
+reason: this round's own append (step 6, below) hasn't happened yet at this point in the loop; and
+`R < MAX_ROUNDS` (dispatching one more
+round stays within the existing cap). When all four hold, a triggering round's own convergence is
+deferred, never discarded: dispatch the next round as the compaction round (per the trigger-check
+paragraph above Step 6), then re-run this SAME convergence check against THAT round's own real
+outcome instead, exactly as it would run for any other round. This holds even for round 1 itself —
+a round-1 verdict that is otherwise 100% CLEAN still defers when round 1's own usage crosses
+`COMPACT_THRESHOLD` (the other two conditions — no prior latch, room under the cap — are
+automatically satisfied at round 1, since no round has ever run before it).
+
+If `COMPACT_MODE` is OFF, or `--compact` never crosses the threshold this round, this paragraph is
+a no-op and the arrow below fires normally. If compaction is already durably disabled, or `R ==
+MAX_ROUNDS`, the arrow below ALSO fires normally — `--compact` makes no difference to this
+round's determination in either case: a round already latched off never gets another compaction
+attempt (matching `compact-baseline-still-over-threshold`'s own round 3, which converges CLEAN
+without a further fresh dispatch even though it is still over threshold), and compaction never
+dispatches a round beyond the existing `MAX_ROUNDS` cap (compaction has no cap exemption of its
+own — see `references/compaction.md`'s "Scope (v1)" section).
 → Stop the loop, go to Phase 3 as **✅ CLEAN**.
 
 ### Convergence logic across groups — round-level, all-groups-together (confirmed decision)
@@ -1529,7 +1612,14 @@ or more claims.** The session's FIRST line only also gains a top-level `schema_v
 round — present whenever that dispatch's own `$DISPATCH_PID` was actually captured, omitted entirely
 otherwise) and a separate, always top-level, coordinator-measured
 `round_wall_seconds` (one per round, present every round regardless of group count — never derived
-by summing groups' own `execution.elapsed_seconds`).** The common
+by summing groups' own `execution.elapsed_seconds`).** **Opt-in thread compaction (see
+`references/compaction.md`, read only when `--compact` is ON for this session) adds the full
+field set that reference file's own "Logging" section documents** — `compacted_from_thread`, the
+`compaction_attempt_*` trio, `snapshot_digest_before`/`snapshot_digest_after`,
+`candidate_snapshot_path`, `compaction_attempt_failure_count`, `compaction_disabled_reason`,
+`retired_snapshot_files`, and round-1's own
+`target.scope_value`/`target.resolved_commit_sha`/`target.original_scope_framing` — never present
+at all for a session where `--compact` was OFF. The common
 case — a single-reviewer round (`GROUP="main"`), capture-evidence and keep-evidence both OFF, no
 claim closed this round — is otherwise
 unchanged from before, aside from `execution`/`round_wall_seconds` themselves (present whenever a
@@ -1543,7 +1633,7 @@ is omitted entirely, and so are `investigation_evidence`, `kept_last_message_pat
   "session_id": "2026-09-03T143000-54321",
   "round": 1,
   "ts": "2026-09-03T14:31:05+09:00",
-  "schema_version": 2,
+  "schema_version": 3,
   "thread_id": "<this round's own threadId>",
   "target": {"repo": "<repo root>", "scope": "uncommitted", "focus": "<the focus text sent this round>"},
   "codex_review": {"ok": true, "verdict": "ISSUES", "findings": [
@@ -1618,6 +1708,10 @@ omission rule.
   file). `round_wall_seconds` is a SEPARATE, coordinator-measured, always-TOP-LEVEL field — one per
   round regardless of group count, NEVER derived by summing groups' own `execution.elapsed_seconds`
   (they run concurrently, so summing would overstate true wall-clock cost).
+- `compacted_from_thread`/the `compaction_attempt_*` trio/the snapshot-lineage fields/
+  `retired_snapshot_files`/`target.scope_value`/`target.resolved_commit_sha`/
+  `target.original_scope_framing`: see `references/compaction.md` (read only when `--compact` is
+  ON) for the full construction, retry-topology, and fail-closed rules.
 
 **Write:** append via `jq -nc` redirected with `>>`, `umask 077` restated immediately before
 every append (a fresh Bash call each time — the earlier `mkdir`'s umask doesn't carry over).
@@ -1648,6 +1742,15 @@ while a long-running `/ccs` session is still active), this is a hard stop: do no
 reduce a mixed old-format/new-format claim ledger. Report `🛑 REVIEW LOG INTEGRITY FAILURE`, clean
 up exactly like `🛑 SNAPSHOT INTEGRITY FAILURE` (Phase 3 steps 1-3, unconditionally), and tell the
 user a fresh `codex-stream-review:ccs` invocation is required.
+
+**When `--compact` was used for this session** (any prior round in the log carries a
+compaction-related field), also run `references/compaction.md`'s own continuity-recovery
+extensions at this same point: reconstruct `COMPACTION_CONSECUTIVE_FRESH_FAILURES` and whether
+`compaction_disabled_reason` was ever set (searching the WHOLE log, never only the latest line),
+and — if the log's own most recent compaction event shows a promotion that may not have
+completed — run the post-append/pre-promotion recovery algorithm that reference file's "Restart
+mechanism" step 3 describes, BEFORE this step's own ordinary per-round snapshot revalidation is
+ever invoked for the first round dispatched after this recovery.
 
 **Failure isolation:** best-effort applies to everything else around the write (directory
 creation, `chmod` retightening, the `umask` restatement itself) — a failure in any of those never
@@ -1708,7 +1811,12 @@ trustworthy one).
    attempt, for every group), there is nothing to clean up here; skip silently. **Every
    `cleanup_failed` result is surfaced plainly in the final report** (which group, which thread,
    why) — never hidden behind a clean-looking headline result. An undeleted thread means that
-   group's full diff/code content is still sitting on disk under `~/.codex/sessions/`.
+   group's full diff/code content is still sitting on disk under `~/.codex/sessions/`. **When
+   `--compact` was used for this session**, also union in every `compacted_from_thread` and
+   `compaction_attempt_failed_thread` value found anywhere in the session's own JSONL log (see
+   `references/compaction.md`'s "Durable backstop for abandoned threads") — a thread is never
+   permanently unaccounted-for purely because in-memory `GROUP_THREADS`/`LEAKED_THREAD_IDS` state
+   did not survive to the end of a long run.
 
 2. **Clean up every `(GROUP, leaked-threadId)` pair in `LEAKED_THREAD_IDS`** (see Guards → "Empty
    / failed review ≠ CLEAN" above) — a group's round-1 retry after a post-`thread.started` failure
@@ -1739,7 +1847,10 @@ trustworthy one).
    Phase 0 step 4) and cleaned up alongside it here — never left behind once `CLEAN_REPO_DIR` no
    longer needs it. `SNAPSHOT_FILE` (see "Snapshot integrity" above) is allocated for every session
    that ever reaches round 1's dispatch — unlike `CLEAN_REPO_DIR`/`FAKE_GIT_HOME`, it is never
-   conditional on session type, so this `rm -f` needs no guard.
+   conditional on session type, so this `rm -f` needs no guard. **When `--compact` was used this
+   session**, also `rm -f` `PROVISIONAL_SNAPSHOT_FILE` and every path ever recorded in any round's
+   own `retired_snapshot_files` array — only if `--compact` was used this session and either was
+   ever set/recorded.
 
 4. **Write the durable final-verdict artifact (Phase 5 Item B) — a third instance of the same
    directory/session-id-prefix pattern `--keep-evidence` already established** (that flag's own
@@ -1779,6 +1890,11 @@ trustworthy one).
      `"retained"` when the keep-evidence gate skipped steps 1-2 entirely (every thread in that
      case). The common single-reviewer, no-retry, successful-cleanup case is a 1-element array;
      `GROUP_THREADS` empty (no group ever obtained a thread) yields an empty array, never an error.
+     **When `--compact` was used for this session**, also union in every `compacted_from_thread`
+     and `compaction_attempt_failed_thread` value found anywhere in the session's own JSONL log
+     (see `references/compaction.md`'s "Durable backstop for abandoned threads") — a thread is
+     never permanently unaccounted-for purely because in-memory `GROUP_THREADS`/`LEAKED_THREAD_IDS`
+     state did not survive to the end of a long run.
    - `claims`: `null` when `exit_state` is `SNAPSHOT_INTEGRITY_FAILURE` or
      `REVIEW_LOG_INTEGRITY_FAILURE` (neither can vouch for claims about the reviewed subject/log —
      see `references/snapshot-integrity.md`). Otherwise, build the array via a `jq` JOIN over the
@@ -1891,7 +2007,10 @@ Structure:
   `--keep-evidence`** — report a normal
   cleanup outcome instead (cleanup always ran unconditionally for either of those two; see "Snapshot
   integrity" above and the Guards section's "receives EXACTLY the same treatment" rule), plus the
-  required content from the relevant section (a fresh invocation is needed).
+  required content from the relevant section (a fresh invocation is needed). When `--compact` was
+  used, also name every `compacted_from_thread`/`compaction_attempt_failed_thread` value found in
+  the JSONL log (per Phase 3's own extension above), not only `GROUP_THREADS`/`LEAKED_THREAD_IDS`
+  memory.
 - **Execution telemetry (always on)** — see "Execution telemetry" above and
   `references/execution-telemetry.md`. Head this bullet's actual content with **"best-effort
   execution telemetry — not authoritative billing or quota data"**, then list: effort (reasoning
@@ -1900,7 +2019,12 @@ Structure:
   mode); each round's own `round_wall_seconds`; and token usage when available, from each
   round/group's own `execution.usage` (state "usage unavailable" for a round/group where it was
   omitted). Any summed figure across rounds/groups must be explicitly labeled as a sum, never
-  presented as wall-clock time or billable cost.
+  presented as wall-clock time or billable cost. **When `--compact` was used for this session,
+  also apply `references/compaction.md`'s own two Final-Report wording templates** (one for a
+  round whose real outcome was the fallback, one for a round whose real outcome was a compaction
+  success that followed an earlier failed sub-attempt) for any round carrying a preserved
+  `compaction_attempt_execution` value — reported as its own clearly labeled line, distinct from
+  that round's own real `execution`/`usage` reporting, never merged into it.
 - **Final-verdict artifact (Phase 5 Item B, always attempted)** — report the durable
   `<session-id>.result.json` path (see Phase 3 step 4 above) this run wrote, so the user has a
   single-file machine-readable record of this run's own outcome. If that write failed, say so

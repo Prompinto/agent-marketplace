@@ -150,6 +150,22 @@ partial-content salvage is attempted.
    Claude does not know whether the user wants the exact same target re-reviewed, a different one,
    or nothing further right now.
 
+## Compaction-only exception (`--compact`, opt-in — see `references/compaction.md`)
+
+The "one canonical subject, session-scoped, NEVER changed per round" invariant stated everywhere
+above holds UNCHANGED for every ordinary session. It is relaxed ONLY when `--compact` is ON for
+this session AND triggers a fully-specified, Claude-orchestrated, fully-disclosed re-snapshot-
+and-promote event — never by anything auto-detected, and never for any other reason. In that one
+case: a NEW candidate `SNAPSHOT_FILE`/`SNAPSHOT_DIGEST` is collected, verified, and atomically
+promoted onto the SAME fixed `SNAPSHOT_FILE` path (the path itself never changes — only its
+content, and the remembered `SNAPSHOT_DIGEST`, advance together), and the round that performs
+this promotion durably records `snapshot_digest_before`/`snapshot_digest_after` as an audit
+trail. See `references/compaction.md`'s "Restart mechanism" and "Ordering on success" sections
+for the complete, fully-specified mechanics — this file's own revalidation logic (above) and
+hard-stop-on-mismatch behavior are otherwise entirely unaffected: a session with `--compact` OFF,
+or one where `--compact` is ON but never actually triggers, behaves exactly as documented
+everywhere else in this file, with zero difference from before this exception existed.
+
 ## Not a defense against a deliberately changed source
 
 By design, revalidation never re-observes the real working tree, the original ref, or the

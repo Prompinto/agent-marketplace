@@ -268,14 +268,15 @@ jobs:
         # THAT checkout's object database, not trusted-tooling/'s.
         #
         # Deliberately NOT `continue-on-error` and no `|| true` anywhere
-        # above: run-ccs-ci.sh's own exit code (0-6, matching the result
+        # above: run-ccs-ci.sh's own exit code (0-5, matching the result
         # schema's exit_code 1:1) is meant to fail this job for every
         # non-CLEAN outcome -- CONFIRMED_ISSUES, NOT_CONVERGED,
-        # COULD_NOT_VERIFY, PARTIAL_COVERAGE, INPUT_TOO_LARGE (Phase 5 Item A
-        # -- the rendered diff/focus prompt exceeded run-ccs-review.sh's own
-        # size limit before any dispatch was attempted), and
-        # INFRASTRUCTURE_FAILURE all
-        # correctly block the PR when the real review genuinely ran. See the
+        # COULD_NOT_VERIFY, PARTIAL_COVERAGE, and INFRASTRUCTURE_FAILURE all
+        # correctly block the PR when the real review genuinely ran.
+        # (A former INPUT_TOO_LARGE outcome, Phase 5 Item A's own
+        # self-imposed pre-dispatch prompt-size preflight, was removed
+        # entirely by a later PR -- a genuinely oversized prompt now simply
+        # surfaces as an ordinary dispatch failure instead.) See the
         # "RESIDUAL LIMITATION" comment above `on:` for why this is an
         # advisory signal, not a tamper-proof gate, against a PR author (fork
         # or same-repo alike) motivated enough to edit this workflow file

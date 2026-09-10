@@ -861,6 +861,22 @@ interactive skill's own already-established disagreement-over-coverage-gap prece
 
 ### Phase 5 — diff/artifact-size preflight and a durable interactive result artifact (negotiated to CLEAN, implemented)
 
+**Superseded update (2026-09-10):** Item A below (the `PROMPT_SIZE_LIMIT_BYTES=131072` preflight,
+its `artifact_too_large` reason, the `🛑 INPUT TOO LARGE` status, and CI's `exit_state:
+"INPUT_TOO_LARGE"`/`exit_code: 6`/`input_errors[]`) was **removed entirely** by a later PR
+(`04996d2`), independently reviewed clean over 4 rounds. A genuinely oversized prompt now simply
+surfaces as an ordinary dispatch failure (`timeout`, `nonzero_exit`, `no_final_answer`, etc.) —
+`input_errors` is always `null`, and the CI exit-state enum has only 6 values (codes 0-5). This is
+narrowly about the removed WHOLE-RENDERED-PROMPT preflight specifically — it does NOT affect the
+wrapper's separate, still-current per-untracked-file collection cap
+(`collect_untracked_files.py --max-bytes`, default 1 MiB, omission reason `over_size_limit`), which
+is an unrelated coverage-preserving limit on individual untracked files, not a prompt-size gate.
+The rest of this section
+(Item B, the durable interactive result artifact, and the 2026-09-06 implementation-review
+outcome below) is entirely UNAFFECTED and remains current. Item A's own text below is kept as the
+historical record of what was originally built and negotiated — do not treat it as describing
+current behavior.
+
 Two items from the gap-list disposition audit below (#10, #23) needed a real code change, not just
 a documentation disposition. Negotiated to CLEAN over an 8-round `/ccs` non-repo-artifact session
 (18 real findings across those rounds, on the design draft this section originally sketched) —
@@ -1307,3 +1323,30 @@ should actively solicit Codex's direct knowledge on these specific points rather
 defending the external research above, while still independently verifying any such claim before
 it changes the plan (same equal-partnership/disclosure-ordering discipline this skill already
 applies everywhere else — a claim of self-knowledge is not exempt from evidence).
+
+## Appendix: unscoped future idea (raw, not negotiated, not brainstormed) — 2026-09-08
+
+Recorded here only so it is not lost — this has NOT been through `superpowers:brainstorming`,
+has no design, and is not part of any phase above.
+
+**The idea**: a single interactive terminal session where the user can converse directly with both
+Claude and Codex, and Claude and Codex can also converse with and collaborate with each other live
+— surfaced while discussing whether the user's Ghostty terminal could be customized/forked into "a
+personal terminal system." The actual want, once clarified, is not a new terminal emulator — it's
+an orchestration/UI capability that would run inside any terminal.
+
+**Working assessment**: `codex-stream-review:ccs` already does the core mechanic this idea needs —
+Claude dispatching real `codex exec`/`codex exec resume` calls and negotiating with Codex — but
+today only as opaque, batched, round-based dispatches (the user sees nothing until a whole round
+finishes). The natural path toward this idea is evolving that into a **live-streaming, interactive
+mode**: surface the Claude<->Codex exchange as it happens, and let the user inject messages into
+the conversation directly, rather than waiting for the next `--focus`-driven round. This would most
+likely live as a new mode of `codex-stream-review` (or a companion skill built on
+`run-ccs-review.sh`'s existing resumable-thread primitives), not a new plugin or a terminal fork.
+
+**Status**: purely conceptual. Next step whenever this is picked up: `superpowers:brainstorming`
+first — real design questions include how deep user-injection should go mid-round (does it need to
+pause Codex's own turn, or only queue for the next dispatch), whether streaming live Codex output
+to the terminal is even exposed by the current `codex exec --json` event stream in a form
+`run-ccs-review.sh` could tap without breaking its own JSON-verdict parsing, and whether this
+belongs in `codex-stream-review` itself or as a genuinely separate companion plugin.

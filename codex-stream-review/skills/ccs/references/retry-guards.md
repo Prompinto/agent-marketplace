@@ -180,3 +180,30 @@
     case a non-CLEAN round-level status (as this one always is, per the bullet above) means Phase
     3's keep-evidence gate skips that cleanup instead; see `SKILL.md`'s "Kept evidence on failure"
     section.
+## Compaction-only exception (`--compact`, opt-in — see `references/compaction.md`)
+
+Two narrow, explicitly-scoped exceptions apply ONLY when `--compact` is ON for this session AND
+the failure in question occurs on a compaction attempt's own candidate thread specifically —
+every rule in this file continues to apply completely unmodified to the round's own REAL group
+(the existing/OLD thread), and to every session where `--compact` is OFF:
+
+1. **This file's own exhausted-retry MANDATORY terminal-outcome rule above (`⚠️ COULD NOT
+   VERIFY`) does NOT apply to a failure occurring WITHIN a self-contained compaction attempt on a
+   NEW candidate thread.** `references/compaction.md`'s own "Restart mechanism"/"On failure"
+   sections deliberately absorb such a failure into "fall through to the fallback dispatch on the
+   OLD, still-alive thread" rather than surfacing it as the round's own terminal status — a
+   compaction attempt is not "a group" in this file's own sense; it is an internal sub-step of
+   producing that round's one real outcome. This file's own existing rules for a REAL group's
+   `ok:false` response (every bullet above) are otherwise entirely unaffected.
+2. **This file's own no-threadId-fresh-retry and fresh-B escalation rules — scoped above to a
+   group's OWN true first-ever attempt, "only possible on round 1" — are keyed on CANDIDATE-level
+   thread history for a compaction attempt's candidate A specifically, never on the session's own
+   round-index.** A compaction restart's own candidate dispatch is structurally always at session
+   round 2 or later, yet candidate A is its own independent "first attempt" lifecycle for these
+   specific mechanics, by construction, regardless of what round number in the session it
+   actually occurs at — see `references/compaction.md`'s "Retry topology" section for candidate
+   A's full three-bullet decision tree. This exception is scoped to candidate A ONLY, never to a
+   compaction attempt's thread B, which gets NONE of this file's retry machinery at all (single-
+   shot: it either succeeds, or the whole compaction attempt is immediately exhausted) — and never
+   to an ordinary group's own genuine round-1 attempt, which keeps this file's literal round-1
+   scoping exactly as written.
