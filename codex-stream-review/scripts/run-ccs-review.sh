@@ -313,7 +313,7 @@ build_review_prompt() {
   if [ -n "$RECEIPT_SCHEDULE_PATH" ]; then
     echo ""
     echo "REVIEW_RECEIPT_SCHEDULE"
-    printf '%s\n' "$RECEIPT_SCHEDULE_CONTENT"
+    printf '%s' "$RECEIPT_SCHEDULE_CONTENT"
   fi
 }
 
@@ -525,13 +525,18 @@ while [ $# -gt 0 ]; do
       # shape of this code) is a TOCTOU window: a local mutation between those reads, or between
       # the last read here and build_review_prompt()'s own later embed (which happens well after
       # diff/stdin collection has elapsed), could let content that was never actually validated
-      # reach the trusted zone.
-      RECEIPT_SCHEDULE_CONTENT="$(cat -- "$2")"
+      # reach the trusted zone. Plain `$(cat -- "$2")` strips ALL trailing newline bytes (not just
+      # one), which would let extra trailing blank lines silently vanish before the line-count
+      # check ever sees them -- append a non-newline sentinel, capture that too, then strip only
+      # the sentinel, mirroring this same file's own untracked-file capture pattern above (search
+      # "Plain \`\$(cat FILE)\` strips ALL trailing newline bytes").
+      RECEIPT_SCHEDULE_CONTENT="$(cat -- "$2" 2>/dev/null; printf 'x')"
+      RECEIPT_SCHEDULE_CONTENT="${RECEIPT_SCHEDULE_CONTENT%x}"
       RECEIPT_SCHEDULE_SHAPE_OK=1
-      [ "$(printf '%s\n' "$RECEIPT_SCHEDULE_CONTENT" | wc -l | tr -d ' ')" = "71" ] || RECEIPT_SCHEDULE_SHAPE_OK=0
-      [ "$(printf '%s\n' "$RECEIPT_SCHEDULE_CONTENT" | head -n 1)" = "REVIEW_RECEIPT_SCHEDULE" ] || RECEIPT_SCHEDULE_SHAPE_OK=0
+      [ "$(printf '%s' "$RECEIPT_SCHEDULE_CONTENT" | wc -l | tr -d ' ')" = "71" ] || RECEIPT_SCHEDULE_SHAPE_OK=0
+      [ "$(printf '%s' "$RECEIPT_SCHEDULE_CONTENT" | head -n 1)" = "REVIEW_RECEIPT_SCHEDULE" ] || RECEIPT_SCHEDULE_SHAPE_OK=0
       if [ "$RECEIPT_SCHEDULE_SHAPE_OK" -eq 1 ]; then
-        [ "$(printf '%s\n' "$RECEIPT_SCHEDULE_CONTENT" | tail -n +2 | grep -cE '^[0-9]+: [0-9a-f]{24}$')" = "70" ] || RECEIPT_SCHEDULE_SHAPE_OK=0
+        [ "$(printf '%s' "$RECEIPT_SCHEDULE_CONTENT" | tail -n +2 | grep -cE '^[0-9]+: [0-9a-f]{24}$')" = "70" ] || RECEIPT_SCHEDULE_SHAPE_OK=0
       fi
       if [ "$RECEIPT_SCHEDULE_SHAPE_OK" -ne 1 ]; then
         DETAIL_JSON="$(printf '%s' "$2" | jq -Rs '"--receipt-schedule-file does not match the expected 71-line REVIEW_RECEIPT_SCHEDULE shape: " + .')"

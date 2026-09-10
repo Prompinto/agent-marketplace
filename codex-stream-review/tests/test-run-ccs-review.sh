@@ -501,6 +501,22 @@ else
 fi
 rm -f "$BYPASS_SCHEDULE_FILE"
 
+# A correct header + 70 correct entries + extra trailing blank line(s) (74
+# physical lines total) must still be rejected -- this is the exact bypass a
+# naive `$(cat FILE)` capture allows, since plain command substitution strips
+# ALL trailing newline bytes and would otherwise normalize this back down to
+# what looks like a clean 71-line file before the count is ever checked.
+TRAILING_BLANKS_SCHEDULE_FILE="$(mktemp)"
+gen_valid_schedule_file "$TRAILING_BLANKS_SCHEDULE_FILE"
+printf '\n\n\n' >> "$TRAILING_BLANKS_SCHEDULE_FILE"
+OUT="$(pd_run fresh --receipt-schedule-file "$TRAILING_BLANKS_SCHEDULE_FILE")"
+if printf '%s' "$OUT" | jq -e '.reason == "bad_args"' >/dev/null 2>&1; then
+  pass "--receipt-schedule-file with valid entries plus extra trailing blank lines rejected as bad_args"
+else
+  fail "--receipt-schedule-file with extra trailing blank lines should be rejected, got: $OUT"
+fi
+rm -f "$TRAILING_BLANKS_SCHEDULE_FILE"
+
 # A directory is "readable" too -- the regular-file check must reject it
 # BEFORE any read is attempted, so no raw command diagnostic (e.g. from
 # `head`/`wc`/`grep` failing to read a directory) ever reaches stderr ahead
