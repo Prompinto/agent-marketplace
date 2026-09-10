@@ -1443,9 +1443,16 @@ described above.
 here — even though every condition above holds — when ALL of the following also hold: `COMPACT_MODE`
 is ON for this session; THIS round's own `execution.usage.input_tokens` crosses
 `COMPACT_THRESHOLD` (per `references/compaction.md`'s "Trigger" section); compaction is not
-already durably disabled for this session (no PRIOR round in this session's log has ever recorded
-`compaction_disabled_reason` — reconstructed the same way continuity recovery already does, see
-"Review history log" → "Read (continuity)" below); and `R < MAX_ROUNDS` (dispatching one more
+already durably disabled for this session — no round up to and including THIS one has determined
+`compaction_disabled_reason`: neither any PRIOR round's own already-appended JSONL line
+(reconstructed the same way continuity recovery already does, see "Review history log" →
+"Read (continuity)" below) NOR THIS round's own just-decided, not-yet-appended value (e.g. THIS
+round being a compaction round whose own fresh-restart baseline is itself `>= COMPACT_THRESHOLD`,
+or whose own byte-budget preflight just failed — see `references/compaction.md`'s "Trigger"/
+"Byte-budget preflight" sections) — mirroring the claim-ledger-closure condition above, which
+merges in THIS round's own not-yet-appended judgments the exact same way, for the exact same
+reason: this round's own append (step 6, below) hasn't happened yet at this point in the loop; and
+`R < MAX_ROUNDS` (dispatching one more
 round stays within the existing cap). When all four hold, a triggering round's own convergence is
 deferred, never discarded: dispatch the next round as the compaction round (per the trigger-check
 paragraph above Step 6), then re-run this SAME convergence check against THAT round's own real
