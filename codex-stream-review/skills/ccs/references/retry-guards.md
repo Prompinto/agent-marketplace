@@ -14,24 +14,6 @@
     ROUND overall is not eligible for `✅ CLEAN` — worst-case-wins, the same principle `SKILL.md`
     uses for the `coverage_source`/`codex_review` parallel merges. Retry JUST that failed group — the
     other groups' real, already-collected results are kept, not thrown away and re-dispatched.
-  - **`artifact_too_large` — never retried, ever, for that group, fresh or resumed (Phase 5 Item
-    A).** An identical resend of the same oversized prompt fails identically — there is nothing
-    that a bounded resume-retry or a fresh restart could fix on its own, unlike every other
-    `ok:false` reason in this section. This group's round-level status is immediately
-    **🛑 INPUT TOO LARGE** — the round is NOT eligible for `✅ CLEAN` and no automatic whole-round
-    retry with smaller input is attempted; a human must start a fresh `codex-stream-review:ccs`
-    invocation with a narrower diff scope or shorter `--focus`/pasted artifact. On a fresh round-1
-    attempt, no thread was ever started for this group — nothing to add to `LEAKED_THREAD_IDS`. On
-    a resumed attempt, the threadId already existed and is untouched, not abandoned — it receives
-    NORMAL terminal-path cleanup like any other outcome's thread (the same `--keep-evidence` gate
-    every other non-CLEAN outcome already uses), never a special "keep alive so it can be retried
-    later" exception; a caller who wants to retry with shorter text uses `--keep-evidence` for that
-    session, the same as investigating any other outcome. **Parallel mode:** other groups that
-    already dispatched successfully this round are NOT aborted mid-flight; their threads are
-    cleaned up normally at the SAME terminal path, applied uniformly to ALL groups' threads
-    together (never a partial keep where some groups' threads are retained and others are not),
-    and their real findings are NEVER used to construct a partial/degraded CLEAN — the round-level
-    terminal status is **🛑 INPUT TOO LARGE** regardless of what any other group found.
   - **No `threadId` was ever captured for THIS failure response** (`bad_args`, `git_error`,
     `incomplete_collection`, `no_thread_started`, or `interrupted`/`timeout` on the rare occasion
     either fires before a thread ever started — see `SKILL.md`'s reason table's `threadId` column,
@@ -183,12 +165,10 @@
       to fall back to on an already-resumed group — stop directly, report
       **⚠️ COULD NOT VERIFY** for that group. No new threadId was ever created by either
       resume-retry, so nothing is added to `LEAKED_THREAD_IDS` on this path.
-  - Besides `artifact_too_large`'s own dedicated bullet above (never retried, threadId presence
-    depending on fresh vs. resume — see `SKILL.md`'s "Resume-safety by failure reason" section),
-    there is no other "`threadId` was captured but the reason is NOT resume-safe" branch — every
-    OTHER reason that can ever carry a `threadId` is resume-safe, now that
+  - There is no "`threadId` was captured but the reason is NOT resume-safe" branch — every
+    reason that can ever carry a `threadId` is resume-safe, now that
     `resume_thread_not_found`/`rollout_not_found` no longer exist as possible outcomes at all. The
-    three bullets above (`artifact_too_large`, no `threadId`, and `threadId` + resume-safe) are
+    two bullets above (no `threadId`, and `threadId` + resume-safe) are
     exhaustive.
   - Whenever a group ends in **⚠️ COULD NOT VERIFY**, the round-level status is
     **⚠️ COULD NOT VERIFY**, regardless of how clean every other group's own findings turned out to
@@ -200,11 +180,6 @@
     case a non-CLEAN round-level status (as this one always is, per the bullet above) means Phase
     3's keep-evidence gate skips that cleanup instead; see `SKILL.md`'s "Kept evidence on failure"
     section.
-  - Whenever a group ends in `artifact_too_large`, the round-level status is instead
-    **🛑 INPUT TOO LARGE** — a DIFFERENT status from `⚠️ COULD NOT VERIFY`, never folded into it
-    (see `artifact_too_large`'s own bullet above): unlike a genuinely-unavailable review, this
-    outcome is deterministic and known immediately, with no retry ever attempted.
-
 ## Compaction-only exception (`--compact`, opt-in — see `references/compaction.md`)
 
 Two narrow, explicitly-scoped exceptions apply ONLY when `--compact` is ON for this session AND
@@ -212,14 +187,14 @@ the failure in question occurs on a compaction attempt's own candidate thread sp
 every rule in this file continues to apply completely unmodified to the round's own REAL group
 (the existing/OLD thread), and to every session where `--compact` is OFF:
 
-1. **The `artifact_too_large`/exhausted-retry MANDATORY terminal-outcome rules above (`🛑 INPUT
-   TOO LARGE`, `⚠️ COULD NOT VERIFY`) do NOT apply to a failure occurring WITHIN a self-contained
-   compaction attempt on a NEW candidate thread.** `references/compaction.md`'s own "Restart
-   mechanism"/"On failure" sections deliberately absorb such a failure into "fall through to the
-   fallback dispatch on the OLD, still-alive thread" rather than surfacing it as the round's own
-   terminal status — a compaction attempt is not "a group" in this file's own sense; it is an
-   internal sub-step of producing that round's one real outcome. This file's own existing rules
-   for a REAL group's `ok:false` response (every bullet above) are otherwise entirely unaffected.
+1. **This file's own exhausted-retry MANDATORY terminal-outcome rule above (`⚠️ COULD NOT
+   VERIFY`) does NOT apply to a failure occurring WITHIN a self-contained compaction attempt on a
+   NEW candidate thread.** `references/compaction.md`'s own "Restart mechanism"/"On failure"
+   sections deliberately absorb such a failure into "fall through to the fallback dispatch on the
+   OLD, still-alive thread" rather than surfacing it as the round's own terminal status — a
+   compaction attempt is not "a group" in this file's own sense; it is an internal sub-step of
+   producing that round's one real outcome. This file's own existing rules for a REAL group's
+   `ok:false` response (every bullet above) are otherwise entirely unaffected.
 2. **This file's own no-threadId-fresh-retry and fresh-B escalation rules — scoped above to a
    group's OWN true first-ever attempt, "only possible on round 1" — are keyed on CANDIDATE-level
    thread history for a compaction attempt's candidate A specifically, never on the session's own
@@ -227,7 +202,7 @@ every rule in this file continues to apply completely unmodified to the round's 
    round 2 or later, yet candidate A is its own independent "first attempt" lifecycle for these
    specific mechanics, by construction, regardless of what round number in the session it
    actually occurs at — see `references/compaction.md`'s "Retry topology" section for candidate
-   A's full four-bullet decision tree. This exception is scoped to candidate A ONLY, never to a
+   A's full three-bullet decision tree. This exception is scoped to candidate A ONLY, never to a
    compaction attempt's thread B, which gets NONE of this file's retry machinery at all (single-
    shot: it either succeeds, or the whole compaction attempt is immediately exhausted) — and never
    to an ordinary group's own genuine round-1 attempt, which keeps this file's literal round-1

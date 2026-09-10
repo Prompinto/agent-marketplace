@@ -246,9 +246,10 @@ simpler use case does not need to reinvent. Instead:
 ## Closed-claim section has its own ceiling
 
 The closed-claim one-line summaries have no bound by default, and the count of closed claims only
-ever grows across a session — in a claims-heavy review, this section could itself eventually
-threaten the wrapper's 131,072-byte combined-prompt cap, at which point compaction would
-permanently fail via `artifact_too_large`. Fixed with a small, bounded rule (no LLM
+ever grows across a session — in a claims-heavy review, this section could itself grow large
+enough to defeat compaction's own purpose (keeping the round's own prompt small) and to
+meaningfully slow down or add unnecessary cost to the compaction dispatch itself. Fixed with a
+small, bounded rule (no LLM
 summarization): include the `CLOSED_CLAIM_LIMIT = 20` most-recently-closed claims' one-line
 summaries verbatim (ordered by `source_round` descending), and collapse everything older into a
 single line: `<N> additional claims resolved/retracted before round <R>; see the session's own
@@ -259,8 +260,10 @@ fixed COUNT regardless of how many rounds a session eventually runs.
 bytes — the marker-reason grammar requires only a non-empty sentence, with no length limit, so 20
 valid-but-long closure reasons are not actually "small." Open claims remain fully unabridged with
 no count or byte bound. So a session with a large number of open/closed claims, one exceptionally
-large finding, OR a large re-collected diff/artifact can still produce a rendered prompt exceeding
-the wrapper's 131,072-byte cap.
+large finding, OR a large re-collected diff/artifact can still produce a rendered compaction
+prompt large enough to be slow, costly, or (depending on whatever real limit the underlying
+model/CLI itself enforces) outright rejected — see "Byte-budget preflight" below for how this
+design guards against that residual risk before ever dispatching.
 
 ## Byte-budget preflight
 
@@ -290,9 +293,14 @@ applicable — see "Restart mechanism" step 4 below) before ever dispatching it,
 measures its REAL byte length directly (e.g. `wc -c` on the assembled focus content) — an exact
 count, not an estimate. The total checked against `COMPACT_BYTE_BUDGET = 120,000` is: this exact
 focus-text byte count, PLUS the diff/untracked-content (or `--commit` patch) byte count from the
-authoritative collection above. `120,000` is tighter than the wrapper's real 131,072-byte cap —
-the remaining ~11,000-byte margin absorbs the wrapper's own fixed prompt scaffolding text outside
-the caller-supplied focus, which this estimate does not measure directly.
+authoritative collection above. `120,000` is this feature's OWN self-imposed ceiling for a single
+compaction attempt's rendered prompt — a conservative, practical bound chosen to keep a compaction
+dispatch itself fast and inexpensive, independent of whatever real limit the underlying model/CLI
+enforces. The base skill's own former self-imposed pre-dispatch guard for an ORDINARY round's
+prompt has been removed entirely (see `references/retry-guards.md`'s "Compaction-only exception"
+section), so this preflight is not defending against any documented wrapper-side wall — it exists
+purely so a compaction ATTEMPT, whose entire purpose is shrinking the round's own prompt, never
+itself becomes another oversized dispatch.
 
 **Re-run before EVERY re-collected candidate, not only the original attempt.** The no-threadId
 fresh retry and thread B's own dispatch (see "Retry topology" below) each re-collect a genuinely
@@ -472,7 +480,7 @@ is otherwise ever forced to recheck `CLEAN_REPO_DIR`'s cleanliness before an ord
 an inherited, pre-existing limitation this feature does not newly introduce.
 
 **Fail CLOSED wherever a real alternative still exists.** Candidate A's own resume-retries and
-the bullet-3 same-thread retry (see "Retry topology" below) treat a failed recheck exactly like
+the bullet-2 same-thread retry (see "Retry topology" below) treat a failed recheck exactly like
 any other compaction failure — abandon this compaction attempt, fall through to the "On failure"
 fallback, never dispatch into a KNOWN-polluted directory. This abandonment unconditionally adds
 A's own already-known thread id to `LEAKED_THREAD_IDS`/`compaction_attempt_failed_thread` before
@@ -795,11 +803,7 @@ uses, to candidate A ONLY — tracked as its own fact, independent of `GROUP_THR
 meaning "the old thread" throughout, per "Failure isolation from the round loop" below). Thread
 B's own, deliberately simpler treatment is Task 12.
 
-1. **`artifact_too_large` first, regardless of threadId presence:** never retried. This candidate
-   attempt is immediately exhausted — fall straight through to the "On failure" fallback (this design's
-   own failure-isolation principle means this is never surfaced as its own distinct outcome,
-   unlike the base skill's `🛑 INPUT TOO LARGE` for an ordinary round).
-2. **Else, if THIS SPECIFIC response captured no threadId AND the current candidate has NEVER
+1. **If THIS SPECIFIC response captured no threadId AND the current candidate has NEVER
    previously captured one either, across any earlier response in this same attempt sequence:**
    apply `references/retry-guards.md`'s "no entry yet" bullet to THIS candidate specifically: one
    fresh retry. Checking only "did THIS response lack a threadId" would wrongly treat a
@@ -827,8 +831,7 @@ B's own, deliberately simpler treatment is Task 12.
    its own to inherit anything from, so whatever focus text it sends is the entirety of what this
    new dispatch ever sees.
 
-   If this retry fails AGAIN, for ANY reason (excluding `artifact_too_large`, which bullet 1
-   above always takes priority over): this candidate is exhausted. **Check whether THIS retry's
+   If this retry fails AGAIN, for ANY reason: this candidate is exhausted. **Check whether THIS retry's
    own response captured a threadId before assuming nothing needs tracking** — this retry is
    itself a genuinely fresh dispatch, and can fail with a reason that DOES carry a threadId even
    when the ORIGINAL attempt's own failure did not (e.g. the original fails `no_thread_started`
@@ -839,7 +842,7 @@ B's own, deliberately simpler treatment is Task 12.
    to add. Delete this retry's own candidate too, when one exists. Fall straight through to the
    "On failure" fallback. **The fresh-B escalation (Task 12) is never reached from this bullet**,
    regardless of what the retry's own second failure looks like.
-3. **Else (a threadId WAS captured for the current candidate, either by this response or an
+2. **Else (a threadId WAS captured for the current candidate, either by this response or an
    earlier one in the same sequence): if THIS specific response itself lacks a threadId despite
    the candidate already having one** — retry the SAME already-captured thread EXACTLY ONCE,
    never more, and never re-entering the ordinary bounded-resume/fresh-B escalation on ANY
@@ -848,23 +851,22 @@ B's own, deliberately simpler treatment is Task 12.
    report `⚠️ COULD NOT VERIFY`," with no carve-out for a different escalation path based on
    what the second failure's own reason happens to be). If that one retry fails AGAIN, for ANY
    reason: exhausted. **Always record the ALREADY-KNOWN thread id on exhaustion here** — this
-   bullet's own precondition guarantees one exists, unlike bullet 2's genuinely-uncertain case —
+   bullet's own precondition guarantees one exists, unlike bullet 1's genuinely-uncertain case —
    add it to `LEAKED_THREAD_IDS`/`compaction_attempt_failed_thread` unconditionally, then fall
    straight through to the "On failure" fallback (never `⚠️ COULD NOT VERIFY`, per this design's own
    failure-isolation principle — see below). Only if this one retry SUCCEEDS does the candidate
    continue as this round's own live, active attempt, exactly as if no no-ID hiccup had ever
    occurred.
-4. **Else (THIS response DOES carry a threadId — the ordinary, most common case, whether this is
+3. **Else (THIS response DOES carry a threadId — the ordinary, most common case, whether this is
    the candidate's own first-ever captured id or a later response that continues to carry one):**
    this is the ordinary case — apply the standard bounded-resume-retry-then-fresh-B escalation
    directly: 2 bounded `--resume` retries against this SAME thread; if both are exhausted, the
    fresh-B escalation (Task 12).
 
-The fresh-B escalation is reached ONLY via bullet 4's own ordinary path — a genuinely NEW
+The fresh-B escalation is reached ONLY via bullet 3's own ordinary path — a genuinely NEW
 resume-safe failure that carries a threadId on its OWN first occurrence for this candidate (never
-via a no-ID recovery scenario per bullet 3) — never via bullet 1 or bullet 2's own exhaustion
-either, both of which fall straight to the "On failure" fallback without ever creating a second candidate
-thread.
+via a no-ID recovery scenario per bullet 2) — never via bullet 1's own exhaustion, which falls
+straight to the "On failure" fallback without ever creating a second candidate thread.
 
 **Thread B's OWN dispatch reconstructs the COMPLETE compaction focus text, identically to
 "Restart mechanism" step 4 above — never a partial or abbreviated one.** B's dispatch is a
@@ -879,11 +881,11 @@ For `--uncommitted`/`--base` scope, B's dispatch re-collects a fresh candidate (
 A's now-deleted candidate. For non-repo-artifact/`--commit` scope, B's dispatch involves no
 candidate file at all, exactly like A's did not.
 
-**Thread B's own single dispatch gets NONE of bullets 1-4's retry machinery — it either
+**Thread B's own single dispatch gets NONE of bullets 1-3's retry machinery — it either
 succeeds, or the whole compaction attempt is immediately exhausted**, matching
 `references/retry-guards.md`'s own "round 2+"/one-fresh-fallback rule exactly. If B's own
-dispatch fails, for ANY reason whatsoever (`artifact_too_large`, no threadId at all, a
-threadId-bearing resume-safe reason — none of these are distinguished for B): immediate
+dispatch fails, for ANY reason whatsoever (no threadId at all, a
+threadId-bearing resume-safe reason — neither is distinguished for B): immediate
 exhaustion, with no retry of B, no no-threadId recovery attempt for B, and absolutely no further
 escalation to a third candidate/thread. If B's own failed response captured a threadId, add it to
 `LEAKED_THREAD_IDS`/`compaction_attempt_failed_thread` (alongside A's own); if not, there is
@@ -895,17 +897,17 @@ never reached, `[A, B]` when both were abandoned — rather than a single value;
 this field (Phase 3 cleanup, the final-report thread enumeration, the append-verify field checks
 — see Task 13) is extended to accept and union in either shape.
 
-**Carry-forward applies to A's OWN `--resume` retry-then-succeed too — BOTH bullet-3's no-ID-
-hiccup retry AND bullet-4's ordinary threadId-bearing bounded resume retry, the two genuinely
-different ways A can succeed via `--resume` — NEVER to A's bullet-2 no-threadId FRESH retry,
-which needs the OPPOSITE treatment.** Neither bullet 3's nor bullet 4's own successful `--resume`
+**Carry-forward applies to A's OWN `--resume` retry-then-succeed too — BOTH bullet-2's no-ID-
+hiccup retry AND bullet-3's ordinary threadId-bearing bounded resume retry, the two genuinely
+different ways A can succeed via `--resume` — NEVER to A's bullet-1 no-threadId FRESH retry,
+which needs the OPPOSITE treatment.** Neither bullet 2's nor bullet 3's own successful `--resume`
 response ever re-collects anything, so in BOTH cases the ONLY real coverage/baseline/telemetry
 data available is the earlier failed response's own — carry it forward (see "Restart mechanism"
 step 4's coverage-epoch rules above, and "Preserving failed-attempt telemetry" below for
-`execution`). Bullet 2's own retry is the polar opposite — it is itself a genuinely NEW,
+`execution`). Bullet 1's own retry is the polar opposite — it is itself a genuinely NEW,
 independent re-collection, exactly like the A→B transition already is, with its OWN fresh
 coverage and baseline; applying carry-forward there would use STALE data from an attempt whose
-own collected content this retry has already deleted and superseded. For bullet 2's own
+own collected content this retry has already deleted and superseded. For bullet 1's own
 retry-then-succeed specifically, the RETRY's own response is the sole authoritative source for
 coverage and `COMPACTION_BASELINE_TOKENS` — never the earlier, now-superseded failed attempt's —
 mechanically identical in principle to how B's own data is used, never A's, after the A→B
@@ -915,10 +917,10 @@ transition.
 earlier-failure telemetry, never a "B retries" case (B is single-shot by construction, so there
 is no possible "B's own first response failed, then B itself went on to succeed" scenario):**
 (i) an EARLIER response for the eventually-successful thread A failed before that SAME thread
-went on to succeed via its own `--resume` retry (bullet 3's no-ID hiccup, or bullet 4's ordinary
+went on to succeed via its own `--resume` retry (bullet 2's no-ID hiccup, or bullet 3's ordinary
 threadId-bearing bounded resume — both are this same sub-case); (ii) A's own first response
 failed with no threadId, and its ONE allowed no-threadId fresh retry then succeeded (still "A,"
-no abandoned thread, per bullet 2); or (iii) a genuinely abandoned thread A, exhausted, preceded
+no abandoned thread, per bullet 1); or (iii) a genuinely abandoned thread A, exhausted, preceded
 thread B's own eventual success within that SAME round. **ONLY sub-case (iii) ever populates
 `compaction_attempt_failed_thread`** — in sub-cases (i) and (ii), the SAME thread that had an
 earlier failed response is what goes on to succeed, so nothing was ever abandoned; recording it
@@ -1075,7 +1077,7 @@ first, immediately before that specific attempt's own `mv`.
 
 ## On failure
 
-On any `ok:false` reason (including `artifact_too_large`) — self-contained fallback, never this
+On any `ok:false` reason — self-contained fallback, never this
 round's own terminal outcome, and NEVER a separate JSONL append (a standalone append for the
 failed attempt would conflict with the append-verify contract requiring exactly one JSONL object
 per round number):
@@ -1163,27 +1165,26 @@ describes the RESULT, never the dispatch count: a failed fresh compaction attemp
 followed by a real, required, SEPARATE fallback `--resume` dispatch — two genuine network calls
 for that one round, not one. Round R's own real, reportable OUTCOME is either the compaction
 fresh-dispatch's own success or the fallback `--resume`'s own result — never both simultaneously
-claimed as round R's terminal status — and a compaction attempt's own failure reason (e.g.
-`artifact_too_large`) is NEVER surfaced as round R's own terminal status regardless of how many
+claimed as round R's terminal status — and a compaction attempt's own failure reason (e.g. a
+resume-safe dispatch failure like `timeout` or `nonzero_exit`) is NEVER surfaced as round R's own terminal status regardless of how many
 underlying dispatches it took to get there; it is purely an internal detail of "how round R's
 real outcome was reached," logged as one narration line plus the durable `compaction_attempt_*`
 fields above.
 
 **This directly conflicts with two of `references/retry-guards.md`'s own contracts — shipping
 this feature requires a companion amendment to that file (see Task 19):**
-1. `references/retry-guards.md`'s own MANDATORY terminal-outcome rules for `artifact_too_large`
-   (required to end the group/round as `🛑 INPUT TOO LARGE`) and exhausted retries (required to
-   end as `⚠️ COULD NOT VERIFY`) do NOT apply to a failure occurring WITHIN a self-contained
-   compaction ATTEMPT on the NEW candidate thread specifically — this design deliberately absorbs
-   that failure into "fall through to the fallback" rather than surfacing it as the round's own
-   terminal status. A compaction attempt is not "a group" in `retry-guards.md`'s own sense; it is
-   an internal sub-step of producing round R's one real outcome. The base skill's own ordinary,
-   non-compaction failure handling for a REAL group's `ok:false` response remains governed by
-   `retry-guards.md`'s existing, unmodified rules.
+1. `references/retry-guards.md`'s own MANDATORY terminal-outcome rule for exhausted retries
+   (required to end as `⚠️ COULD NOT VERIFY`) does NOT apply to a failure occurring WITHIN a
+   self-contained compaction ATTEMPT on the NEW candidate thread specifically — this design
+   deliberately absorbs that failure into "fall through to the fallback" rather than surfacing it
+   as the round's own terminal status. A compaction attempt is not "a group" in
+   `retry-guards.md`'s own sense; it is an internal sub-step of producing round R's one real
+   outcome. The base skill's own ordinary, non-compaction failure handling for a REAL group's
+   `ok:false` response remains governed by `retry-guards.md`'s existing, unmodified rules.
 2. `references/retry-guards.md`'s own no-threadId-fresh-retry and fresh-B escalation rules are
    explicitly scoped to a group's OWN true first-ever attempt, "only possible on round 1" — but a
    compaction restart's own candidate dispatch is STRUCTURALLY always at session round 2 or
-   later. For candidate A specifically (never B — B already gets NONE of bullets 1-4's retry
+   later. For candidate A specifically (never B — B already gets NONE of bullets 1-3's retry
    machinery, per "Retry topology" above, and a broader "any compaction candidate" wording would
    silently re-enable exactly the bug that exclusion closes), `retry-guards.md`'s own "no entry
    yet"/"true first-ever attempt" language is keyed on the CANDIDATE's own independent

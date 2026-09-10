@@ -222,18 +222,6 @@ happens after that same launch) — so all 7 are unconditionally eligible for `c
 whenever this was a fresh `--uncommitted` dispatch, regardless of whether that attempt ultimately
 succeeded.
 
-`artifact_too_large` is a further exception to the "collection completed AND `codex exec` has
-already been launched" half of that same invariant — for a fresh `--uncommitted` dispatch
-specifically, collection has genuinely completed (diff and untracked files are already gathered,
-`SOURCE_COVERAGE_JSON` is already populated) but `codex exec` is NEVER launched for this reason —
-the check fires strictly before dispatch. It still correctly carries `coverage.source` via
-`emit_final_output`, exactly like the 7 unconditionally-eligible reasons above, because that
-splice is gated on `$SOURCE_COVERAGE_JSON` being well-typed, not on whether a dispatch actually
-happened — a caller reviewing a rejected huge diff still deserves to know what was/wasn't
-collected. It carries no `coverage.source` for `--base`/`--commit` scope or any `--resume` round,
-for the same reason the 7 reasons above don't: `SOURCE_COVERAGE_JSON` is never populated on those
-paths in the first place.
-
 `interrupted` is different, and deliberately not part of that unconditionally-eligible set: the
 wrapper's own SIGINT/SIGTERM trap handler also splices in `coverage.source` when it can, but a
 signal can land at ANY point in the wrapper's execution — before collection ever starts,
@@ -278,7 +266,6 @@ possible even after a failed round):
 | `no_final_answer` | `codex exec` exited 0 with `turn.completed` seen, but its `-o/--output-last-message` file was never written (or written empty) | Yes |
 | `invalid_json` | The final answer wasn't valid JSON despite the schema | Yes |
 | `schema_mismatch` | The final answer was valid JSON but failed the semantic verdict rules (CLEAN/findings cross-field consistency, nonblank evidence, complete dimension set) | Yes |
-| `artifact_too_large` | The fully rendered prompt (diff and/or `--focus`/Context text, whichever combination this dispatch actually merged into one buffer) exceeded the wrapper's own `PROMPT_SIZE_LIMIT_BYTES` (131072 bytes) — checked once, right after the prompt is built, before `codex exec`/`codex exec resume` is ever launched (Phase 5 Item A) | **Differs by fresh vs. resume — the one row in this table where presence isn't a simple yes/no.** Fresh round 1: No (dispatch never started, same as `bad_args`/`git_error`). Resumed round: Yes (the threadId already existed, assigned before this check runs) |
 
 **Execution telemetry (always on, no opt-in — see "Execution telemetry" above and
 `references/execution-telemetry.md`, already read per that section's own mandatory-read
@@ -318,13 +305,12 @@ still has a thread to resume when a specific failure carries none.
 |---|---|---|
 | `bad_args`, `git_error`, `incomplete_collection`, `no_thread_started` | N/A — never carries a `threadId` at all, nothing to resume | Table above: `threadId` never present |
 | `interrupted`, `timeout`, `nonzero_exit`, `missing_task_complete`, `no_final_answer`, `invalid_json`, `schema_mismatch` | **Yes** — the underlying Codex thread's own conversational state survives; only THIS wrapper invocation failed to extract a valid final answer from it | `nonzero_exit` empirically confirmed live (crash simulation + 4 real production occurrences, see above); the other six reasons in this row share the same property (a thread that genuinely started, or exited zero, but the wrapper couldn't confirm/extract a valid final answer from it) and are inferred safe by the identical reasoning, not separately live-tested one by one |
-| `artifact_too_large` | **No — its own row, fitting neither of the two above.** Unlike `bad_args`/`git_error`/`incomplete_collection`/`no_thread_started`, a `threadId` MAY be present (on a resumed round — see the reason table's own note on this one row). Unlike every reason in the "Yes" row above, it is NEVER worth a `--resume` retry either way, because it is deterministic — an identical resend of the same oversized payload fails identically | Structural: the check depends only on this dispatch's own rendered prompt size, not on any transient backend condition, so retrying changes nothing |
 
-Every `reason` other than `artifact_too_large` that can ever carry a `threadId` falls in the "Yes"
+Every `reason` that can ever carry a `threadId` falls in the "Yes"
 row above — there is no longer a `reason` meaning "the thread/rollout itself is confirmed gone"
 (that used to be `resume_thread_not_found`/`rollout_not_found`; see the note at the end of the
-reason table above for why neither exists anymore), so a threadId-carrying failure other than
-`artifact_too_large` is unconditionally worth a `--resume` retry.
+reason table above for why neither exists anymore), so a threadId-carrying failure is
+unconditionally worth a `--resume` retry.
 
 **Accepted tradeoff, stated plainly rather than glossed over:** a genuinely dead/unknown
 `--resume` threadId (e.g. one whose thread was already deleted) is no longer distinguishable, by
@@ -1782,7 +1768,7 @@ this JSONL audit log, which persists as a durable record.
 ## Phase 3 — Terminal path
 
 On **every** terminal outcome — `✅ CLEAN`, `⚠️ NOT CONVERGED`, `⚠️ COULD NOT VERIFY`,
-`⚠️ PARTIAL COVERAGE`, `🟡 MINOR ISSUES ACKNOWLEDGED`, `🛑 INPUT TOO LARGE`,
+`⚠️ PARTIAL COVERAGE`, `🟡 MINOR ISSUES ACKNOWLEDGED`,
 `🛑 SNAPSHOT INTEGRITY FAILURE`, or
 `🛑 REVIEW LOG INTEGRITY FAILURE` — do all of the following before
 reporting to the user. None of these is ever left to the user to remember; this is the deliberate
@@ -1790,21 +1776,17 @@ difference from `stream-review`'s own caller-owns-cleanup contract (see "Mode 2 
 
 **Keep-evidence gate — checked once, before step 1 below.** If `--keep-evidence` is ON for this
 session AND this run's final terminal status is NOT `✅ CLEAN` (i.e. it is `⚠️ NOT CONVERGED`,
-`⚠️ COULD NOT VERIFY`, `⚠️ PARTIAL COVERAGE`, `🟡 MINOR ISSUES ACKNOWLEDGED`, or
-`🛑 INPUT TOO LARGE`), **skip steps 1 and 2 below
+`⚠️ COULD NOT VERIFY`, `⚠️ PARTIAL COVERAGE`, or `🟡 MINOR ISSUES ACKNOWLEDGED`), **skip steps 1 and 2 below
 entirely** — leave
 every thread in `GROUP_THREADS` and `LEAKED_THREAD_IDS` alive so a human can `--resume` it later to
 keep investigating, or inspect it directly — then go straight to step 3 and the final report. When
 `--keep-evidence` is OFF, or the outcome IS `✅ CLEAN`, run steps 1 and 2 exactly as written below,
 with no change from today. See `references/keep-evidence.md` for the full reasoning and the final
-report's additional required content in this case. **`🛑 INPUT TOO LARGE` and
-`🟡 MINOR ISSUES ACKNOWLEDGED` both follow this SAME gate
-like any other non-CLEAN outcome — neither is a third or fourth exemption alongside the two
-below** (Phase 5 Item A: the underlying thread on a resumed round is untouched, not abandoned, and
-a caller who wants to keep it alive for later inspection uses `--keep-evidence` exactly as for any
-other outcome; `🟡 MINOR ISSUES ACKNOWLEDGED` involves no integrity failure of any kind — it is a
+report's additional required content in this case. **`🟡 MINOR ISSUES ACKNOWLEDGED` follows this SAME gate
+like any other non-CLEAN outcome — it is not a third exemption alongside the two
+below** (it involves no integrity failure of any kind — it is a
 deliberate early stop on genuinely minor open items, so it warrants no special-cased cleanup
-treatment either). **`🛑 SNAPSHOT INTEGRITY FAILURE` and
+treatment). **`🛑 SNAPSHOT INTEGRITY FAILURE` and
 `🛑 REVIEW LOG INTEGRITY FAILURE` remain the only two outcomes that are NEVER subject to this gate,
 even
 with `--keep-evidence` ON** — always run steps 1
@@ -1897,7 +1879,7 @@ trustworthy one).
      `🟡 MINOR ISSUES ACKNOWLEDGED` → `"MINOR_ISSUES_ACKNOWLEDGED"`,
      `🛑 SNAPSHOT INTEGRITY FAILURE` →
      `"SNAPSHOT_INTEGRITY_FAILURE"`, `🛑 REVIEW LOG INTEGRITY FAILURE` →
-     `"REVIEW_LOG_INTEGRITY_FAILURE"`, `🛑 INPUT TOO LARGE` → `"INPUT_TOO_LARGE"`.
+     `"REVIEW_LOG_INTEGRITY_FAILURE"`.
    - `round_count`: the final round number `R` reached (0 only for the degenerate case where a
      terminal status was reached before any round's JSONL line was ever appended — does not occur
      on the ordinary paths this skill takes today, but the schema allows it rather than assuming).
@@ -1939,15 +1921,11 @@ trustworthy one).
      reports `coverage.source` for either. For `target.scope` `"uncommitted"`, the merged round-1
      `coverage_source` object this session already tracked as a literal fact throughout the run
      (see "Coverage is a Round-1-only property" above) — never re-derived from the JSONL here.
-   - `input_errors`: `null` unless `exit_state` is `"INPUT_TOO_LARGE"`, in which case a non-empty
-     array with one entry per group whose dispatch actually returned `artifact_too_large` in the
-     round that produced this terminal status: `{"group": <that group's slug>, "actual_bytes":
-     <the byte count reported in that group's own failure response `detail` text>, "limit_bytes":
-     131072}`. `limit_bytes` is always the wrapper's own well-known `PROMPT_SIZE_LIMIT_BYTES`
-     constant (documented in the interface reference above) — never re-derived. `actual_bytes` is
-     the one number that must be read out of that response's own natural-language `detail` string
-     (e.g. "... is 209468 bytes, exceeding the 131072-byte limit ..." — extract `209468`), since
-     the wrapper reports this reason as prose, not as structured fields.
+   - `input_errors`: always `null` — no `exit_state` populates this field. It exists only for
+     result-contract compatibility with older consumers: the one outcome that used to populate it
+     (`"INPUT_TOO_LARGE"`, a self-imposed pre-dispatch prompt byte-size guard) has been removed
+     entirely; a genuinely oversized prompt now simply surfaces as a normal dispatch failure
+     (`timeout`, `nonzero_exit`, `no_final_answer`, etc., per the reason table above).
 
    **Write mechanism — hand-replicate `run-ccs-ci.sh`'s `write_result_atomic()`'s own atomic
    shape directly in a Bash call, do NOT claim this "calls" that function** (a bash function
@@ -1998,17 +1976,14 @@ Structure:
   MAX_ROUNDS cap, K unresolved)` / `⚠️ COULD NOT VERIFY (Codex review unavailable)` /
   `⚠️ PARTIAL COVERAGE (source coverage unresolved)` /
   `🟡 MINOR ISSUES ACKNOWLEDGED (quick mode, N rounds, K low/medium items open)` /
-  `🛑 INPUT TOO LARGE (the rendered prompt exceeded the size limit)` /
   `🛑 SNAPSHOT INTEGRITY FAILURE (Claude's
   own local record of the reviewed subject could not be re-verified)` /
   `🛑 REVIEW LOG INTEGRITY FAILURE (the review-history log could not be verified or is on an
   incompatible schema version)`. If `COULD NOT VERIFY` in
-  parallel mode, name which group; if `🛑 INPUT TOO LARGE`, name which group and the actual
-  byte count vs. the limit (see `run-ccs-review.sh`'s own `artifact_too_large` `detail` text). **For
+  parallel mode, name which group. **For
   any `🛑` status**, state
   plainly that a fresh `codex-stream-review:ccs` invocation is required to review the target's
-  current state — this run cannot simply be resumed or retried as-is (for `🛑 INPUT TOO LARGE`,
-  with a narrower diff scope or a shorter `--focus`/pasted artifact this time; see
+  current state — this run cannot simply be resumed or retried as-is (see
   `references/snapshot-integrity.md` for the snapshot case; "Review history log" above for the log
   case).
 - **Source coverage** — if round 1 was `--uncommitted` and its `coverage_source.status` (the
@@ -2032,11 +2007,9 @@ Structure:
   `--keep-evidence`** — report a normal
   cleanup outcome instead (cleanup always ran unconditionally for either of those two; see "Snapshot
   integrity" above and the Guards section's "receives EXACTLY the same treatment" rule), plus the
-  required content from the relevant section (a fresh invocation is needed). **`🛑 INPUT TOO
-  LARGE` is NOT a third status in this unconditional-cleanup group** — it follows the normal
-  keep-evidence-gated bullet above like any other non-CLEAN outcome. When `--compact` was used,
-  also name every `compacted_from_thread`/`compaction_attempt_failed_thread` value found in the
-  JSONL log (per Phase 3's own extension above), not only `GROUP_THREADS`/`LEAKED_THREAD_IDS`
+  required content from the relevant section (a fresh invocation is needed). When `--compact` was
+  used, also name every `compacted_from_thread`/`compaction_attempt_failed_thread` value found in
+  the JSONL log (per Phase 3's own extension above), not only `GROUP_THREADS`/`LEAKED_THREAD_IDS`
   memory.
 - **Execution telemetry (always on)** — see "Execution telemetry" above and
   `references/execution-telemetry.md`. Head this bullet's actual content with **"best-effort
@@ -2087,14 +2060,6 @@ Structure:
   `references/snapshot-integrity.md`) — every round 2+ revalidates `SNAPSHOT_FILE` against
   `SNAPSHOT_DIGEST` before dispatching any group, and a mismatch or missing file is a hard stop
   (`🛑 SNAPSHOT INTEGRITY FAILURE`, never silently ignored or treated as an ordinary retry case).
-- **The diff/artifact-size preflight is always on, no opt-in (Phase 5 Item A)** — every dispatch,
-  fresh or resumed, is rejected with `artifact_too_large` before `codex exec` ever launches if its
-  fully rendered prompt exceeds `run-ccs-review.sh`'s own `PROMPT_SIZE_LIMIT_BYTES` (131072 bytes,
-  a conservative operational policy, not a vendor-guaranteed limit). This reason is NEVER retried
-  (see its own `artifact_too_large` bullet in `references/retry-guards.md`) and its round-level status is
-  the new terminal status `🛑 INPUT TOO LARGE`, treated like any other non-CLEAN outcome for
-  `--keep-evidence`/`--cleanup` purposes — never a third unconditional-cleanup exemption alongside
-  `🛑 SNAPSHOT INTEGRITY FAILURE`/`🛑 REVIEW LOG INTEGRITY FAILURE`.
 - **The claim ledger is also always on, no opt-in** (see "Claim ledger" above and
   `references/claim-ledger.md`) — a claim disappearing from Codex's findings is NEVER treated as
   implicit resolution; CLEAN requires every claim_id to have reached an explicit `resolved`/
