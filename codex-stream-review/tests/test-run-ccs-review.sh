@@ -517,6 +517,37 @@ else
 fi
 rm -f "$TRAILING_BLANKS_SCHEDULE_FILE"
 
+# 70 well-formed `<N>: <24-hex>` lines can still fail to be a real schedule:
+# every label could be the same number (making the other 69 slots
+# permanently unissuable), or every token could be identical (making a
+# receipt replayable across slots). The per-line regex alone can't catch
+# either -- the sequential-labels/distinct-tokens check must.
+SAME_LABEL_SCHEDULE_FILE="$(mktemp)"
+{
+  echo "REVIEW_RECEIPT_SCHEDULE"
+  for i in $(seq 1 70); do printf '1: %024x\n' "$i"; done
+} > "$SAME_LABEL_SCHEDULE_FILE"
+OUT="$(pd_run fresh --receipt-schedule-file "$SAME_LABEL_SCHEDULE_FILE")"
+if printf '%s' "$OUT" | jq -e '.reason == "bad_args"' >/dev/null 2>&1; then
+  pass "--receipt-schedule-file with every entry labeled 1 (non-sequential labels) rejected as bad_args"
+else
+  fail "--receipt-schedule-file with non-sequential labels should be rejected, got: $OUT"
+fi
+rm -f "$SAME_LABEL_SCHEDULE_FILE"
+
+SAME_TOKEN_SCHEDULE_FILE="$(mktemp)"
+{
+  echo "REVIEW_RECEIPT_SCHEDULE"
+  for i in $(seq 1 70); do printf '%d: aaaaaaaaaaaaaaaaaaaaaaaa\n' "$i"; done
+} > "$SAME_TOKEN_SCHEDULE_FILE"
+OUT="$(pd_run fresh --receipt-schedule-file "$SAME_TOKEN_SCHEDULE_FILE")"
+if printf '%s' "$OUT" | jq -e '.reason == "bad_args"' >/dev/null 2>&1; then
+  pass "--receipt-schedule-file with correct labels but one repeated token across all entries rejected as bad_args"
+else
+  fail "--receipt-schedule-file with a repeated token across all entries should be rejected, got: $OUT"
+fi
+rm -f "$SAME_TOKEN_SCHEDULE_FILE"
+
 # A directory is "readable" too -- the regular-file check must reject it
 # BEFORE any read is attempted, so no raw command diagnostic (e.g. from
 # `head`/`wc`/`grep` failing to read a directory) ever reaches stderr ahead

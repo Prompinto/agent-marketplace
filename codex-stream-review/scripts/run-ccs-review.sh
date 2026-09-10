@@ -537,6 +537,19 @@ while [ $# -gt 0 ]; do
       if [ "$RECEIPT_SCHEDULE_SHAPE_OK" -eq 1 ]; then
         [ "$(printf '%s' "$RECEIPT_SCHEDULE_CONTENT" | tail -n +2 | grep -cE '^[0-9]+: [0-9a-f]{24}$')" = "70" ] || RECEIPT_SCHEDULE_SHAPE_OK=0
       fi
+      # The per-line regex above only confirms each line LOOKS like a numbered entry -- it does not
+      # confirm the 70 labels are actually the sequence 1..70 (each exactly once) or that the 70
+      # tokens are pairwise distinct. A schedule with every entry labeled `1:` (making slots 2-70
+      # permanently unissuable), or every entry sharing one token (making a receipt replayable
+      # across slots), would otherwise still pass.
+      if [ "$RECEIPT_SCHEDULE_SHAPE_OK" -eq 1 ]; then
+        RECEIPT_SCHEDULE_ENTRIES="$(printf '%s' "$RECEIPT_SCHEDULE_CONTENT" | tail -n +2)"
+        RECEIPT_SCHEDULE_ACTUAL_LABELS="$(printf '%s\n' "$RECEIPT_SCHEDULE_ENTRIES" | cut -d: -f1)"
+        RECEIPT_SCHEDULE_EXPECTED_LABELS="$(seq 1 70)"
+        [ "$RECEIPT_SCHEDULE_ACTUAL_LABELS" = "$RECEIPT_SCHEDULE_EXPECTED_LABELS" ] || RECEIPT_SCHEDULE_SHAPE_OK=0
+        RECEIPT_SCHEDULE_DISTINCT_TOKENS="$(printf '%s\n' "$RECEIPT_SCHEDULE_ENTRIES" | awk -F': ' '{print $2}' | sort -u | wc -l | tr -d ' ')"
+        [ "$RECEIPT_SCHEDULE_DISTINCT_TOKENS" = "70" ] || RECEIPT_SCHEDULE_SHAPE_OK=0
+      fi
       if [ "$RECEIPT_SCHEDULE_SHAPE_OK" -ne 1 ]; then
         DETAIL_JSON="$(printf '%s' "$2" | jq -Rs '"--receipt-schedule-file does not match the expected 71-line REVIEW_RECEIPT_SCHEDULE shape: " + .')"
         printf '{"ok":false,"reason":"bad_args","detail":%s}\n' "$DETAIL_JSON"
