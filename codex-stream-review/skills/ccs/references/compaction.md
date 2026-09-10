@@ -690,6 +690,89 @@ THAT round's own recorded values, then:
    `SNAPSHOT_DIGEST` the same way. If the candidate is missing, or present but fails to verify
    BEFORE any `mv` is even attempted: hard stop, `🛑 SNAPSHOT INTEGRITY FAILURE`.
 
+### Step 4 — dispatch a fresh `run-ccs-review.sh` call
+
+Dispatch a **fresh** `run-ccs-review.sh` call (same scope flag as round 1, not `--resume` — or,
+for a non-repo-artifact session per step 2 above, `--uncommitted` against `CLEAN_REPO_DIR` with
+the original artifact text included in focus) with focus text composed of, in order:
+1. `COMPACT_DIGEST` (see "Digest construction and verification" above)
+2. The original artifact text, for a non-repo-artifact session only (per step 2 above)
+3. The original Why AND task-specific Scope framing, read from `target.original_scope_framing`
+   (never from `target.focus` — see below for why)
+4. The standard `⚠️ SCOPE CONSTRAINT` block
+5. The SAME fixed collaboration-frame sentence every round-1 focus already includes (Claude and
+   Codex are equal peers, findings must be evidence-based, the goal is 100% clean mutual
+   agreement) — this is fixed, static boilerplate, not task-specific content, so it needs no
+   separate durable field
+6. The SAME `DISPOSITION` request block an ordinary round 2+ would include, constructed by the
+   EXISTING rule (`references/claim-ledger.md` section 4 and `SKILL.md`'s own round-2+ History
+   construction), evaluated against the pre-compaction thread's own most recently completed
+   round exactly as it would be for an ordinary resumed round — without this, a claim this fresh
+   reviewer would happily confirm fixed has no mechanism to actually close, eventually producing
+   a false `⚠️ NOT CONVERGED` at the round cap purely because compaction never asked.
+
+**This dispatch IS round R's real dispatch** — its own findings are processed through the
+ordinary Phase 2 steps exactly like any other round's; no separate follow-up dispatch happens in
+the success case.
+
+**A dedicated field is required for the Why/Scope component — `target.focus` is NOT a stable
+source for this.** `target.focus` records whatever focus text was sent for round 1's own FINAL
+logged dispatch ATTEMPT, not a stable "original task framing" fact — it diverges in two confirmed
+real ways: (1) if round 1's own dispatch initially failed and needed a resume-safe retry, the
+retry's own focus text is just a short "Retrying after a `<reason>` failure..." note plus the
+generic scope constraint, NOT the original Why/Scope; (2) for a non-repo-artifact session,
+`target.focus` ALREADY embeds the full original artifact text, so reading it back AND separately
+re-embedding the artifact (per step 2 above) would duplicate the artifact in the fresh prompt.
+Fixed: a new, dedicated, write-once field — `target.original_scope_framing` — captured exactly
+ONCE, at the moment round 1's OWN focus text is first constructed (`SKILL.md`'s Phase 1 Step 0,
+BEFORE the very first dispatch attempt of any kind, retry or not), holding ONLY the Why +
+task-specific Scope text. For a non-repo-artifact session, this field explicitly EXCLUDES the
+pasted artifact text (which stays available separately, via the unchanged snapshot). This field
+is written once to round 1's own JSONL line and is NEVER overwritten by a later retry — a retry
+only ever changes what is actually dispatched for that attempt (`target.focus`, serving its
+existing, unchanged diagnostic/continuity purpose), never this separately-recorded
+original-framing fact.
+
+**Coverage epoch.** For a `--uncommitted` compaction dispatch specifically, this call can report
+its own `coverage.source` exactly like any fresh `--uncommitted` dispatch can — this is a SECOND
+fresh `--uncommitted` epoch within the same session, not only round 1's. The existing "coverage
+is a round-1-only property" rule (`SKILL.md`'s own "Coverage is a Round-1-only property" section)
+is generalized to "coverage is a property of every fresh `--uncommitted` dispatch this session,
+round 1 or a compaction restart" — the CLEAN convergence gate merges EVERY such dispatch's own
+coverage outcome (worst-of-all: `"complete"` only if every one of them was `"complete"`, else the
+existing `"partial"`/`"unknown"` precedence, `omitted` lists unioned and deduplicated by `(path,
+reason)`), never round 1's alone once a compaction has occurred. `--base`/`--commit` compaction
+dispatches report no coverage, exactly like round 1 in those scopes.
+
+**A successful restart can ALSO lack real coverage.** The untracked-file collector deliberately
+treats a failure to write its own `--coverage-out` sidecar as non-fatal, and the wrapper
+deliberately degrades a missing/malformed sidecar to reporting no coverage metadata at all — so
+an `ok:true` fresh `--uncommitted` compaction dispatch can genuinely lack `coverage.source` too.
+The existing "always record coverage — real value when present, the `"unknown"` sentinel when
+absent" rule therefore applies symmetrically here: if this dispatch's own response is `ok:true`
+but carries no `coverage.source`, the round's `coverage_source` field is still recorded as the
+`"unknown"` sentinel — never silently omitted.
+
+**A retry-then-succeed candidate must reuse its OWN pre-retry coverage, never treat itself as
+coverage-less.** A fresh `--uncommitted` dispatch that first returns `ok:false` WITH
+`coverage.source` already present (several failure reasons, e.g. `timeout`, occur only after
+collection has already completed), and is then retried via `--resume` on that SAME new candidate
+thread until it succeeds, ends up with a final `ok:true` response that itself carries NO
+`coverage.source` at all — because a `--resume` call never re-collects anything. Fixed
+(generalizing `references/retry-guards.md`'s existing round-1 retry-then-succeed rule from
+"round 1" to "whichever round performs a fresh `--uncommitted` dispatch"): carry forward the
+EARLIER failed attempt's own `coverage.source` as this round's real coverage once the retry
+succeeds. If the earlier failed attempt itself carried no `coverage.source` either, the
+`"unknown"` sentinel rule above still applies.
+
+**The SAME retry-then-succeed situation applies to `COMPACTION_BASELINE_TOKENS` too, not only
+coverage.** `COMPACTION_BASELINE_TOKENS` is read from the EARLIER failed fresh attempt's own
+`execution.usage.input_tokens` when one exists (the fresh dispatch's real, original size, before
+any retry), never from a subsequent `--resume` retry's own response, whose `execution.usage`
+describes only the resumed turn's marginal usage. Only when the fresh attempt's own first
+response carried no usable telemetry at all does the existing "fail closed when telemetry is
+unusable" rule (see "Trigger" above) apply.
+
 ## Scope (v1)
 
 - **Single-reviewer only (`GROUP="main"`).** Parallel mode is explicitly out of scope for v1 —
