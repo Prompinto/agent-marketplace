@@ -1439,17 +1439,29 @@ described above.
   `DISPOSITION` marker must count as closed for THIS round's own convergence check, not only
   starting next round. Never assume from memory across a 20-round run.
 
-**`--compact` precedence (checked here, before the arrow below ever fires):** if `COMPACT_MODE`
-is ON for this session and THIS round's own `execution.usage.input_tokens` crosses
-`COMPACT_THRESHOLD` (per `references/compaction.md`'s "Trigger" section), do NOT stop the loop
-here even though every condition above holds — a triggering round's own convergence is deferred,
-never discarded. Dispatch the next round as the compaction round (per the trigger-check paragraph
-above Step 6), then re-run this SAME convergence check against THAT round's own real outcome
-instead, exactly as it would run for any other round. Only the arrow below actually fires once a
-round satisfies every condition above **AND** does not itself trigger a pending compaction — this
-holds even for round 1 itself: a round-1 verdict that is otherwise 100% CLEAN still does not stop
-the loop if round 1's own usage also crosses `COMPACT_THRESHOLD`. When `COMPACT_MODE` is OFF, this
-paragraph is a no-op, exactly like every other `--compact`-only paragraph in this file.
+**`--compact` precedence (checked here, before the arrow below ever fires):** do NOT stop the loop
+here — even though every condition above holds — when ALL of the following also hold: `COMPACT_MODE`
+is ON for this session; THIS round's own `execution.usage.input_tokens` crosses
+`COMPACT_THRESHOLD` (per `references/compaction.md`'s "Trigger" section); compaction is not
+already durably disabled for this session (no PRIOR round in this session's log has ever recorded
+`compaction_disabled_reason` — reconstructed the same way continuity recovery already does, see
+"Review history log" → "Read (continuity)" below); and `R < MAX_ROUNDS` (dispatching one more
+round stays within the existing cap). When all four hold, a triggering round's own convergence is
+deferred, never discarded: dispatch the next round as the compaction round (per the trigger-check
+paragraph above Step 6), then re-run this SAME convergence check against THAT round's own real
+outcome instead, exactly as it would run for any other round. This holds even for round 1 itself —
+a round-1 verdict that is otherwise 100% CLEAN still defers when round 1's own usage crosses
+`COMPACT_THRESHOLD` (the other two conditions — no prior latch, room under the cap — are
+automatically satisfied at round 1, since no round has ever run before it).
+
+If `COMPACT_MODE` is OFF, or `--compact` never crosses the threshold this round, this paragraph is
+a no-op and the arrow below fires normally. If compaction is already durably disabled, or `R ==
+MAX_ROUNDS`, the arrow below ALSO fires normally — `--compact` makes no difference to this
+round's determination in either case: a round already latched off never gets another compaction
+attempt (matching `compact-baseline-still-over-threshold`'s own round 3, which converges CLEAN
+without a further fresh dispatch even though it is still over threshold), and compaction never
+dispatches a round beyond the existing `MAX_ROUNDS` cap (compaction has no cap exemption of its
+own — see `references/compaction.md`'s "Scope (v1)" section).
 → Stop the loop, go to Phase 3 as **✅ CLEAN**.
 
 ### Convergence logic across groups — round-level, all-groups-together (confirmed decision)
