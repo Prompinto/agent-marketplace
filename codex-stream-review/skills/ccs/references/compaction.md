@@ -705,6 +705,15 @@ THAT round's own recorded values, then:
 
 ### Step 4 — dispatch a fresh `run-ccs-review.sh` call
 
+**This fresh dispatch is a schedule-(re)generation trigger** — see `SKILL.md`'s "Receipt schedule
+generation" section, whose trigger list includes a compaction restart's brand-new thread alongside
+round 1 and a `no_material_reviewed` restart. Generate a fresh `RECEIPT_SCHEDULE_FILE` for this new
+thread (never reusing the pre-compaction thread's), then perform the ordinary receipt-slot-issuance
+procedure (`SKILL.md`'s "Receipt slot issuance" section — durably append `receipt_issued` to the
+JSONL log BEFORE this dispatch is ever constructed) and pass BOTH `--receipt-slot "$NEXT_SLOT"`
+AND `--receipt-schedule-file "$RECEIPT_SCHEDULE_FILE"` on this dispatch — it establishes a
+brand-new thread, so both flags apply here exactly like round 1's own fresh dispatch.
+
 Dispatch a **fresh** `run-ccs-review.sh` call (same scope flag as round 1, not `--resume` — or,
 for a non-repo-artifact session per step 2 above, `--uncommitted` against `CLEAN_REPO_DIR` with
 the original artifact text included in focus) with focus text composed of, in order:
@@ -796,7 +805,11 @@ abandoning A to `LEAKED_THREAD_IDS`, before ever giving up (see
 `evals/scenarios/retry-exhausted-round1-fresh-fallback` for a live-exercised example of this exact
 sequence). Compaction reuses this EXACT existing topology rather than inventing a
 compaction-specific variant — consistent with this design's own "reuse existing mechanisms"
-principle elsewhere.
+principle elsewhere. **This includes receipt-slot wiring**: bullets 2 and 3 below are ordinary
+bounded `--resume` retries against a thread that already has an active schedule, so they need only
+`--receipt-slot` via `references/retry-guards.md`'s own procedure — no schedule regeneration.
+Bullet 1's fresh candidate-A retry and thread B's own dispatch are different — see each below —
+since both are genuinely fresh threads, like Step 4's own dispatch above.
 
 Apply `references/retry-guards.md`'s own THREE bullets, in the SAME priority order it already
 uses, to candidate A ONLY — tracked as its own fact, independent of `GROUP_THREADS` (which keeps
@@ -830,6 +843,13 @@ B's own, deliberately simpler treatment is Task 12.
    mechanism" step 4 above** — this is a genuinely fresh `codex exec` call with no prior turn of
    its own to inherit anything from, so whatever focus text it sends is the entirety of what this
    new dispatch ever sees.
+
+   **This retry is ALSO a schedule-(re)generation trigger, same as Step 4's own dispatch above** —
+   the old, now-superseded candidate's schedule (if one was ever generated for it) is abandoned
+   unused, and this retry generates its OWN fresh `RECEIPT_SCHEDULE_FILE`, performs the ordinary
+   receipt-slot-issuance procedure, and passes BOTH `--receipt-slot "$NEXT_SLOT"` and
+   `--receipt-schedule-file "$RECEIPT_SCHEDULE_FILE"` — it is a brand-new thread, exactly like
+   Step 4's own fresh dispatch.
 
    If this retry fails AGAIN, for ANY reason: this candidate is exhausted. **Check whether THIS retry's
    own response captured a threadId before assuming nothing needs tracking** — this retry is
@@ -880,6 +900,12 @@ For `--uncommitted`/`--base` scope, B's dispatch re-collects a fresh candidate (
 `candidate_snapshot_path`, new digest) exactly as A's original dispatch was — never a reuse of
 A's now-deleted candidate. For non-repo-artifact/`--commit` scope, B's dispatch involves no
 candidate file at all, exactly like A's did not.
+
+**Thread B's dispatch is ALSO a schedule-(re)generation trigger** — B is "a genuinely fresh `codex
+exec` call... with NO prior turn to inherit anything from" (per the paragraph above), so it gets
+its OWN fresh `RECEIPT_SCHEDULE_FILE` (never reusing A's, abandoned unused alongside A's other
+state), performs the ordinary receipt-slot-issuance procedure, and its dispatch passes BOTH
+`--receipt-slot "$NEXT_SLOT"` and `--receipt-schedule-file "$RECEIPT_SCHEDULE_FILE"`.
 
 **Thread B's own single dispatch gets NONE of bullets 1-3's retry machinery — it either
 succeeds, or the whole compaction attempt is immediately exhausted**, matching

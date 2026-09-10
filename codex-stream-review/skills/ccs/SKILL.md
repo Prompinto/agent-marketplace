@@ -963,11 +963,18 @@ before) — harmless, since these are ephemeral per-run files cleaned up at the 
 keeping the streams in separate files (one `OUT_FILE`/`ERR_FILE` pair per group) prevents any
 stderr noise from ever contaminating the JSON parse.
 
-**Receipt schedule generation — this `GROUP`'s round-1 fresh dispatch only, or later a
+**Receipt schedule generation — this `GROUP`'s round-1 fresh dispatch only, a
 `no_material_reviewed` fresh restart's brand-new thread for this same `GROUP` (see
-`references/retry-guards.md`'s new rule for when a restart happens); NEVER regenerated on an
-ordinary round 2+/resumed dispatch to a thread that already has one — that dispatch reuses the
-exact same `RECEIPT_SCHEDULE_FILE` literal allocated here, unchanged.** One independent schedule
+`references/retry-guards.md`'s new rule for when a restart happens), or a compaction restart's
+brand-new thread for this same `GROUP` (`references/compaction.md`'s Step 4 fresh dispatch, or its
+retry topology's own fresh candidate-A retry / thread-B dispatch — every one of these is
+architecturally the same kind of event: a brand-new codex thread with no prior turns); NEVER
+regenerated on an ordinary round 2+/resumed dispatch to a thread that already has one — that
+dispatch reuses the exact same `RECEIPT_SCHEDULE_FILE` literal allocated here, unchanged.** The
+70-slot budget (`N = 70` below) is PER-THREAD, not per-session — every fresh-thread event (round 1,
+a `no_material_reviewed` restart, or a compaction restart) gets its OWN independent fresh 70-slot
+schedule, so the `MAX_ROUNDS(20) × up to 3 attempts/round = 60` derivation holds regardless of how
+many distinct fresh-thread events occur across a session's lifetime. One independent schedule
 per dispatched group — in parallel mode, each group's own thread gets its own schedule, never one
 schedule shared across groups (unlike `SNAPSHOT_FILE`/`SNAPSHOT_DIGEST` above, which are genuinely
 session-wide because every group reviews the identical snapshot). Full mechanics in the design
@@ -1005,7 +1012,9 @@ line** — it exists purely as Claude's own local, private record of the schedul
 `SNAPSHOT_FILE`'s own treatment exactly.
 
 **Dispatching it.** The ONE dispatch that first establishes this group's thread — round 1's own
-fresh dispatch, or later a `no_material_reviewed` fresh restart's brand-new first dispatch — passes
+fresh dispatch, later a `no_material_reviewed` fresh restart's brand-new first dispatch, or a
+compaction restart's brand-new first dispatch (`references/compaction.md`'s Step 4, or its retry
+topology's own fresh candidate-A retry / thread-B dispatch) — passes
 `--receipt-schedule-file "<the literal RECEIPT_SCHEDULE_FILE path just allocated for this GROUP>"`
 as an additional `run-ccs-review.sh` argument on that same dispatch (pairing with that dispatch's
 own `--receipt-slot <N>` argument). `build_review_prompt()` reads this file's content directly and
@@ -1120,10 +1129,17 @@ jq -nc --arg tid "<this group's own literal THREAD_ID from GROUP_THREADS, or the
 (For round 1's own very first dispatch, before any `threadId` has ever been returned, record
 `thread_id` as the literal string `"PENDING"` — reconcile it to the real `threadId` retroactively
 once Phase 2 step 1 below parses the response and `GROUP_THREADS` is established, by appending a
-SECOND `receipt_issued` correction line `{receipt_issued: {thread_id: "<real threadId>", index: 1,
-reconciles: "PENDING"}}` immediately after. The cursor-reconstruction scan (Task 9) must treat a
-`reconciles` line as authoritative over the `PENDING` line it corrects, never double-counting both
-as separate issuances for the same slot.)
+SECOND `receipt_issued` correction line `{receipt_issued: {thread_id: "<real threadId>", index:
+<this group's own NEXT_SLOT value, the same one just used for its own PENDING issuance immediately
+above>, reconciles: "PENDING"}}` immediately after — never a hardcoded `1`. **In parallel mode,
+each group's own PENDING issuance may receive a different index** (group 1 gets PENDING:1, group 2
+gets PENDING:2, etc., since they scan and append sequentially against the shared `PENDING` key) —
+the correction's `index` must match that SAME group-specific value, or a later reader cannot tell
+which PENDING record a given correction resolves. Matching is by exact `(thread_id, index)` pair:
+the record `{thread_id: "PENDING", index: N}` is corrected by the record `{reconciles: "PENDING",
+index: N}` with that same `N`. The cursor-reconstruction scan (Task 9) must treat a `reconciles`
+line as authoritative over the `PENDING` line it corrects, never double-counting both as separate
+issuances for the same slot.)
 
 This append uses the SAME append-then-verify hard-stop mechanism as every other JSONL write in this
 skill (see "Review history log" → "Write" below) — a failed/unverified append here is a hard stop,
@@ -1822,8 +1838,14 @@ omission rule.
 every append (a fresh Bash call each time — the earlier `mkdir`'s umask doesn't carry over).
 Never overwrite or truncate. **Verify the append actually landed, immediately after writing**
 (`tail -n 1 <the log path> | jq -e '.round == <this round's own literal number>'` — exit 0 means
-the just-written line is really the last line and really carries this round's own number). This
-verification is new specifically because the claim ledger (always on — see
+the just-written line is really the last line and really carries this round's own number). **A
+`receipt_issued` line (see "Receipt slot issuance" above) is a different KIND of line — a
+slot-issuance record, not a round-outcome record — and is verified by its OWN shape instead:
+`tail -n 1 <the log path> | jq -e '.receipt_issued.index == <the NEXT_SLOT value just issued> and
+.receipt_issued.thread_id == <the literal thread_id value just used, quoted>'`. This is the SAME
+append-then-verify hard-stop discipline, just checking the fields this line kind actually has
+instead of `.round`, which it never carries.** This verification is new specifically because the
+claim ledger (always on — see
 `references/claim-ledger.md`) makes JSONL durability load-bearing for correctness, not merely an
 audit trail: a silently-failed append that drops a round's `claude_verification[]`/
 `claim_closures[]` content would make that round's claim state invisible to every later round's
@@ -1839,8 +1861,11 @@ query the log rather than relying on memory:
 jq -c 'select(.round < 3)' ~/.claude/plugins/data/codex-stream-review/ccs-logs/<repo-slug>/<session-id>.jsonl
 ```
 (substitute the actual current round number by hand — no live `$R` shell
-variable survives into a separately-dispatched call). **Also check the session's first line's
-`schema_version` at this same point** (per `references/claim-ledger.md` section 10) — if it's
+variable survives into a separately-dispatched call). **Also check the first `.round`-bearing
+line's `schema_version` at this same point** (per `references/claim-ledger.md` section 10) — a
+`receipt_issued` line, having no `.round` field, is never mistaken for this line and is skipped by
+this scan; `receipt_issued` lines may legitimately precede the session's first round-outcome line
+(round 1's own pre-dispatch issuance happens before any round-outcome line is ever written) — if it's
 missing or older than this skill's current version (e.g. the plugin was updated mid-session, an
 edge case made possible by nothing preventing a `/plugin update`/reload in a separate terminal
 while a long-running `/ccs` session is still active), this is a hard stop: do not attempt to
@@ -1958,8 +1983,9 @@ trustworthy one).
    own `retired_snapshot_files` array — only if `--compact` was used this session and either was
    ever set/recorded. **A session may have allocated more than one `RECEIPT_SCHEDULE_FILE`** — every
    dispatched `GROUP` gets its own (never one shared across groups in parallel mode), and each
-   `no_material_reviewed` fresh restart's brand-new thread for a given group adds a further separate
-   one (see "Receipt schedule generation" above) — every one of them, for every group, must be
+   `no_material_reviewed` fresh restart's or compaction restart's brand-new thread for a given group
+   adds a further separate one (see "Receipt schedule generation" above) — every one of them, for
+   every group, must be
    removed here, never just the most recent or just `GROUP="main"`'s, since each durably holds
    still-secret unused token values that must not outlive the run.
 

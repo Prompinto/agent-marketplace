@@ -101,9 +101,20 @@
     # own multi-attempt handling note below); omit the flag entirely when keep-evidence is OFF,
     # same rule as Step 1.
     "$INSTALL_PATH/scripts/run-ccs-review.sh" --cwd "$REPO_ROOT_OR_CLEAN_REPO_DIR" \
-      --resume "<that threadId>" --timeout 300 \
+      --resume "<that threadId>" --receipt-slot "$NEXT_SLOT" --timeout 300 \
       < "$FOCUS_FILE"
     ```
+    **Receipt-slot issuance applies to this retry dispatch too** — see `SKILL.md`'s "Receipt slot
+    issuance" section for the full procedure and rationale (the mechanics are identical here): before
+    constructing this retry's own dispatch above, durably append `{receipt_issued: {thread_id: "<that
+    threadId>", index: $NEXT_SLOT}}` to the session JSONL log (via the same append-then-verify
+    hard-stop mechanism, verified by its own shape per `SKILL.md`'s "Review history log" → "Write"),
+    where `$NEXT_SLOT` is the highest prior `receipt_issued.index` for this `thread_id` plus 1. This
+    is itself a separate dispatch attempt from the original one that failed, so it issues and
+    durably records its own next slot, the same way. **Never add `--receipt-schedule-file` here** —
+    this is always a resume to an existing thread that already has an active schedule; that flag is
+    only for a fresh, thread-establishing dispatch (see `SKILL.md`'s "Dispatching it" note under
+    "Receipt schedule generation").
     **Multi-attempt evidence handling (general rule, only relevant with capture-evidence ON —
     applies identically to every retry variant in this file, resume or fresh):** when
     ANY retry for the same (round, group) ultimately succeeds (or is itself what a group's final
