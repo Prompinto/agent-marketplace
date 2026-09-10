@@ -88,8 +88,11 @@
       },
       "required": ["correctness", "security", "performance", "reuse", "contracts", "resources_concurrency", "intent"],
       "additionalProperties": false
-    }
+    },
+    "material_reviewed": { "type": "boolean" },
+    "material_receipt": { "type": ["string", "null"] },
+    "material_receipt_index": { "type": ["integer", "null"], "minimum": 1 }
   },
-  "required": ["verdict", "findings", "summary", "dimensions"],
+  "required": ["verdict", "findings", "summary", "dimensions", "material_reviewed", "material_receipt", "material_receipt_index"],
   "additionalProperties": false
 }
