@@ -1405,7 +1405,7 @@ growth described above. This is disclosed as a deliberate exchange, not a pure w
   content itself.
 - True crash-safety for a candidate snapshot file (and, on the success sub-case, the newly-created
   Codex thread alongside it) in the narrow pre-append window between its own creation and that
-  round's own JSONL append (see "Retired- and provisional-snapshot durability" below): an
+  round's own JSONL append (see "Retired- and provisional-snapshot durability" above): an
   interruption in exactly that window can leave one orphaned candidate file, and on the success
   sub-case one orphaned thread, with no durably-recorded path to retry cleanup for either; not
   addressed further in v1.
