@@ -635,6 +635,11 @@ same round's own JSONL line at the moment of the append (a pre-append-decided va
 instant the candidate is collected) — see "Ordering on success" below for continuity recovery's
 use of this field.
 
+**Retired- and provisional-snapshot durability.** Two related but distinct durability concerns
+for a candidate snapshot file that is abandoned rather than promoted: which deletions get tracked
+so nothing is referenced by nothing, and which crash windows around `PROVISIONAL_SNAPSHOT_FILE`
+are closed versus merely disclosed.
+
 **Retired-snapshot tracking is general-purpose, covering two deletion points that remain
 fallible on their own.** Both cases are genuinely independent `rm` calls on a candidate being
 ABANDONED, not promoted (promotion, above, is a single atomic rename with no separate old-file
@@ -970,10 +975,11 @@ carry a `threadId` at all):
   specifically (never non-repo-artifact) — neither ever emits `coverage.source` at all.
 - **Success reached after ANY earlier failed sub-attempt** (A's own resume retry-then-succeed,
   A's own no-threadId fresh-retry success, or A-exhausted-then-B-succeeds — the same three
-  sub-cases from "Retry topology" above): ALSO REQUIRE `compaction_attempt_failed_thread` (the
-  array covering whichever earlier sub-attempt(s) were GENUINELY abandoned before this round's
-  real success — correctly EMPTY/absent for sub-cases (i) and (ii), since in EITHER, the SAME
-  thread that had the earlier failed response is what goes on to succeed),
+  sub-cases from "Retry topology" above): `compaction_attempt_failed_thread` is REQUIRED only for
+  sub-case (iii) (candidate A genuinely abandoned, thread B succeeds) — for sub-cases (i) and
+  (ii) it is correctly ABSENT entirely, never required and never present as an empty array,
+  since in EITHER, the SAME thread that had the earlier failed response is what goes on to
+  succeed, so nothing was actually abandoned. ALSO REQUIRE
   `compaction_attempt_execution` whenever the underlying earlier failed response(s) actually carried it, and
   `compaction_attempt_coverage` ONLY for whichever of those earlier failed response(s) was itself
   a fresh `--uncommitted` dispatch — never for a failed `--resume` call among them (see
