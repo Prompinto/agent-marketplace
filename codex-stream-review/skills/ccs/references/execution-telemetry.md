@@ -193,3 +193,17 @@ extracting different fields from it, with no interaction or ordering requirement
 last-message text) or the snapshot/claim-ledger mechanisms (the reviewed subject's own integrity;
 convergence-logic correctness) — this feature's own JSON is purely additive reporting, never
 load-bearing for any convergence, retry, or integrity decision elsewhere in this skill.
+
+## 9. Compaction-only exception (`--compact`, opt-in — see `references/compaction.md`)
+
+Section 8's own "purely additive reporting... never load-bearing for convergence, retry, or
+integrity decisions" statement is a general invariant for every ordinary session. Shipping
+opt-in thread compaction requires a narrowly-scoped exception: telemetry becomes load-bearing
+ONLY when `--compact` is enabled for the session, and ONLY for the specific compaction-owned
+decisions `references/compaction.md` names — the threshold check (comparing a round's own
+`execution.usage.input_tokens` against `COMPACT_THRESHOLD`), the `COMPACTION_BASELINE_TOKENS`
+circuit breaker, and the `compaction_disabled_reason` latch. The base skill's own ordinary
+convergence/retry/integrity decisions — for every session, `--compact` ON or OFF — remain
+governed by section 8's existing, unmodified invariant: this feature never makes `execution`
+load-bearing for anything OTHER than the three compaction-owned decisions just named, and never
+for a session where `--compact` is OFF at all.
