@@ -313,7 +313,7 @@ build_review_prompt() {
   if [ -n "$RECEIPT_SCHEDULE_PATH" ]; then
     echo ""
     echo "REVIEW_RECEIPT_SCHEDULE"
-    cat "$RECEIPT_SCHEDULE_PATH"
+    printf '%s\n' "$RECEIPT_SCHEDULE_CONTENT"
   fi
 }
 
@@ -404,6 +404,7 @@ CODEX_PID=""
 SAFE_GIT_HOME=""
 RECEIPT_SLOT=""
 RECEIPT_SCHEDULE_PATH=""
+RECEIPT_SCHEDULE_CONTENT=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -519,17 +520,27 @@ while [ $# -gt 0 ]; do
         printf '{"ok":false,"reason":"bad_args","detail":%s}\n' "$DETAIL_JSON"
         exit 1
       fi
+      # Read the content ONCE into a variable and validate/embed that variable from here on --
+      # never re-read "$2" again. Each shape check re-opening the path separately (the fix-round-3
+      # shape of this code) is a TOCTOU window: a local mutation between those reads, or between
+      # the last read here and build_review_prompt()'s own later embed (which happens well after
+      # diff/stdin collection has elapsed), could let content that was never actually validated
+      # reach the trusted zone.
+      RECEIPT_SCHEDULE_CONTENT="$(cat -- "$2")"
       RECEIPT_SCHEDULE_SHAPE_OK=1
-      [ "$(wc -l < "$2" | tr -d ' ')" = "71" ] || RECEIPT_SCHEDULE_SHAPE_OK=0
-      [ "$(head -n 1 -- "$2")" = "REVIEW_RECEIPT_SCHEDULE" ] || RECEIPT_SCHEDULE_SHAPE_OK=0
+      [ "$(printf '%s\n' "$RECEIPT_SCHEDULE_CONTENT" | wc -l | tr -d ' ')" = "71" ] || RECEIPT_SCHEDULE_SHAPE_OK=0
+      [ "$(printf '%s\n' "$RECEIPT_SCHEDULE_CONTENT" | head -n 1)" = "REVIEW_RECEIPT_SCHEDULE" ] || RECEIPT_SCHEDULE_SHAPE_OK=0
       if [ "$RECEIPT_SCHEDULE_SHAPE_OK" -eq 1 ]; then
-        [ "$(tail -n +2 -- "$2" | grep -cE '^[0-9]+: [0-9a-f]{24}$')" = "70" ] || RECEIPT_SCHEDULE_SHAPE_OK=0
+        [ "$(printf '%s\n' "$RECEIPT_SCHEDULE_CONTENT" | tail -n +2 | grep -cE '^[0-9]+: [0-9a-f]{24}$')" = "70" ] || RECEIPT_SCHEDULE_SHAPE_OK=0
       fi
       if [ "$RECEIPT_SCHEDULE_SHAPE_OK" -ne 1 ]; then
         DETAIL_JSON="$(printf '%s' "$2" | jq -Rs '"--receipt-schedule-file does not match the expected 71-line REVIEW_RECEIPT_SCHEDULE shape: " + .')"
         printf '{"ok":false,"reason":"bad_args","detail":%s}\n' "$DETAIL_JSON"
         exit 1
       fi
+      # RECEIPT_SCHEDULE_PATH is kept only as build_review_prompt()'s "was this flag given"
+      # presence marker -- the actual content it embeds is $RECEIPT_SCHEDULE_CONTENT, captured
+      # above, never a fresh read of this path.
       RECEIPT_SCHEDULE_PATH="$2"; shift 2 ;;
     *)
       DETAIL_JSON="$(printf '%s' "$1" | jq -Rs '"unknown argument: " + .')"
