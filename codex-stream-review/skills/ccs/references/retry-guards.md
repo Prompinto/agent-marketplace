@@ -198,10 +198,13 @@
       **⚠️ COULD NOT VERIFY** for that group. No new threadId was ever created by either
       resume-retry, so nothing is added to `LEAKED_THREAD_IDS` on this path.
   - There is no "`threadId` was captured but the reason is NOT resume-safe" branch — every
-    reason that can ever carry a `threadId` is resume-safe, now that
+    ORDINARY reason that can ever carry a `threadId` is resume-safe, now that
     `resume_thread_not_found`/`rollout_not_found` no longer exist as possible outcomes at all. The
-    two bullets above (no `threadId`, and `threadId` + resume-safe) are
-    exhaustive.
+    two bullets above (no `threadId`, and `threadId` + resume-safe) are exhaustive **for the
+    ordinary `ok:false` failure reasons this section covers** — `no_material_reviewed` is a
+    deliberate, separately-routed exception (see the section immediately below), never reaching
+    this decision flow at all since `SKILL.md`'s Phase 2 step 1 intercepts it before ordinary
+    Guards processing.
   - Whenever a group ends in **⚠️ COULD NOT VERIFY**, the round-level status is
     **⚠️ COULD NOT VERIFY**, regardless of how clean every other group's own findings turned out to
     be — never fold this into `⚠️ NOT CONVERGED`/`⚠️ PARTIAL COVERAGE` instead (those cover a
