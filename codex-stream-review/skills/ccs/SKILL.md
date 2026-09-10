@@ -1015,8 +1015,8 @@ step 6's `FOCUS_LOG_TEXT` read and never reaches the review-history JSONL log. *
 any later dispatch to the same thread** (a resumed round, or a bounded resume retry) — the schedule
 is embedded exactly once, matching the design's own "never repeated in any later prompt, fresh or
 resumed" rule; every later dispatch relies on the model's own retained thread history to still see
-it. (Full mechanics for exactly which dispatches pass this flag belong to Task 7, not yet
-dispatched.)
+it. (Full mechanics for exactly which dispatches pass this flag: "Receipt slot issuance" and the
+Round 1/Round 2+ dispatch templates in Step 1 below.)
 
 Then, using the Write tool (never a shell redirect — see the sentinel idiom above), write this
 round's focus text — the exact intended content, no trailing sentinel needed (see the sentinel
@@ -1099,6 +1099,44 @@ remembered per round. This is COORDINATOR-measured, entirely distinct from any g
 `execution.elapsed_seconds` (which `run-ccs-review.sh` itself reports) — see Phase 2 step 6 below
 for the matching end timestamp and where `round_wall_seconds` is actually computed and recorded.
 
+**Receipt slot issuance — durably committed BEFORE each group's own dispatch below is ever
+constructed, never after receiving its response** (full rationale: design doc §2.3; the JSONL log
+is the SOLE cursor authority for this — never the model's own thread history, and never
+`RECEIPT_SCHEDULE_FILE` itself, which holds no cursor of its own, see "Receipt schedule generation"
+above). Run once per group, immediately before that group's own dispatch call below, distinct from
+the dispatch call that follows — the same "small check-and-branch call, distinct from the dispatch
+that follows" shape as the snapshot-revalidation check above. Reconstruct the current cursor for
+THIS group's thread by scanning the WHOLE session JSONL log for the highest-numbered
+`receipt_issued.index` value recorded so far for this `thread_id` (0 if none has ever been recorded
+for this thread — its own first-ever dispatch, i.e. round 1). The slot to issue THIS dispatch is
+that value plus 1:
+
+```bash
+NEXT_SLOT="<highest prior receipt_issued.index for this group's thread_id in the JSONL log, plus 1; 1 if none>"
+jq -nc --arg tid "<this group's own literal THREAD_ID from GROUP_THREADS, or the literal string PENDING if round 1's own thread has no threadId yet>" --argjson idx "$NEXT_SLOT" \
+  '{receipt_issued: {thread_id: $tid, index: $idx}}' >> ~/.claude/plugins/data/codex-stream-review/ccs-logs/<repo-slug>/<session-id>.jsonl
+```
+
+(For round 1's own very first dispatch, before any `threadId` has ever been returned, record
+`thread_id` as the literal string `"PENDING"` — reconcile it to the real `threadId` retroactively
+once Phase 2 step 1 below parses the response and `GROUP_THREADS` is established, by appending a
+SECOND `receipt_issued` correction line `{receipt_issued: {thread_id: "<real threadId>", index: 1,
+reconciles: "PENDING"}}` immediately after. The cursor-reconstruction scan (Task 9) must treat a
+`reconciles` line as authoritative over the `PENDING` line it corrects, never double-counting both
+as separate issuances for the same slot.)
+
+This append uses the SAME append-then-verify hard-stop mechanism as every other JSONL write in this
+skill (see "Review history log" → "Write" below) — a failed/unverified append here is a hard stop,
+`🛑 REVIEW LOG INTEGRITY FAILURE`, exactly like any other critical JSONL write, since a lost
+`receipt_issued` record would desynchronize the cursor for the rest of this thread's lifetime.
+
+Once this append is verified for a group, `--receipt-slot "$NEXT_SLOT"` is passed as a literal
+additional argument on THAT group's own dispatch below (both the fresh and resume forms) — every
+dispatch to a thread with an active schedule carries this flag, every round, including bounded
+resume retries triggered by `references/retry-guards.md`'s own retry logic (each such retry is
+itself a separate dispatch attempt and must issue and durably record its own next slot the same
+way, before that retry is ever constructed).
+
 For each group dispatched this round (one, for the common `GROUP="main"` single-reviewer case; N
 concurrent backgrounded dispatches for a parallel round — one per group, each with its own temp
 files from Step 0 and its own entry in `GROUP_THREADS`, below):
@@ -1142,6 +1180,16 @@ done
 # entirely. Independent of --capture-eventlog above -- a dispatch call may carry neither, either,
 # or both flags, entirely by their own separate decisions.
 
+# Receipt-slot issuance is unconditional -- every thread has an active schedule from its own first
+# dispatch onward (see "Receipt schedule generation" above, Task 6), so --receipt-slot "$NEXT_SLOT"
+# is literal, unconditional text on BOTH the fresh and resume dispatch below, never a
+# variable-gated branch. $NEXT_SLOT itself must already be durably committed to the JSONL log (see
+# "Receipt slot issuance" above) before this dispatch is ever constructed. --receipt-schedule-file
+# "$RECEIPT_SCHEDULE_FILE" is added ONLY to the fresh, thread-establishing dispatch below (round 1's
+# own first dispatch, or a no_material_reviewed fresh restart's brand-new first dispatch for this
+# GROUP) -- never to a resume dispatch, which relies on the model's own retained thread history to
+# still see the schedule (see "Dispatching it" above).
+
 # Round 1 (fresh — pick the one matching scope flag actually decided in Phase 0; identical scope
 # flag for every group this round, since every group reviews the SAME diff, see "Determine review
 # mode" above). Shown below for --uncommitted, the common case — substitute
@@ -1149,11 +1197,13 @@ done
 # in its place instead when that was the scope actually selected; never dispatch --uncommitted
 # here when a different scope was chosen:
 "$INSTALL_PATH/scripts/run-ccs-review.sh" --cwd "$REPO_ROOT" --uncommitted \
+  --receipt-slot "$NEXT_SLOT" --receipt-schedule-file "$RECEIPT_SCHEDULE_FILE" \
   < "$FOCUS_FILE" > "$OUT_FILE" 2>"$ERR_FILE" &
 
 # Round 2+ (resume — same REPO_ROOT, same INSTALL_PATH; THREAD_ID is THIS GROUP's own captured id
 # from GROUP_THREADS, looked up by this group's slug — never another group's threadId):
 # "$INSTALL_PATH/scripts/run-ccs-review.sh" --cwd "$REPO_ROOT" --resume "<this group's literal THREAD_ID from GROUP_THREADS>" \
+#   --receipt-slot "$NEXT_SLOT" \
 #   < "$FOCUS_FILE" > "$OUT_FILE" 2>"$ERR_FILE" &
 
 CODEX_BG_PID=$!
