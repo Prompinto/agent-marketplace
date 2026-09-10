@@ -224,55 +224,61 @@ Claude's own Phase 2 receipt-mismatch/invalid-null-pair check — see `SKILL.md`
 1) is **never** resume-safe: the thread has just proven its own context is hollow, so resuming it
 would only reproduce the identical failure.
 
-**Recovery — single-reviewer sessions only (`GROUP="main"`).** This full restart-with-
-mechanism-reuse recovery is available ONLY when this session is running single-reviewer
-(`GROUP="main"`) — mirroring `references/compaction.md`'s own "Scope (v1): Single-reviewer only"
-restriction, for the identical underlying reason: the reused mechanism depends on session-wide,
-single-instance state (`SNAPSHOT_FILE`/`SNAPSHOT_DIGEST`, `target.original_scope_framing`) that
-has no per-group equivalent today. Building genuine per-group isolation (a separate snapshot per
-group, group-keyed scope framing) is real infrastructure work, out of this task's scope — see the
-parallel-mode fallback below for what happens instead when this session has more than one group.
+**Recovery — single-reviewer sessions only (`GROUP="main"`).** This recovery is available ONLY
+when this session is running single-reviewer (`GROUP="main"`) — `target.original_scope_framing`
+(needed to reconstruct this restart's own dispatch) is a single top-level JSONL field with no
+per-group equivalent today; building genuine per-group scope-framing isolation is real
+infrastructure work, out of this task's scope. See the parallel-mode fallback below for what
+happens instead when this session has more than one group.
 
 For a single-reviewer session: abandon that thread immediately (add to `LEAKED_THREAD_IDS`) and
-issue exactly ONE fresh restart, reusing `references/compaction.md`'s "Restart mechanism" section's
-SUCCESS-PATH construction verbatim (Steps 0-4, plus "Ordering on success" for the promotion
-machinery) — not a separately-invented lighter-weight version, and — see the explicit override
-below — never that section's sibling "On failure"/"Retry topology" sections. This means:
+issue exactly ONE fresh restart — same scope flag as round 1 (`--uncommitted`/`--base`/`--commit`),
+never `--resume`, to a brand-new thread. **This restart does NOT re-snapshot or promote a new
+candidate onto `SNAPSHOT_FILE`** — deliberately simpler than `--compact`'s own restart, by design:
+it dispatches this round's own ordinary Step 1 sequence (`SKILL.md`'s Phase 1 Step 1) exactly like
+any round would, just substituting a fresh dispatch for what would otherwise be a `--resume` call:
+- The SAME snapshot revalidation every round 2+ already runs, unmodified (re-verify the LOCAL
+  `SNAPSHOT_FILE` against the remembered `SNAPSHOT_DIGEST`; hard-stop `🛑 SNAPSHOT INTEGRITY
+  FAILURE` on mismatch, exactly like any other round — see `references/snapshot-integrity.md`).
+  **This restart does NOT tolerate working-tree drift the way `--compact`'s own restart does** —
+  a deliberate, disclosed deviation from reusing that tradeoff: if the underlying material has
+  changed since round 1, this restart hard-stops rather than silently reviewing a shifted target.
 - The claim ledger digest is carried forward into the fresh thread's own seed, built from the
-  durable JSONL log's own reducer state — never from the abandoned thread's own internal state.
-- The same snapshot-integrity revalidation/promotion machinery `--compact`'s own restart already
-  uses applies here too, inheriting that feature's own already-accepted tradeoff (a restart may
-  review the CURRENT state of a possibly-since-changed working tree).
+  durable JSONL log's own reducer state (`references/compaction.md`'s "Digest construction and
+  verification" section — a general, `--compact`-agnostic procedure with no JSONL-field footprint
+  of its own, reused here as-is) — never from the abandoned thread's own internal state.
+- The same original Why + task-specific Scope framing, read from `target.original_scope_framing`
+  (`SKILL.md`'s Phase 1 Step 0 — captured unconditionally, every session, since this restart is
+  one of its two consumers) — never from `target.focus`.
+- A `DISPOSITION` request for any still-open claim, constructed by the existing rule
+  (`references/claim-ledger.md` section 4), evaluated against the abandoned thread's own most
+  recently completed round.
 - The fresh restart's own new thread gets its own fresh receipt schedule
   (`RECEIPT_SCHEDULE_FILE`, per `SKILL.md`'s own schedule-generation procedure) — never reusing
   the abandoned thread's schedule.
 
+**This round's own JSONL line logs what actually happened, not a blanket "every round 2+ is a
+resume" assumption.** `target.scope` is the ACTUAL scope flag this restart used (matching round
+1's own scope-logging rule), never `"resume"` — `SKILL.md`'s general "`resume` for every round
+2+" rule assumed, until this restart existed, that no round 2+ could ever be anything else; this
+restart is the one documented exception. For `--uncommitted` scope specifically, this round ALSO
+reports its own `coverage_source` exactly like a fresh `--uncommitted` dispatch would — `SKILL.md`'s
+"Coverage is a Round-1-only property" section is extended to treat this restart's own round as a
+SECOND coverage-establishing event for the session (not folded into round 1's own already-recorded
+value), since this restart is genuinely re-collecting the diff fresh, not resuming.
+
 **If the ONE fresh restart fails for ANY reason — not just a repeat `no_material_reviewed` — this
 is immediate, unconditional exhaustion.** A repeat `no_material_reviewed` (either detection route),
 or any other wrapper failure reason whatsoever (`timeout`, `nonzero_exit`, `no_thread_started`,
-`bad_args`, or anything else): first, if a candidate snapshot file was allocated for this specific
-restart attempt (only ever true for `--uncommitted`/`--base` scope — never for `--commit` scope or
-a non-repo-artifact session, neither of which allocates one), delete it — it was never used for
-anything, and leaving it behind would leak a temp file. On a failed deletion, add its path to
-`retired_snapshot_files` (see `references/compaction.md`'s "Restart mechanism" step 3), the same
-fallback compaction's own "On failure" step 2 uses. This is the ONE step reused from that "On
-failure" section — nothing else in it (never that section's step 4 resume-fallback, forbidden here
-as stated below). Then stop and report `⚠️ COULD NOT VERIFY`, never attempt a third thread
-— matching this file's own existing round-1-fresh-fallback-then-give-up precedent, and
-`references/compaction.md`'s own candidate-A-to-thread-B single-shot-escalation-then-give-up
-pattern. **Explicit override, stated because this is the one place in this file where the default
-would otherwise apply:** this recovery reuses ONLY compaction's Restart-mechanism SUCCESS-PATH
-construction (digest carryforward from the JSONL reducer, snapshot-integrity revalidation/
-promotion, a fresh dispatch with a fresh receipt schedule), plus — on failure only — the single
-candidate-deletion action carved out above (compaction's "On failure" step 2, taken in isolation).
-It does NOT reuse the REST of compaction's own "On failure" fallback section, specifically its
-step 4 resume-fallback (which would resume the abandoned OLD thread — explicitly forbidden here,
-since resuming ANYTHING after a `no_material_reviewed` restart's own failure would violate
-the "never resume a proven-hollow context" premise this whole feature exists to enforce), nor its
-"Retry topology" section (the bounded-resume-then-fresh-B escalation `--compact`'s own restart
-uses when ITS OWN attempt fails — specific to `--compact`'s own tolerance model, not appropriate
-here). Never a third thread, never a bounded-resume-retry of the new restart's own thread, never a
-fallback resume of the abandoned old thread.
+`bad_args`, or anything else): if this failure response captured a `threadId` (some reasons do,
+per `SKILL.md`'s own reason table), add it to `LEAKED_THREAD_IDS` immediately — this restart's own
+new thread is abandoned too, exactly like the original hollow thread was, so `SKILL.md`'s Phase 3
+terminal path can clean it up alongside the run's other final threads. Since this design never
+allocates a candidate snapshot file (no re-snapshot/promotion happens here at all), there is no
+candidate-cleanup step needed on this failure path. Then stop and report `⚠️ COULD NOT VERIFY`,
+never attempt a third thread — matching this file's own existing round-1-fresh-fallback-then-
+give-up precedent. Never a bounded-resume-retry of the new restart's own thread, never a fallback
+resume of the abandoned old thread.
 
 This recovery is triggered from `no_material_reviewed` REGARDLESS of what session round number it
 occurs at — unlike this file's own general round-1-only fresh-fallback restriction for ordinary

@@ -332,11 +332,6 @@ old thread and starting a genuinely fresh one**. A compaction attempt is entirel
 its own success or failure is never itself reported as this round's terminal outcome (see
 "Failure isolation from the round loop" below).
 
-> This section's restart mechanism is reused verbatim by TWO triggers: `--compact`'s own
-> token-threshold trigger (below), and `references/retry-guards.md`'s `no_material_reviewed`
-> never-resume-safe rule (a genuinely different trigger, but the identical restart procedure —
-> digest carryforward, snapshot revalidation/promotion — applies unchanged either way).
-
 ### Step 0 — the existing snapshot revalidation always runs first, unconditionally
 
 Round R's own pre-dispatch snapshot check (`references/snapshot-integrity.md`) — validating the
@@ -999,15 +994,7 @@ carry a `threadId` at all):
 
 - **Success, `--uncommitted`/`--base` scope (a real candidate was allocated):** REQUIRE
   `compacted_from_thread`, `candidate_snapshot_path`, `snapshot_digest_before`,
-  `snapshot_digest_after`, `compaction_attempt_failure_count` (must equal `0`). **These 5 fields
-  are required whenever THIS restart mechanism (Steps 0-4 above plus this "Ordering on success"
-  section) was invoked at all — whether the invocation was `--compact`'s own trigger, or
-  `references/retry-guards.md`'s `no_material_reviewed` restart reusing this same mechanism's
-  success path — never exclusively a `--compact`-triggered event.** For a `no_material_reviewed`
-  restart specifically, this is always a clean single-attempt success (that recovery never has an
-  earlier failed sub-attempt within the same successful line — see that section's own scope), so
-  `compaction_attempt_failure_count` is always exactly `0` there and none of the other
-  earlier-failed-sub-attempt fields below ever apply.
+  `snapshot_digest_after`, `compaction_attempt_failure_count` (must equal `0`).
 - **Success, non-repo-artifact or `--commit` scope (no candidate ever allocated):** the same set
   MINUS `candidate_snapshot_path`, whose absence here is the CORRECT state, not a defect.
 - **Success, whenever the ROUND's OWN scope is `--uncommitted`** (including a non-repo-artifact
@@ -1426,13 +1413,6 @@ never reset — so the existing claim-ledger reducer keeps working over the whol
   forced to single-group `main`, regardless of what the normal file-count sizing heuristic would
   otherwise select — a hard override, not a rejection of the `--compact` request (see Task 20 for
   the exact `SKILL.md` edit). Removing this restriction is future work, not a v1 goal.
-  **This restriction is specific to `--compact`'s OWN trigger/detection logic, not to the restart
-  PROCEDURE this section documents.** `references/retry-guards.md`'s `no_material_reviewed` rule
-  reuses this section's restart-mechanism SUCCESS-PATH construction (not its failure-handling/
-  retry-topology sections) for SINGLE-REVIEWER sessions only, for the same underlying reason this
-  bullet's own restriction exists (session-wide snapshot and scope-framing state, not yet
-  per-group) — in parallel mode, a group hitting `no_material_reviewed` reports
-  `⚠️ COULD NOT VERIFY` for that group directly, without attempting this restart.
 - **`MAX_ROUNDS` unaffected in meaning** — a compaction round consumes one increment of the round
   counter like any other round; no separate cap or exemption.
 

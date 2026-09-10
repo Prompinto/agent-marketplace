@@ -155,19 +155,17 @@ partial-content salvage is attempted.
 The "one canonical subject, session-scoped, NEVER changed per round" invariant stated everywhere
 above holds UNCHANGED for every ordinary session. It is relaxed ONLY when `--compact` is ON for
 this session AND triggers a fully-specified, Claude-orchestrated, fully-disclosed re-snapshot-
-and-promote event, OR `references/retry-guards.md`'s `no_material_reviewed` restart is occurring
-(single-reviewer sessions only, per that section's own scope) — never by anything auto-detected,
-and never for any other reason. In either case: a NEW candidate `SNAPSHOT_FILE`/`SNAPSHOT_DIGEST`
+and-promote event — never by anything auto-detected, and never for any other reason. In that
+case: a NEW candidate `SNAPSHOT_FILE`/`SNAPSHOT_DIGEST`
 is collected, verified, and atomically
 promoted onto the SAME fixed `SNAPSHOT_FILE` path (the path itself never changes — only its
 content, and the remembered `SNAPSHOT_DIGEST`, advance together), and the round that performs
 this promotion durably records `snapshot_digest_before`/`snapshot_digest_after` as an audit
 trail. See `references/compaction.md`'s "Restart mechanism" and "Ordering on success" sections
 for the complete, fully-specified mechanics — this file's own revalidation logic (above) and
-hard-stop-on-mismatch behavior are otherwise entirely unaffected: a session where neither trigger
-ever fires (`--compact` OFF and no `no_material_reviewed` restart occurs, or `--compact` ON but
-never actually triggering) behaves exactly as documented everywhere else in this file, with zero
-difference from before this exception existed.
+hard-stop-on-mismatch behavior are otherwise entirely unaffected: a session where `--compact` is
+OFF, or ON but never actually triggering, behaves exactly as documented everywhere else in this
+file, with zero difference from before this exception existed.
 
 ## Not a defense against a deliberately changed source
 

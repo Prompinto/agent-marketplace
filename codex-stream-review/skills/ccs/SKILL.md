@@ -1588,6 +1588,16 @@ regardless of how many groups' threads are being resumed concurrently). A single
 (`GROUP="main"`) has nothing to merge and uses its own reported value directly, exactly as
 described above.
 
+**A `no_material_reviewed` restart's own round is the ONE exception to "only round 1 is ever a
+fresh round."** When a `no_material_reviewed` restart (`references/retry-guards.md`) fires with
+`--uncommitted` scope, its own round ALSO reports its own `coverage_source` — a SECOND,
+independent coverage-establishing event for the session, not merged with or overriding round 1's
+own already-recorded value. Both exist side by side in the log, each describing a separate point
+where fresh material was actually collected and disclosed; this restart's round is genuinely
+re-collecting the diff fresh, not resuming, so it is exempt from the "only round 1" rule above by
+the same reasoning that exempts it from `target.scope`'s "resume for every round 2+" rule (see
+that field's own description above).
+
 ### Convergence = 100% CLEAN (ALL must hold)
 - Codex has no substantiated open findings in its latest review, **AND**
 - Claude has no open items (no pending fixes; Codex accepted Claude's rebuttals, or Claude
@@ -1831,19 +1841,7 @@ never present at all for a session where `--compact` was OFF. **`target.original
 NOT in that `--compact`-exclusive set** — it is captured unconditionally, on round 1's own line,
 for EVERY session (see Phase 1 Step 0's Round-1 focus-text bullet above), since it is also
 consumed by `references/retry-guards.md`'s `no_material_reviewed` restart, which can occur in any
-session regardless of `--compact`. **Five more fields are ALSO not exclusively `--compact`-gated:
-`compacted_from_thread`, `candidate_snapshot_path`, `snapshot_digest_before`,
-`snapshot_digest_after`, and `compaction_attempt_failure_count`.** These are ALSO written, fixed at
-their clean-single-attempt-success values (`compaction_attempt_failure_count` at `0`; see
-`references/compaction.md`'s "Ordering on success" section), whenever a
-`references/retry-guards.md` `no_material_reviewed` restart succeeds — single-reviewer
-(`GROUP="main"`) sessions only, per that section's own scope — regardless of whether `--compact`
-was ever given for this session. `compaction_attempt_failed_thread`, `compaction_attempt_execution`,
-`compaction_disabled_reason`, and `retired_snapshot_files`'s own round-scoped requirement bullet
-remain exclusively `--compact`-gated — a single-shot `no_material_reviewed` restart is always a
-clean single-attempt success or an immediate give-up (see `references/retry-guards.md`'s
-`no_material_reviewed` section), so it never has an earlier failed sub-attempt within the same
-successful line and never exercises them. The common
+session regardless of `--compact`. The common
 case — a single-reviewer round (`GROUP="main"`), capture-evidence and keep-evidence both OFF, no
 claim closed this round — is otherwise
 unchanged from before, aside from `execution`/`round_wall_seconds` themselves (present whenever a
@@ -1901,8 +1899,13 @@ omission rule.
 
 - `target.scope`: `"uncommitted"` / `"base"` / `"commit"` for round 1 (whichever fresh scope flag
   was used); `"resume"` for every round 2+ — no scope flag is ever sent on those, so logging the
-  original scope value would misrepresent what actually happened that round. **A single value per
-  round, never per group** — all groups advance in lockstep with the round counter (round 1
+  original scope value would misrepresent what actually happened that round. **One narrow
+  exception:** a `no_material_reviewed` restart (`references/retry-guards.md`) is itself a round
+  2+ dispatch that is genuinely fresh, never a resume — its own JSONL line logs the ACTUAL scope
+  flag used (`"uncommitted"`/`"base"`/`"commit"`), not `"resume"`, since that restart abandons the
+  old thread and dispatches fresh, exactly like round 1 would. Every OTHER round 2+ dispatch is
+  still always `"resume"` — this exception is confined to that one restart alone. **A single value
+  per round, never per group** — all groups advance in lockstep with the round counter (round 1
   dispatches every group fresh, round 2+ resumes every group), so a per-group `scope` field would
   be redundant state with no current use.
 - `coverage_source`: written only for a round-1 `--uncommitted` scope (per "Coverage is a
@@ -2095,13 +2098,9 @@ trustworthy one).
    longer needs it. `SNAPSHOT_FILE` (see "Snapshot integrity" above) is allocated for every session
    that ever reaches round 1's dispatch — unlike `CLEAN_REPO_DIR`/`FAKE_GIT_HOME`, it is never
    conditional on session type, so this `rm -f` needs no guard. **When `--compact` was used this
-   session OR a `no_material_reviewed` restart (`references/retry-guards.md`) was attempted this
    session**, also `rm -f` `PROVISIONAL_SNAPSHOT_FILE` and every path ever recorded in any round's
-   own `retired_snapshot_files` array — only if either condition held this session and either path
-   was ever set/recorded. This is a session-level safety net alongside
-   `references/retry-guards.md`'s own per-attempt candidate-snapshot deletion on a
-   `no_material_reviewed` restart failure — it catches anything that per-attempt cleanup missed
-   (e.g. a crash between allocation and that per-attempt cleanup step). **A session may have
+   own `retired_snapshot_files` array — only if `--compact` was used this session and either path
+   was ever set/recorded. **A session may have
    allocated more than one `RECEIPT_SCHEDULE_FILE`** — every
    dispatched `GROUP` gets its own (never one shared across groups in parallel mode), and each
    schedule-(re)generation trigger's brand-new thread for a given group (per "Receipt schedule
