@@ -175,6 +175,144 @@ session's log ever recorded this field — if so, compaction is reconstructed as
 rest of the session, exactly matching whatever the original in-memory decision would have been,
 never silently forgotten and re-enabled.
 
+## What gets preserved — full fidelity for open claims, one line for closed ones
+
+Reuses the claim ledger's existing reducer (`references/claim-ledger.md` section 8) over the
+session's own JSONL log — no new data structure. For every claim_id that has ever appeared this
+session:
+- **Still open** (no `claim_closures[]` entry): included verbatim, using the claim's MOST RECENT
+  occurrence, not necessarily its origin — `file`/`line`/`severity`/`summary`/`evidence`,
+  unabridged. This mirrors how Claude Code's own context compaction keeps the most
+  currently-relevant material closest to full fidelity rather than summarizing everything
+  uniformly. **Disclosed limitation:** this text (including its `file`/`line`) reflects where the
+  claim was most recently raised, which may now be stale if the file has changed shape since —
+  not treated as an enforcement problem, since Codex is already instructed, in every round, to
+  re-read the actual current file rather than trust diff/context text as-is.
+- **Resolved or retracted:** collapsed to one line, built directly and deterministically from its
+  own `claim_closures[].marker_reason` (already exactly one sentence, by the existing
+  `DISPOSITION` marker grammar — see `references/claim-ledger.md` section 4) — no new LLM call,
+  no summarization step, zero added cost or design surface. Example: `claim_id g1:f3 — RESOLVED
+  (round 5): the null check now covers the empty-array case, confirmed by re-reading the current
+  file.` Bounded — see "Closed-claim section has its own ceiling" below.
+
+**Most-recent, not origin.** For each open claim_id, use the SAME "most recent occurrence" lookup
+the quick-mode severity check already performs (`SKILL.md`'s own Guards section) — find that
+claim_id's latest `claude_verification[]` entry, read its own `finding_id`, and use THAT
+finding's `file`/`line`/`severity`/`summary`/`evidence` (falling back to the origin finding only
+for a claim that has never been re-raised, where origin IS the most recent). Additionally append
+one line noting the most recent `evidence_delta` (when present) and Claude's own most recent
+`action`/`rationale` for it, so the fresh thread sees "here is where this stood," not just the
+opening complaint.
+
+## Digest construction and verification — structured data first, prose rendering last
+
+**Never re-parse the rendered prose.** Building the digest as prose directly, then re-parsing
+that same prose to verify nothing was dropped, is unsound: a claim's own verbatim `evidence` text
+can legitimately contain a quoted example, a code block, or prose that itself contains a
+column-zero-anchored string shaped exactly like another claim's own `DISPOSITION` marker — the
+exact class of ambiguity the existing marker parser avoids via fencing/cardinality rules that this
+simpler use case does not need to reinvent. Instead:
+
+1. Compute the reducer's own open-claim-id list (`references/claim-ledger.md` section 8) as
+   structured data (e.g. a `jq` array), not prose.
+2. For each element of that array, resolve its `{claim_id, file, line, severity, summary,
+   evidence}` fields (via the same most-recent-occurrence lookup above) — do NOT render
+   `block_text` yet.
+3. **Verification is a structural check on this data, BEFORE any prose is ever rendered** — both
+   a KEY check and a CONTENT-COMPLETENESS check:
+   - **Key check:** the number of resolved objects equals the reducer's own open count, and their
+     `claim_id` keys are exactly the reducer's own open-id set (set equality).
+   - **Content-completeness check — TYPE/PRESENCE, not non-emptiness:** every one of those
+     objects has `summary`, `evidence`, and `file` present as strings (per
+     `schemas/review-verdict.schema.json`'s own field types) — an empty string IS a legal value
+     for these three and is NOT rejected here. `severity` must be one of the schema's own legal
+     values (`"low"`/`"medium"`/`"high"`/`null`). `line` must ALSO be checked — present, and
+     either `null` or an integer `>= 1`, matching `schemas/review-verdict.schema.json`'s own exact
+     constraint on that field.
+   - Neither check can be spoofed by anything a rendering step might later produce, because
+     neither ever inspects rendered prose — both read only the resolved fields, sourced directly
+     from the finding record the reducer already resolved.
+4. **Only once step 3 passes (both checks) is `block_text` computed** — as a pure, canonical
+   function of the ALREADY-VALIDATED fields from step 2, in the same step, never a separately/
+   independently rendered value: a fixed template, `"OPEN CLAIM <claim_id>:\nfile:
+   <file>\nline: <line>\nseverity: <severity>\nsummary: <summary>\nevidence: <evidence>"`. The
+   final flattening (one deterministic concatenation, a 1:1 map with nothing filtered) produces
+   the prose sent to Codex. `OPEN CLAIM <claim_id>:` remains as a heading purely for Codex's own
+   readability — it is never re-parsed by `/ccs`'s own code again after this point.
+5. On any structural or content-completeness mismatch in step 3: log a one-line narration note,
+   and skip straight to the normal `--resume` fallback (see "On failure" below) — never attempt
+   to dispatch an unverified or incomplete digest.
+
+## Closed-claim section has its own ceiling
+
+The closed-claim one-line summaries have no bound by default, and the count of closed claims only
+ever grows across a session — in a claims-heavy review, this section could itself eventually
+threaten the wrapper's 131,072-byte combined-prompt cap, at which point compaction would
+permanently fail via `artifact_too_large`. Fixed with a small, bounded rule (no LLM
+summarization): include the `CLOSED_CLAIM_LIMIT = 20` most-recently-closed claims' one-line
+summaries verbatim (ordered by `source_round` descending), and collapse everything older into a
+single line: `<N> additional claims resolved/retracted before round <R>; see the session's own
+JSONL log for full detail.` This bounds the closed-claim section's own contribution to a small,
+fixed COUNT regardless of how many rounds a session eventually runs.
+
+**Disclosed, accepted residual limitation.** The closed-claim cap bounds COUNT (20 entries), not
+bytes — the marker-reason grammar requires only a non-empty sentence, with no length limit, so 20
+valid-but-long closure reasons are not actually "small." Open claims remain fully unabridged with
+no count or byte bound. So a session with a large number of open/closed claims, one exceptionally
+large finding, OR a large re-collected diff/artifact can still produce a rendered prompt exceeding
+the wrapper's 131,072-byte cap.
+
+## Byte-budget preflight
+
+**Measure via the authoritative collection path, never an approximation.** For `--uncommitted`
+scope, the diff/untracked-content component is measured by reusing the SAME authoritative
+collection the wrapper itself performs (the actual `collect_untracked_files.py`-equivalent
+content collection), never the candidate snapshot file — that file deliberately records
+untracked files by NAME ONLY (see `references/snapshot-integrity.md`), never their real content,
+so a name-only estimate would silently undercount. For `--commit` scope specifically, ALSO
+measure the commit's own patch content authoritatively — re-running the SAME `git show`/`git
+diff` invocation (through the SAME anchored, sanitized pattern used elsewhere in this skill) the
+wrapper itself will use for `target.resolved_commit_sha` (see "Restart mechanism" below) — since
+every fresh `--commit` dispatch embeds that patch in the prompt exactly like `--uncommitted`/
+`--base` embed their own diffs. Only non-repo-artifact scope is genuinely focus-text-only for
+this preflight, since `CLEAN_REPO_DIR`'s guaranteed-empty diff means there is no separate
+diff-content component to measure at all.
+
+A nonzero exit from either the `--commit`-scope `git show`/`git diff` measurement OR the
+authoritative untracked-content collector invocation is never treated as "zero bytes" — either
+is treated exactly like any other compaction failure (log the narration, fall through to the
+normal `--resume` fallback) immediately, without ever attempting the real dispatch that would
+only hit the identical failure.
+
+**Measure the focus text exactly, never estimate it.** Since Claude constructs the exact,
+complete focus text (digest + Why/Scope/SCOPE-CONSTRAINT + original artifact text, when
+applicable — see "Restart mechanism" step 4 below) before ever dispatching it, the preflight
+measures its REAL byte length directly (e.g. `wc -c` on the assembled focus content) — an exact
+count, not an estimate. The total checked against `COMPACT_BYTE_BUDGET = 120,000` is: this exact
+focus-text byte count, PLUS the diff/untracked-content (or `--commit` patch) byte count from the
+authoritative collection above. `120,000` is tighter than the wrapper's real 131,072-byte cap —
+the remaining ~11,000-byte margin absorbs the wrapper's own fixed prompt scaffolding text outside
+the caller-supplied focus, which this estimate does not measure directly.
+
+**Re-run before EVERY re-collected candidate, not only the original attempt.** The no-threadId
+fresh retry and thread B's own dispatch (see "Retry topology" below) each re-collect a genuinely
+fresh candidate — a newly re-collected candidate's own byte size can legitimately differ from the
+original measurement (the source may have grown in the meantime). This preflight therefore
+re-runs before EVERY fresh dispatch that re-collects a candidate — the original attempt, the
+no-threadId fresh retry, and thread B's own dispatch alike.
+
+**A real latch, not merely an implicit "it'll fail the same way again" claim.** Exceeding
+`COMPACT_BYTE_BUDGET` sets `compaction_disabled_reason` to `"byte_budget_exceeded"` — the SAME
+durable latch mechanism as the other two triggers (see "Trigger" above), naming WHICH component
+(claims vs. diff/artifact) drove the estimate over budget where determinable. Once set, every
+later triggering round's threshold check no-ops immediately, per the existing latch contract —
+skipping the local re-collection and re-measurement entirely, not merely skipping the network
+dispatch. This exceeding-budget failure does NOT increment `COMPACTION_CONSECUTIVE_FRESH_FAILURES`
+(see "Trigger" above) — it is a distinct, already-fully-diagnosed cause with its own immediate
+latch, not the slower two-strikes bound. A future revision could address the root cause (e.g.
+capping open-claim evidence length, or reintroducing LLM summarization) — explicitly out of scope
+for v1 (see "Explicitly out of scope for v1" above).
+
 ## Scope (v1)
 
 - **Single-reviewer only (`GROUP="main"`).** Parallel mode is explicitly out of scope for v1 —
