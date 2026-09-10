@@ -33,7 +33,20 @@
       `--capture-eventlog` with its own fresh `EVENTLOG_FILE` when capture is ON, and
       `--keep-last-message` with its own fresh `LAST_MESSAGE_KEEP_FILE` when keep-evidence is ON,
       same as every dispatch — see `references/capture-evidence.md` and
-      `references/keep-evidence.md`). **If this is round 1 and the reason
+      `references/keep-evidence.md`).
+
+      **This retry is a schedule-(re)generation trigger — but a delayed DELIVERY of the schedule
+      already allocated in Step 0, never a second generation.** `RECEIPT_SCHEDULE_FILE` for this
+      GROUP was already allocated once in Phase 1 Step 0 before the original attempt (see `SKILL.md`'s
+      "Receipt schedule generation", written ONCE per `(SESSION_ID, GROUP)`) — the original attempt
+      failed before it ever established a thread, so it never actually delivered that schedule to
+      Codex. THIS retry is therefore the dispatch that first establishes this group's thread: perform
+      the ordinary receipt-slot-issuance procedure (`SKILL.md`'s "Receipt slot issuance" section) and
+      pass BOTH `--receipt-slot "$NEXT_SLOT"` and `--receipt-schedule-file "$RECEIPT_SCHEDULE_FILE"`
+      (the SAME file already allocated for this GROUP in Step 0 — never a newly-generated one) on
+      this retry dispatch.
+
+      **If this is round 1 and the reason
       is `no_thread_started`, capture coverage from the failing attempt BEFORE dispatching that
       retry** — see the "Round 1 only — capture coverage from the failing attempt BEFORE
       retrying" note below; it applies here identically, even though `no_thread_started` never
@@ -166,6 +179,13 @@
       and its own new `--keep-last-message`/`LAST_MESSAGE_KEEP_FILE` too, when keep-evidence is ON,
       same as every dispatch — see `references/capture-evidence.md` and
       `references/keep-evidence.md`).
+      **This fresh retry is ALSO a schedule-(re)generation trigger — a genuinely new thread,
+      abandoning the old one.** Generate a fresh `RECEIPT_SCHEDULE_FILE` for this new thread (the
+      old thread's schedule, if one was ever established for it, is abandoned along with the
+      thread itself — no attempt to salvage or carry forward its unused slots); perform the
+      ordinary receipt-slot-issuance procedure (`SKILL.md`'s "Receipt slot issuance" section) and
+      pass BOTH `--receipt-slot "$NEXT_SLOT"` and `--receipt-schedule-file "$RECEIPT_SCHEDULE_FILE"`
+      on this fresh retry dispatch.
       **Append that abandoned `(GROUP, threadId)` pair to `LEAKED_THREAD_IDS`** — Claude remembers
       this set for the rest of the run, the same way `GROUP_THREADS`/`SESSION_ID` are remembered —
       so `SKILL.md`'s Phase 3 terminal path can clean it up alongside the run's final threads; it

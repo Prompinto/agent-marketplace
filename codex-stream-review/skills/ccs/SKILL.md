@@ -963,18 +963,22 @@ before) — harmless, since these are ephemeral per-run files cleaned up at the 
 keeping the streams in separate files (one `OUT_FILE`/`ERR_FILE` pair per group) prevents any
 stderr noise from ever contaminating the JSON parse.
 
-**Receipt schedule generation — this `GROUP`'s round-1 fresh dispatch only, a
-`no_material_reviewed` fresh restart's brand-new thread for this same `GROUP` (see
-`references/retry-guards.md`'s new rule for when a restart happens), or a compaction restart's
-brand-new thread for this same `GROUP` (`references/compaction.md`'s Step 4 fresh dispatch, or its
-retry topology's own fresh candidate-A retry / thread-B dispatch — every one of these is
-architecturally the same kind of event: a brand-new codex thread with no prior turns); NEVER
-regenerated on an ordinary round 2+/resumed dispatch to a thread that already has one — that
-dispatch reuses the exact same `RECEIPT_SCHEDULE_FILE` literal allocated here, unchanged.** The
-70-slot budget (`N = 70` below) is PER-THREAD, not per-session — every fresh-thread event (round 1,
-a `no_material_reviewed` restart, or a compaction restart) gets its OWN independent fresh 70-slot
-schedule, so the `MAX_ROUNDS(20) × up to 3 attempts/round = 60` derivation holds regardless of how
-many distinct fresh-thread events occur across a session's lifetime. One independent schedule
+**Receipt schedule generation — a schedule-(re)generation trigger is ANY dispatch that establishes
+a brand-new codex thread for this `GROUP`, with no prior turns for that thread to inherit from —
+including but not limited to:** this `GROUP`'s round-1 fresh dispatch; a `no_material_reviewed`
+fresh restart's brand-new thread (see `references/retry-guards.md`'s new rule for when a restart
+happens); a compaction restart's brand-new thread (`references/compaction.md`'s Step 4 fresh
+dispatch, or its retry topology's own fresh candidate-A retry / thread-B dispatch); and
+`references/retry-guards.md`'s own round-1 no-`GROUP_THREADS`-entry-yet fresh retry and its
+post-resume-retry-exhaustion fresh fallback (that file's own two genuinely-fresh-thread cases —
+see each for whether it reuses this group's already-allocated `RECEIPT_SCHEDULE_FILE` or allocates
+a brand-new one). **NEVER regenerated on an ordinary round 2+/resumed dispatch to a thread that
+already has one — that dispatch reuses the exact same `RECEIPT_SCHEDULE_FILE` literal allocated
+here, unchanged.** The 70-slot budget (`N = 70` below) is PER-THREAD, not per-session — every
+fresh-thread event, wherever in this file or its references one occurs, gets its OWN independent
+fresh 70-slot schedule, so the `MAX_ROUNDS(20) × up to 3 attempts/round = 60` derivation holds
+regardless of how many distinct fresh-thread events occur across a session's lifetime. One
+independent schedule
 per dispatched group — in parallel mode, each group's own thread gets its own schedule, never one
 schedule shared across groups (unlike `SNAPSHOT_FILE`/`SNAPSHOT_DIGEST` above, which are genuinely
 session-wide because every group reviews the identical snapshot). Full mechanics in the design
@@ -1011,10 +1015,10 @@ construction, never excerpted into round 2+'s own History text, and never part o
 line** — it exists purely as Claude's own local, private record of the schedule, mirroring
 `SNAPSHOT_FILE`'s own treatment exactly.
 
-**Dispatching it.** The ONE dispatch that first establishes this group's thread — round 1's own
-fresh dispatch, later a `no_material_reviewed` fresh restart's brand-new first dispatch, or a
-compaction restart's brand-new first dispatch (`references/compaction.md`'s Step 4, or its retry
-topology's own fresh candidate-A retry / thread-B dispatch) — passes
+**Dispatching it.** The ONE dispatch that first establishes this group's thread — any of the
+schedule-(re)generation triggers listed above (round 1's own fresh dispatch, a
+`no_material_reviewed` fresh restart, a compaction restart, or `references/retry-guards.md`'s own
+two genuinely-fresh-thread retry cases) — passes
 `--receipt-schedule-file "<the literal RECEIPT_SCHEDULE_FILE path just allocated for this GROUP>"`
 as an additional `run-ccs-review.sh` argument on that same dispatch (pairing with that dispatch's
 own `--receipt-slot <N>` argument). `build_review_prompt()` reads this file's content directly and
@@ -1983,9 +1987,10 @@ trustworthy one).
    own `retired_snapshot_files` array — only if `--compact` was used this session and either was
    ever set/recorded. **A session may have allocated more than one `RECEIPT_SCHEDULE_FILE`** — every
    dispatched `GROUP` gets its own (never one shared across groups in parallel mode), and each
-   `no_material_reviewed` fresh restart's or compaction restart's brand-new thread for a given group
-   adds a further separate one (see "Receipt schedule generation" above) — every one of them, for
-   every group, must be
+   schedule-(re)generation trigger's brand-new thread for a given group (per "Receipt schedule
+   generation" above's own non-exhaustive list — a `no_material_reviewed` restart, a compaction
+   restart, or one of `references/retry-guards.md`'s own genuinely-fresh-thread retry cases) adds a
+   further separate one — every one of them, for every group, must be
    removed here, never just the most recent or just `GROUP="main"`'s, since each durably holds
    still-secret unused token values that must not outlive the run.
 
