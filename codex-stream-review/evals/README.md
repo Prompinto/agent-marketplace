@@ -60,7 +60,7 @@ actually driven live end-to-end (via the Skill tool or a faithful manual executi
 own documented Phase 0-3 procedure), and confirmed passing via `check-result.sh` against a real
 `.result.json`. Every Codex/fake-codex thread created along the way was cleaned up.
 
-**Group G (below), added for `--quick`, adds 3 more `built + verified` live scenarios (34 total)
+**Group G (below), added for `--quick`, adds 3 more `built + verified` live scenarios (32 total)
 plus 2 documentation-only stubs** -- `quick-mode-escalation-critical` and
 `quick-mode-unparseable-severity-fail-closed` are directories with a `README.md` only, no
 `setup.sh`/`expect.sh`, since the case each would need to drive (a `CRITICAL` or otherwise
