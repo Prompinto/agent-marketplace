@@ -861,6 +861,67 @@ via a no-ID recovery scenario per bullet 3) — never via bullet 1 or bullet 2's
 either, both of which fall straight to step 6's fallback without ever creating a second candidate
 thread.
 
+**Thread B's OWN dispatch reconstructs the COMPLETE compaction focus text, identically to
+"Restart mechanism" step 4 above — never a partial or abbreviated one.** B's dispatch is a
+genuinely fresh `codex exec` call, not a `--resume`, so it has NO prior turn to inherit anything
+from — the wrapper copies each invocation's own stdin into a fresh focus-received file and
+launches a plain `codex exec` for every non-resume call, meaning whatever focus text this
+dispatch sends IS the entirety of what the new thread ever sees. Before dispatching B: thread A
+is added to `LEAKED_THREAD_IDS`; if A's own dispatch had allocated a candidate snapshot file,
+that candidate is deleted immediately (folding a failed deletion into `retired_snapshot_files`).
+For `--uncommitted`/`--base` scope, B's dispatch re-collects a fresh candidate (new
+`candidate_snapshot_path`, new digest) exactly as A's original dispatch was — never a reuse of
+A's now-deleted candidate. For non-repo-artifact/`--commit` scope, B's dispatch involves no
+candidate file at all, exactly like A's did not.
+
+**Thread B's own single dispatch gets NONE of bullets 1-4's retry machinery — it either
+succeeds, or the whole compaction attempt is immediately exhausted**, matching
+`references/retry-guards.md`'s own "round 2+"/one-fresh-fallback rule exactly. If B's own
+dispatch fails, for ANY reason whatsoever (`artifact_too_large`, no threadId at all, a
+threadId-bearing resume-safe reason — none of these are distinguished for B): immediate
+exhaustion, with no retry of B, no no-threadId recovery attempt for B, and absolutely no further
+escalation to a third candidate/thread. If B's own failed response captured a threadId, add it to
+`LEAKED_THREAD_IDS`/`compaction_attempt_failed_thread` (alongside A's own); if not, there is
+genuinely nothing further to add for B. Delete B's own candidate, when one exists. Fall straight
+through to step 6's fallback.
+
+`compaction_attempt_failed_thread` becomes an ARRAY of 1 or 2 thread ids — just `[A]` when B was
+never reached, `[A, B]` when both were abandoned — rather than a single value; every consumer of
+this field (Phase 3 cleanup, the final-report thread enumeration, the append-verify field checks
+— see Task 13) is extended to accept and union in either shape.
+
+**Carry-forward applies to A's OWN `--resume` retry-then-succeed too — BOTH bullet-3's no-ID-
+hiccup retry AND bullet-4's ordinary threadId-bearing bounded resume retry, the two genuinely
+different ways A can succeed via `--resume` — NEVER to A's bullet-2 no-threadId FRESH retry,
+which needs the OPPOSITE treatment.** Neither bullet 3's nor bullet 4's own successful `--resume`
+response ever re-collects anything, so in BOTH cases the ONLY real coverage/baseline/telemetry
+data available is the earlier failed response's own — carry it forward (see "Restart mechanism"
+step 4's coverage-epoch rules above, and "Preserving failed-attempt telemetry" below for
+`execution`). Bullet 2's own retry is the polar opposite — it is itself a genuinely NEW,
+independent re-collection, exactly like the A→B transition already is, with its OWN fresh
+coverage and baseline; applying carry-forward there would use STALE data from an attempt whose
+own collected content this retry has already deleted and superseded. For bullet 2's own
+retry-then-succeed specifically, the RETRY's own response is the sole authoritative source for
+coverage and `COMPACTION_BASELINE_TOKENS` — never the earlier, now-superseded failed attempt's —
+mechanically identical in principle to how B's own data is used, never A's, after the A→B
+transition.
+
+**Exactly THREE sub-cases can produce a round that carries BOTH a success AND preserved
+earlier-failure telemetry, never a "B retries" case (B is single-shot by construction, so there
+is no possible "B's own first response failed, then B itself went on to succeed" scenario):**
+(i) an EARLIER response for the eventually-successful thread A failed before that SAME thread
+went on to succeed via its own `--resume` retry (bullet 3's no-ID hiccup, or bullet 4's ordinary
+threadId-bearing bounded resume — both are this same sub-case); (ii) A's own first response
+failed with no threadId, and its ONE allowed no-threadId fresh retry then succeeded (still "A,"
+no abandoned thread, per bullet 2); or (iii) a genuinely abandoned thread A, exhausted, preceded
+thread B's own eventual success within that SAME round. **ONLY sub-case (iii) ever populates
+`compaction_attempt_failed_thread`** — in sub-cases (i) and (ii), the SAME thread that had an
+earlier failed response is what goes on to succeed, so nothing was ever abandoned; recording it
+there would cause it to be double-cleaned, or falsely reported as leaked, despite being the
+round's own real, live, active thread. All three sub-cases MAY (conditionally, never
+unconditionally) populate `compaction_attempt_execution`/`compaction_attempt_coverage` — see
+"Preserving failed-attempt telemetry" below.
+
 ## Scope (v1)
 
 - **Single-reviewer only (`GROUP="main"`).** Parallel mode is explicitly out of scope for v1 —
