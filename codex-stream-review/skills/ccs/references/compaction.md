@@ -999,7 +999,15 @@ carry a `threadId` at all):
 
 - **Success, `--uncommitted`/`--base` scope (a real candidate was allocated):** REQUIRE
   `compacted_from_thread`, `candidate_snapshot_path`, `snapshot_digest_before`,
-  `snapshot_digest_after`, `compaction_attempt_failure_count` (must equal `0`).
+  `snapshot_digest_after`, `compaction_attempt_failure_count` (must equal `0`). **These 5 fields
+  are required whenever THIS restart mechanism (Steps 0-4 above plus this "Ordering on success"
+  section) was invoked at all — whether the invocation was `--compact`'s own trigger, or
+  `references/retry-guards.md`'s `no_material_reviewed` restart reusing this same mechanism's
+  success path — never exclusively a `--compact`-triggered event.** For a `no_material_reviewed`
+  restart specifically, this is always a clean single-attempt success (that recovery never has an
+  earlier failed sub-attempt within the same successful line — see that section's own scope), so
+  `compaction_attempt_failure_count` is always exactly `0` there and none of the other
+  earlier-failed-sub-attempt fields below ever apply.
 - **Success, non-repo-artifact or `--commit` scope (no candidate ever allocated):** the same set
   MINUS `candidate_snapshot_path`, whose absence here is the CORRECT state, not a defect.
 - **Success, whenever the ROUND's OWN scope is `--uncommitted`** (including a non-repo-artifact

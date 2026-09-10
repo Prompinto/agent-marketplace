@@ -250,15 +250,24 @@ below — never that section's sibling "On failure"/"Retry topology" sections. T
 **If the ONE fresh restart fails for ANY reason — not just a repeat `no_material_reviewed` — this
 is immediate, unconditional exhaustion.** A repeat `no_material_reviewed` (either detection route),
 or any other wrapper failure reason whatsoever (`timeout`, `nonzero_exit`, `no_thread_started`,
-`bad_args`, or anything else): stop and report `⚠️ COULD NOT VERIFY`, never attempt a third thread
+`bad_args`, or anything else): first, if a candidate snapshot file was allocated for this specific
+restart attempt (only ever true for `--uncommitted`/`--base` scope — never for `--commit` scope or
+a non-repo-artifact session, neither of which allocates one), delete it — it was never used for
+anything, and leaving it behind would leak a temp file. On a failed deletion, add its path to
+`retired_snapshot_files` (see `references/compaction.md`'s "Restart mechanism" step 3), the same
+fallback compaction's own "On failure" step 2 uses. This is the ONE step reused from that "On
+failure" section — nothing else in it (never that section's step 4 resume-fallback, forbidden here
+as stated below). Then stop and report `⚠️ COULD NOT VERIFY`, never attempt a third thread
 — matching this file's own existing round-1-fresh-fallback-then-give-up precedent, and
 `references/compaction.md`'s own candidate-A-to-thread-B single-shot-escalation-then-give-up
 pattern. **Explicit override, stated because this is the one place in this file where the default
 would otherwise apply:** this recovery reuses ONLY compaction's Restart-mechanism SUCCESS-PATH
 construction (digest carryforward from the JSONL reducer, snapshot-integrity revalidation/
-promotion, a fresh dispatch with a fresh receipt schedule) — it does NOT reuse compaction's own
-"On failure" fallback section (which would resume the abandoned OLD thread — explicitly forbidden
-here, since resuming ANYTHING after a `no_material_reviewed` restart's own failure would violate
+promotion, a fresh dispatch with a fresh receipt schedule), plus — on failure only — the single
+candidate-deletion action carved out above (compaction's "On failure" step 2, taken in isolation).
+It does NOT reuse the REST of compaction's own "On failure" fallback section, specifically its
+step 4 resume-fallback (which would resume the abandoned OLD thread — explicitly forbidden here,
+since resuming ANYTHING after a `no_material_reviewed` restart's own failure would violate
 the "never resume a proven-hollow context" premise this whole feature exists to enforce), nor its
 "Retry topology" section (the bounded-resume-then-fresh-B escalation `--compact`'s own restart
 uses when ITS OWN attempt fails — specific to `--compact`'s own tolerance model, not appropriate
