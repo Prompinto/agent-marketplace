@@ -85,8 +85,10 @@ scenario among the five needing genuine mid-session manual intervention (plantin
 into a path `/ccs` itself only allocates at runtime, printed during the live session rather than
 knowable in advance) -- see that scenario's own `README.md` for why it can't be as fully
 pre-scripted as the other four. The `COMPACTION_CONSECUTIVE_FRESH_FAILURES`
-repeated-fresh-dispatch-failure circuit breaker and the digest structural-verification-failure path
-are not separately covered here — both are straightforward compositions of mechanics these five
+repeated-fresh-dispatch-failure circuit breaker, the digest structural-verification-failure path,
+and the `baseline_unusable` latch (a compaction round's own freshly-restarted usage telemetry
+coming back missing/malformed, so its baseline can't be verified one way or the other) are not
+separately covered here — all three are straightforward compositions of mechanics these five
 scenarios already exercise individually, and can be added later following the exact same pattern.
 
 ### Group A — one scenario per terminal status (7 named entries; `review-log-integrity-failure`

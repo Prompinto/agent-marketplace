@@ -1352,7 +1352,10 @@ success" sections in full for that next round instead of an ordinary `--resume` 
 resulting round still counts as one ordinary increment of the round loop (see
 `references/compaction.md`'s "Scope (v1)" section: `MAX_ROUNDS` is unaffected in meaning). When
 `COMPACT_MODE` is OFF, this paragraph is a complete no-op — proceed directly to the next round's
-Step 1 exactly as documented everywhere else in this file.
+Step 1 exactly as documented everywhere else in this file. **This check takes precedence over an
+otherwise-satisfied convergence check** — see the "`--compact` precedence" paragraph in
+"Convergence = 100% CLEAN" below for the exact interaction when the round just appended above was
+itself 100% CLEAN.
 
 ### Coverage is a Round-1-only property
 
@@ -1435,6 +1438,18 @@ described above.
   below) hasn't happened yet at this point in the loop; a claim closed by THIS round's own
   `DISPOSITION` marker must count as closed for THIS round's own convergence check, not only
   starting next round. Never assume from memory across a 20-round run.
+
+**`--compact` precedence (checked here, before the arrow below ever fires):** if `COMPACT_MODE`
+is ON for this session and THIS round's own `execution.usage.input_tokens` crosses
+`COMPACT_THRESHOLD` (per `references/compaction.md`'s "Trigger" section), do NOT stop the loop
+here even though every condition above holds — a triggering round's own convergence is deferred,
+never discarded. Dispatch the next round as the compaction round (per the trigger-check paragraph
+above Step 6), then re-run this SAME convergence check against THAT round's own real outcome
+instead, exactly as it would run for any other round. Only the arrow below actually fires once a
+round satisfies every condition above **AND** does not itself trigger a pending compaction — this
+holds even for round 1 itself: a round-1 verdict that is otherwise 100% CLEAN still does not stop
+the loop if round 1's own usage also crosses `COMPACT_THRESHOLD`. When `COMPACT_MODE` is OFF, this
+paragraph is a no-op, exactly like every other `--compact`-only paragraph in this file.
 → Stop the loop, go to Phase 3 as **✅ CLEAN**.
 
 ### Convergence logic across groups — round-level, all-groups-together (confirmed decision)
