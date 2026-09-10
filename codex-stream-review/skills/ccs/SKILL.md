@@ -1340,6 +1340,20 @@ For each round, after Phase 1 delivers a result:
    was allocated, is already gone by this point too — deleted or moved as part of the keep-evidence
    step just run, not part of this cleanup list either.)
 
+**If `COMPACT_MODE` is ON for this session (Phase 0 Step 0's decision): before dispatching the
+NEXT round's Step 1 below, run `references/compaction.md`'s "Trigger" check now against the
+round just appended above.** This is a check-and-possibly-restart step interposed between this
+round's own completed append and the next round's own dispatch — never inside this round's own
+processing, and never before round 1's own dispatch (round 1 has no prior round's usage to check
+yet; the very first opportunity this check ever runs is immediately after round 1's own line is
+appended, deciding whether ROUND 2 becomes a compaction round). If the check triggers, follow
+`references/compaction.md`'s "Restart mechanism"/"Retry topology"/"On failure"/"Ordering on
+success" sections in full for that next round instead of an ordinary `--resume` dispatch — the
+resulting round still counts as one ordinary increment of the round loop (see
+`references/compaction.md`'s "Scope (v1)" section: `MAX_ROUNDS` is unaffected in meaning). When
+`COMPACT_MODE` is OFF, this paragraph is a complete no-op — proceed directly to the next round's
+Step 1 exactly as documented everywhere else in this file.
+
 ### Coverage is a Round-1-only property
 
 Since only a fresh `--uncommitted` dispatch ever reports `coverage.source` — regardless of
@@ -1578,7 +1592,14 @@ or more claims.** The session's FIRST line only also gains a top-level `schema_v
 round — present whenever that dispatch's own `$DISPATCH_PID` was actually captured, omitted entirely
 otherwise) and a separate, always top-level, coordinator-measured
 `round_wall_seconds` (one per round, present every round regardless of group count — never derived
-by summing groups' own `execution.elapsed_seconds`).** The common
+by summing groups' own `execution.elapsed_seconds`).** **Opt-in thread compaction (see
+`references/compaction.md`, read only when `--compact` is ON for this session) adds the full
+field set that reference file's own "Logging" section documents** — `compacted_from_thread`, the
+`compaction_attempt_*` trio, `snapshot_digest_before`/`snapshot_digest_after`,
+`candidate_snapshot_path`, `compaction_attempt_failure_count`, `compaction_disabled_reason`,
+`retired_snapshot_files`, and round-1's own
+`target.scope_value`/`target.resolved_commit_sha`/`target.original_scope_framing` — never present
+at all for a session where `--compact` was OFF. The common
 case — a single-reviewer round (`GROUP="main"`), capture-evidence and keep-evidence both OFF, no
 claim closed this round — is otherwise
 unchanged from before, aside from `execution`/`round_wall_seconds` themselves (present whenever a
@@ -1592,7 +1613,7 @@ is omitted entirely, and so are `investigation_evidence`, `kept_last_message_pat
   "session_id": "2026-09-03T143000-54321",
   "round": 1,
   "ts": "2026-09-03T14:31:05+09:00",
-  "schema_version": 2,
+  "schema_version": 3,
   "thread_id": "<this round's own threadId>",
   "target": {"repo": "<repo root>", "scope": "uncommitted", "focus": "<the focus text sent this round>"},
   "codex_review": {"ok": true, "verdict": "ISSUES", "findings": [
@@ -1667,6 +1688,10 @@ omission rule.
   file). `round_wall_seconds` is a SEPARATE, coordinator-measured, always-TOP-LEVEL field — one per
   round regardless of group count, NEVER derived by summing groups' own `execution.elapsed_seconds`
   (they run concurrently, so summing would overstate true wall-clock cost).
+- `compacted_from_thread`/the `compaction_attempt_*` trio/the snapshot-lineage fields/
+  `retired_snapshot_files`/`target.scope_value`/`target.resolved_commit_sha`/
+  `target.original_scope_framing`: see `references/compaction.md` (read only when `--compact` is
+  ON) for the full construction, retry-topology, and fail-closed rules.
 
 **Write:** append via `jq -nc` redirected with `>>`, `umask 077` restated immediately before
 every append (a fresh Bash call each time — the earlier `mkdir`'s umask doesn't carry over).
@@ -1697,6 +1722,15 @@ while a long-running `/ccs` session is still active), this is a hard stop: do no
 reduce a mixed old-format/new-format claim ledger. Report `🛑 REVIEW LOG INTEGRITY FAILURE`, clean
 up exactly like `🛑 SNAPSHOT INTEGRITY FAILURE` (Phase 3 steps 1-3, unconditionally), and tell the
 user a fresh `codex-stream-review:ccs` invocation is required.
+
+**When `--compact` was used for this session** (any prior round in the log carries a
+compaction-related field), also run `references/compaction.md`'s own continuity-recovery
+extensions at this same point: reconstruct `COMPACTION_CONSECUTIVE_FRESH_FAILURES` and whether
+`compaction_disabled_reason` was ever set (searching the WHOLE log, never only the latest line),
+and — if the log's own most recent compaction event shows a promotion that may not have
+completed — run the post-append/pre-promotion recovery algorithm that reference file's "Restart
+mechanism" step 3 describes, BEFORE this step's own ordinary per-round snapshot revalidation is
+ever invoked for the first round dispatched after this recovery.
 
 **Failure isolation:** best-effort applies to everything else around the write (directory
 creation, `chmod` retightening, the `umask` restatement itself) — a failure in any of those never
@@ -1761,7 +1795,12 @@ trustworthy one).
    attempt, for every group), there is nothing to clean up here; skip silently. **Every
    `cleanup_failed` result is surfaced plainly in the final report** (which group, which thread,
    why) — never hidden behind a clean-looking headline result. An undeleted thread means that
-   group's full diff/code content is still sitting on disk under `~/.codex/sessions/`.
+   group's full diff/code content is still sitting on disk under `~/.codex/sessions/`. **When
+   `--compact` was used for this session**, also union in every `compacted_from_thread` and
+   `compaction_attempt_failed_thread` value found anywhere in the session's own JSONL log (see
+   `references/compaction.md`'s "Durable backstop for abandoned threads") — a thread is never
+   permanently unaccounted-for purely because in-memory `GROUP_THREADS`/`LEAKED_THREAD_IDS` state
+   did not survive to the end of a long run.
 
 2. **Clean up every `(GROUP, leaked-threadId)` pair in `LEAKED_THREAD_IDS`** (see Guards → "Empty
    / failed review ≠ CLEAN" above) — a group's round-1 retry after a post-`thread.started` failure
@@ -1792,7 +1831,10 @@ trustworthy one).
    Phase 0 step 4) and cleaned up alongside it here — never left behind once `CLEAN_REPO_DIR` no
    longer needs it. `SNAPSHOT_FILE` (see "Snapshot integrity" above) is allocated for every session
    that ever reaches round 1's dispatch — unlike `CLEAN_REPO_DIR`/`FAKE_GIT_HOME`, it is never
-   conditional on session type, so this `rm -f` needs no guard.
+   conditional on session type, so this `rm -f` needs no guard. **When `--compact` was used this
+   session**, also `rm -f` `PROVISIONAL_SNAPSHOT_FILE` and every path ever recorded in any round's
+   own `retired_snapshot_files` array — only if `--compact` was used this session and either was
+   ever set/recorded.
 
 4. **Write the durable final-verdict artifact (Phase 5 Item B) — a third instance of the same
    directory/session-id-prefix pattern `--keep-evidence` already established** (that flag's own
@@ -1832,6 +1874,11 @@ trustworthy one).
      `"retained"` when the keep-evidence gate skipped steps 1-2 entirely (every thread in that
      case). The common single-reviewer, no-retry, successful-cleanup case is a 1-element array;
      `GROUP_THREADS` empty (no group ever obtained a thread) yields an empty array, never an error.
+     **When `--compact` was used for this session**, also union in every `compacted_from_thread`
+     and `compaction_attempt_failed_thread` value found anywhere in the session's own JSONL log
+     (see `references/compaction.md`'s "Durable backstop for abandoned threads") — a thread is
+     never permanently unaccounted-for purely because in-memory `GROUP_THREADS`/`LEAKED_THREAD_IDS`
+     state did not survive to the end of a long run.
    - `claims`: `null` when `exit_state` is `SNAPSHOT_INTEGRITY_FAILURE` or
      `REVIEW_LOG_INTEGRITY_FAILURE` (neither can vouch for claims about the reviewed subject/log —
      see `references/snapshot-integrity.md`). Otherwise, build the array via a `jq` JOIN over the
@@ -1953,7 +2000,10 @@ Structure:
   integrity" above and the Guards section's "receives EXACTLY the same treatment" rule), plus the
   required content from the relevant section (a fresh invocation is needed). **`🛑 INPUT TOO
   LARGE` is NOT a third status in this unconditional-cleanup group** — it follows the normal
-  keep-evidence-gated bullet above like any other non-CLEAN outcome.
+  keep-evidence-gated bullet above like any other non-CLEAN outcome. When `--compact` was used,
+  also name every `compacted_from_thread`/`compaction_attempt_failed_thread` value found in the
+  JSONL log (per Phase 3's own extension above), not only `GROUP_THREADS`/`LEAKED_THREAD_IDS`
+  memory.
 - **Execution telemetry (always on)** — see "Execution telemetry" above and
   `references/execution-telemetry.md`. Head this bullet's actual content with **"best-effort
   execution telemetry — not authoritative billing or quota data"**, then list: effort (reasoning
@@ -1962,7 +2012,12 @@ Structure:
   mode); each round's own `round_wall_seconds`; and token usage when available, from each
   round/group's own `execution.usage` (state "usage unavailable" for a round/group where it was
   omitted). Any summed figure across rounds/groups must be explicitly labeled as a sum, never
-  presented as wall-clock time or billable cost.
+  presented as wall-clock time or billable cost. **When `--compact` was used for this session,
+  also apply `references/compaction.md`'s own two Final-Report wording templates** (one for a
+  round whose real outcome was the fallback, one for a round whose real outcome was a compaction
+  success that followed an earlier failed sub-attempt) for any round carrying a preserved
+  `compaction_attempt_execution` value — reported as its own clearly labeled line, distinct from
+  that round's own real `execution`/`usage` reporting, never merged into it.
 - **Final-verdict artifact (Phase 5 Item B, always attempted)** — report the durable
   `<session-id>.result.json` path (see Phase 3 step 4 above) this run wrote, so the user has a
   single-file machine-readable record of this run's own outcome. If that write failed, say so
