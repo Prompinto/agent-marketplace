@@ -52,6 +52,15 @@ else
   RESUME_ID="$(grep '^mode=resume ' "$INVOCATION_LOG" | sed -E 's/^mode=resume thread_id=([^ ]*).*/\1/' | sed -n '1p')"
   check "round 2's resume dispatch targets the SAME thread round 1 opened (A), not a different one" "$RESUME_ID" "$FRESH_ID"
   check "the result's own current thread_id matches the single fresh dispatch (A) -- never replaced" "$CURRENT_ID" "$FRESH_ID"
+
+  # Order, not just identity: matching thread_id values alone don't rule out a reversed log
+  # (resume happening before the fresh dispatch ever occurred) -- compare line numbers directly.
+  FRESH_LINE_NUM="$(grep -n '^mode=fresh ' "$INVOCATION_LOG" | head -n 1 | cut -d: -f1)"
+  RESUME_LINE_NUM="$(grep -n '^mode=resume ' "$INVOCATION_LOG" | head -n 1 | cut -d: -f1)"
+  if [ -n "$FRESH_LINE_NUM" ] && [ -n "$RESUME_LINE_NUM" ] && [ "$FRESH_LINE_NUM" -ge "$RESUME_LINE_NUM" ]; then
+    echo "compact-byte-budget-exceeded: FAIL -- fresh dispatch (log line $FRESH_LINE_NUM) must come BEFORE the resume fallback (log line $RESUME_LINE_NUM)" >&2
+    FAIL=1
+  fi
 fi
 
 # Verify the actual CAUSE and its NEGATIVE claim, not just the downstream dispatch-pattern
@@ -71,6 +80,13 @@ if [ ! -f "$JSONL_FILE" ]; then
   echo "compact-byte-budget-exceeded: FAIL -- expected sibling JSONL log at $JSONL_FILE, not found" >&2
   FAIL=1
 else
+  # Exclusivity, not just presence: selecting rounds 1 and 2 by value never rules out a THIRD
+  # (or later) record also existing -- e.g. an extra round-3 line that ALSO carries
+  # compaction_disabled_reason, which round-scoped selects alone would never see. round_count is
+  # already asserted to be 2 above, so the JSONL log must contain exactly 2 records total.
+  TOTAL_JSONL_LINES="$(jq -s 'length' "$JSONL_FILE")"
+  check "JSONL log total record count (exactly rounds 1 and 2 -- no third record could exist)" "$TOTAL_JSONL_LINES" "2"
+
   ROUND1_LINE="$(jq -c 'select(.round == 1)' "$JSONL_FILE" | head -n 1)"
   ROUND2_LINE="$(jq -c 'select(.round == 2)' "$JSONL_FILE" | head -n 1)"
 
