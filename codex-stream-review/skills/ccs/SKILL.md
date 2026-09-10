@@ -179,8 +179,8 @@ Two mutually exclusive top-level modes:
 ### Mode 1 — a review round (fresh or resumed)
 
 ```
-<focus text> | run-ccs-review.sh --cwd <dir> {--uncommitted | --base <ref> | --commit <sha>} [--timeout <secs>]
-<focus text> | run-ccs-review.sh --cwd <dir> --resume <threadId> [--timeout <secs>]
+<focus text> | run-ccs-review.sh --cwd <dir> {--uncommitted | --base <ref> | --commit <sha>} [--timeout <secs>] [--receipt-slot <N>] [--receipt-schedule-file <path>]
+<focus text> | run-ccs-review.sh --cwd <dir> --resume <threadId> [--timeout <secs>] [--receipt-slot <N>]
 ```
 
 - `--cwd <dir>` — **required**, every call.
@@ -201,6 +201,15 @@ Two mutually exclusive top-level modes:
   deletes its own private copy, unconditionally regardless of whether the round succeeds or fails.
   Used by this skill only when `--keep-evidence` was given for this session (see
   `references/keep-evidence.md`) — omitted entirely otherwise.
+- `--receipt-slot <N>` — the schedule slot this dispatch must echo a receipt for. Unconditional on
+  BOTH the fresh and resume forms — every thread carries an active schedule from its own first
+  dispatch onward (see "Receipt schedule generation" and "Receipt slot issuance" above for the full
+  mechanics: how `N` is derived, durably recorded before dispatch, and never re-derived from the
+  model's own thread history).
+- `--receipt-schedule-file <path>` — the freshly-generated 70-token schedule for a brand-new thread.
+  Added ONLY to the dispatch that first establishes a thread (round 1's own first dispatch, or any
+  other schedule-(re)generation trigger — see "Receipt schedule generation" above); **never on a
+  resume**, which relies on the model's own retained thread history to still see the schedule.
 - A `--base`/`--commit` value starting with `-` is rejected (`bad_args`) as a git-option-
   injection guard; a `--resume` threadId starting with `-` is rejected the same way.
 
@@ -367,7 +376,8 @@ keep-evidence gate for why). See "Phase 3 — Terminal path" below.
 > **Discrepancy note:** this project's `task-2-brief.md` (the brief for the task that built this
 > wrapper) referenced an `--output-schema <path>` flag on it. The actual, current
 > `run-ccs-review.sh` has no such caller-facing flag — its argument parser only accepts `--cwd`, `--uncommitted`, `--base`,
-> `--commit`, `--resume`, `--timeout`, `--capture-eventlog`, `--keep-last-message`, and the separate
+> `--commit`, `--resume`, `--timeout`, `--capture-eventlog`, `--keep-last-message`, `--receipt-slot`,
+> `--receipt-schedule-file`, and the separate
 > `--cleanup` mode (focus text arrives on stdin, not as an argv flag). The JSON output schema (`schemas/review-verdict.schema.json`) is applied
 > internally and unconditionally to every `codex exec` call the wrapper itself makes — it is not
 > a knob this skill or its caller ever sets. Trust the script: do not pass `--output-schema`.
@@ -1122,29 +1132,50 @@ the dispatch call that follows — the same "small check-and-branch call, distin
 that follows" shape as the snapshot-revalidation check above. Reconstruct the current cursor for
 THIS group's thread by scanning the WHOLE session JSONL log for the highest-numbered
 `receipt_issued.index` value recorded so far for this `thread_id` (0 if none has ever been recorded
-for this thread — its own first-ever dispatch, i.e. round 1). The slot to issue THIS dispatch is
-that value plus 1:
+for this thread — its own first-ever dispatch, i.e. round 1, or any other dispatch that establishes
+a brand-new thread with no threadId yet, see the provisional-key paragraph below). The slot to
+issue THIS dispatch is that value plus 1:
 
 ```bash
 NEXT_SLOT="<highest prior receipt_issued.index for this group's thread_id in the JSONL log, plus 1; 1 if none>"
-jq -nc --arg tid "<this group's own literal THREAD_ID from GROUP_THREADS, or the literal string PENDING if round 1's own thread has no threadId yet>" --argjson idx "$NEXT_SLOT" \
+jq -nc --arg tid "<this group's own literal THREAD_ID from GROUP_THREADS, or the provisional PENDING key below if THIS dispatch has no threadId yet>" --argjson idx "$NEXT_SLOT" \
   '{receipt_issued: {thread_id: $tid, index: $idx}}' >> ~/.claude/plugins/data/codex-stream-review/ccs-logs/<repo-slug>/<session-id>.jsonl
 ```
 
-(For round 1's own very first dispatch, before any `threadId` has ever been returned, record
-`thread_id` as the literal string `"PENDING"` — reconcile it to the real `threadId` retroactively
-once Phase 2 step 1 below parses the response and `GROUP_THREADS` is established, by appending a
+**Provisional `thread_id` for a dispatch with no threadId yet.** ANY dispatch that establishes a
+brand-new thread with no threadId yet — not only round 1's own first dispatch, but equally a
+`no_material_reviewed` fresh restart, a compaction restart (`references/compaction.md`'s Step 4
+fresh dispatch, its retry topology's own fresh candidate-A retry, or thread B's dispatch), or
+either of `references/retry-guards.md`'s own two genuinely-fresh-thread retry cases — has no real
+`threadId` to key this record by. Record `thread_id` as the literal string
+`"PENDING:<basename of THIS dispatch's own freshly-allocated RECEIPT_SCHEDULE_FILE>"` — the exact
+SAME `RECEIPT_SCHEDULE_FILE` this dispatch is about to pass via `--receipt-schedule-file` below
+(one bash variable read twice, e.g. `PENDING:$(basename "$RECEIPT_SCHEDULE_FILE")`, never two
+separately-tracked values that could drift). Every one of these establishment events already
+allocates its own genuinely-fresh, uniquely-`mktemp`'d `RECEIPT_SCHEDULE_FILE` (see "Receipt
+schedule generation" above — each such event's schedule is its own separate file, never reusing
+another thread's), so deriving the placeholder from that same file's own basename makes the key
+unique for free, with no extra bookkeeping: no shared namespace across parallel groups (each
+group's own `RECEIPT_SCHEDULE_FILE` is independently `mktemp`'d), and no collision between an
+earlier already-reconciled event and a later fresh event for that SAME group (e.g. round 1's
+original thread vs. a later compaction-triggered fresh thread for that same group — each has its
+own distinct `RECEIPT_SCHEDULE_FILE`, hence its own distinct placeholder). Reconcile it to the real
+`threadId` retroactively once the response that establishes the thread is parsed (Phase 2 step 1
+below for an ordinary round 1 or fresh restart; the analogous response-parsing point in
+`references/retry-guards.md`/`references/compaction.md` for their own fresh-thread cases) and
+`GROUP_THREADS` (or that reference file's own thread-tracking variable) is updated, by appending a
 SECOND `receipt_issued` correction line `{receipt_issued: {thread_id: "<real threadId>", index:
-<this group's own NEXT_SLOT value, the same one just used for its own PENDING issuance immediately
-above>, reconciles: "PENDING"}}` immediately after — never a hardcoded `1`. **In parallel mode,
-each group's own PENDING issuance may receive a different index** (group 1 gets PENDING:1, group 2
-gets PENDING:2, etc., since they scan and append sequentially against the shared `PENDING` key) —
-the correction's `index` must match that SAME group-specific value, or a later reader cannot tell
-which PENDING record a given correction resolves. Matching is by exact `(thread_id, index)` pair:
-the record `{thread_id: "PENDING", index: N}` is corrected by the record `{reconciles: "PENDING",
-index: N}` with that same `N`. The cursor-reconstruction scan (Task 9) must treat a `reconciles`
-line as authoritative over the `PENDING` line it corrects, never double-counting both as separate
-issuances for the same slot.)
+<this dispatch's own NEXT_SLOT value, the same one just used for its own PENDING issuance
+immediately above>, reconciles: "PENDING:<the same basename used for that issuance>"}}`
+immediately after — never a hardcoded `1`. Matching is by exact `(thread_id, index)` pair: the
+record `{thread_id: "PENDING:<basename>", index: N}` is corrected by the record `{reconciles:
+"PENDING:<the same basename>", index: N}` with that same `N`. Because the placeholder key is
+already unique per establishment event, each such event's own PENDING issuance naturally starts
+at its own true prior count (index 1, on that event's own first issuance) with no cross-group or
+cross-event interference — there is no shared-index bookkeeping to get right, unlike a single
+shared literal key would require. The cursor-reconstruction scan (Task 9) must treat a
+`reconciles` line as authoritative over the `PENDING:<basename>` line it corrects, never
+double-counting both as separate issuances for the same slot.
 
 This append uses the SAME append-then-verify hard-stop mechanism as every other JSONL write in this
 skill (see "Review history log" → "Write" below) — a failed/unverified append here is a hard stop,
@@ -1619,8 +1650,8 @@ meaning.
   gate, `--cleanup`'s own "every terminal path" list, the Final report's Consensus-status enum, and
   the "fresh invocation required" content) applies identically to it — differing only in WHEN it's
   detected (a failed JSONL-append verification, per "Review history log" → "Write" above, or a
-  stale `schema_version` on a resumed session's first line, per that same section's "Read
-  (continuity)") and WHY a fresh session is required (the review-history log — and therefore the
+  stale `schema_version` on a resumed session's first `.round`-bearing line, per that same
+  section's "Read (continuity)") and WHY a fresh session is required (the review-history log — and therefore the
   claim ledger it carries — can no longer be trusted for this session, not the snapshot). Treat
   every other mention of `🛑 SNAPSHOT INTEGRITY FAILURE` in this file as applying to this status
   too, except where a passage names one specifically and not the other.
@@ -1731,8 +1762,10 @@ omission rules. **The claim ledger (always on, no opt-in — see `references/cla
 appearance, present from its second occurrence onward) to every `claude_verification[]` entry, plus
 one new
 optional round-level array (`claim_closures[]`), present only on a round that actually closes one
-or more claims.** The session's FIRST line only also gains a top-level `schema_version` field (see
-`references/claim-ledger.md`'s legacy-session policy). **Execution telemetry (always on, no opt-in
+or more claims.** The session's first `.round`-bearing line only also gains a top-level
+`schema_version` field (see `references/claim-ledger.md`'s legacy-session policy — a
+`receipt_issued` line, having no `.round`, may legitimately precede it and is never mistaken for
+it). **Execution telemetry (always on, no opt-in
 — see "Execution telemetry" above and `references/execution-telemetry.md`) adds `execution`
 (top-level for a single-reviewer round, inside that group's own `groups[]` entry for a parallel
 round — present whenever that dispatch's own `$DISPATCH_PID` was actually captured, omitted entirely
@@ -1776,7 +1809,8 @@ is omitted entirely, and so are `investigation_evidence`, `kept_last_message_pat
 ```
 
 (`schema_version` shown here for illustration — in practice it appears ONLY on a session's first
-JSONL line, never repeated on every round; see `references/claim-ledger.md` section 10. A later
+`.round`-bearing JSONL line, never repeated on every round; see `references/claim-ledger.md`
+section 10. A later
 round reasserting an existing claim would additionally carry `"evidence_delta": "none"|"new"` on
 that `claude_verification[]` entry, and a round closing a claim would add a sibling
 `"claim_closures": [...]` array — both omitted from this baseline example since neither applies to
@@ -1787,7 +1821,9 @@ a claim's own first appearance.)
 read this file per this session's capture-evidence decision above) for its exact shape and
 omission rule.
 
-- `schema_version`: an integer, present ONLY on a session's first JSONL line, bumped only when a
+- `schema_version`: an integer, present ONLY on a session's first `.round`-bearing JSONL line (not
+  necessarily the physical first line — a `receipt_issued` line has no `.round` and may legitimately
+  precede it), bumped only when a
   future change alters how EXISTING lines must be interpreted (never for a purely additive field).
   See `references/claim-ledger.md` section 10 for the legacy-session `--resume` refusal policy this
   enables.
@@ -1863,10 +1899,15 @@ isolation" below for which failures that softer handling still applies to).
 **Read (continuity):** at the start of round R > 1, before building this round's History text,
 query the log rather than relying on memory:
 ```bash
-jq -c 'select(.round < 3)' ~/.claude/plugins/data/codex-stream-review/ccs-logs/<repo-slug>/<session-id>.jsonl
+jq -c 'select(.round? != null and .round < 3)' ~/.claude/plugins/data/codex-stream-review/ccs-logs/<repo-slug>/<session-id>.jsonl
 ```
 (substitute the actual current round number by hand — no live `$R` shell
-variable survives into a separately-dispatched call). **Also check the first `.round`-bearing
+variable survives into a separately-dispatched call). **The `.round? != null` guard is required, not
+cosmetic**: `jq` orders `null` below every number, so a bare `select(.round < 3)` would evaluate
+`null < 3` as true and silently include every `receipt_issued` line (which has no `.round` field at
+all) alongside the genuine round-outcome lines — corrupting the reconstructed round history with
+lines that were never rounds. Apply this same `.round? != null` guard to any other query in this
+skill that assumes every JSONL line carries `.round`. **Also check the first `.round`-bearing
 line's `schema_version` at this same point** (per `references/claim-ledger.md` section 10) — a
 `receipt_issued` line, having no `.round` field, is never mistaken for this line and is skipped by
 this scan; `receipt_issued` lines may legitimately precede the session's first round-outcome line
