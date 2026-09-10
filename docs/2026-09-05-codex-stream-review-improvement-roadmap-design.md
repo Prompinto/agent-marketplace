@@ -866,8 +866,12 @@ its `artifact_too_large` reason, the `🛑 INPUT TOO LARGE` status, and CI's `ex
 "INPUT_TOO_LARGE"`/`exit_code: 6`/`input_errors[]`) was **removed entirely** by a later PR
 (`04996d2`), independently reviewed clean over 4 rounds. A genuinely oversized prompt now simply
 surfaces as an ordinary dispatch failure (`timeout`, `nonzero_exit`, `no_final_answer`, etc.) —
-`input_errors` is always `null`, the CI exit-state enum has only 6 values (codes 0-5), and no
-concrete byte-size threshold is checked anywhere in `run-ccs-review.sh`. The rest of this section
+`input_errors` is always `null`, and the CI exit-state enum has only 6 values (codes 0-5). This is
+narrowly about the removed WHOLE-RENDERED-PROMPT preflight specifically — it does NOT affect the
+wrapper's separate, still-current per-untracked-file collection cap
+(`collect_untracked_files.py --max-bytes`, default 1 MiB, omission reason `over_size_limit`), which
+is an unrelated coverage-preserving limit on individual untracked files, not a prompt-size gate.
+The rest of this section
 (Item B, the durable interactive result artifact, and the 2026-09-06 implementation-review
 outcome below) is entirely UNAFFECTED and remains current. Item A's own text below is kept as the
 historical record of what was originally built and negotiated — do not treat it as describing
