@@ -317,6 +317,39 @@ latch, not the slower two-strikes bound. A future revision could address the roo
 capping open-claim evidence length, or reintroducing LLM summarization) — explicitly out of scope
 for v1 (see "Explicitly out of scope for v1" above).
 
+## Restart mechanism
+
+There is no way to shrink an existing thread's own context, so compaction means **abandoning the
+old thread and starting a genuinely fresh one**. A compaction attempt is entirely self-contained —
+its own success or failure is never itself reported as this round's terminal outcome (see
+"Failure isolation from the round loop" below).
+
+### Step 0 — the existing snapshot revalidation always runs first, unconditionally
+
+Round R's own pre-dispatch snapshot check (`references/snapshot-integrity.md`) — validating the
+CURRENTLY ACTIVE `SNAPSHOT_FILE`/`SNAPSHOT_DIGEST`, unrelated to anything compaction is about to
+do — runs exactly as it does for every other round, BEFORE the threshold check that decides
+whether to attempt compaction at all. If that existing check fails, the existing
+`🛑 SNAPSHOT INTEGRITY FAILURE` hard stop fires immediately, exactly as today — a corrupted active
+snapshot is never silently "fixed" by proceeding into a compaction attempt that would replace it
+with a fresh candidate; that would hide a real integrity failure rather than report it.
+
+**This "always runs first" is about ORDINARY per-round dispatch, not about reconstructing the
+remembered facts it checks against — those two are sequenced the other way around during
+continuity recovery.** This step's job is "does the ACTIVE file still match what Claude currently
+remembers," and it assumes that remembered value is already correct going in. Reconstructing what
+that remembered value SHOULD be, after an interruption, is the job of the post-append recovery
+logic instead (see "Retired- and provisional-snapshot durability" below) — a one-time,
+continuity-recovery-only step, run once, BEFORE this step's own check is ever invoked for the
+first round dispatched after that recovery, triggered by searching the WHOLE session log for the
+most recent round that ever recorded compaction lineage, never by checking only whether the
+LATEST completed line happens to be one (once even one ordinary round completes after a
+successful compaction, "the latest line" is no longer that compaction's own line). Once that
+recovery step has updated the remembered `SNAPSHOT_FILE`/`SNAPSHOT_DIGEST` (or confirmed no
+update was needed), this step proceeds exactly as already described, now correctly informed.
+Outside of continuity recovery — the ordinary case, no interruption having occurred — there is
+nothing to reconcile and this step simply runs first as originally stated.
+
 ## Scope (v1)
 
 - **Single-reviewer only (`GROUP="main"`).** Parallel mode is explicitly out of scope for v1 —
