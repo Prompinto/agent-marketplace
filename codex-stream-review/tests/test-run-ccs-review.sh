@@ -233,7 +233,7 @@ pd_assert_threadid_present() {
   fi
 }
 
-PD_VALID_VERDICT='{"verdict":"CLEAN","findings":[],"summary":null,"dimensions":{"correctness":{"status":"not_applicable","evidence":"e"},"security":{"status":"not_applicable","evidence":"e"},"performance":{"status":"not_applicable","evidence":"e"},"reuse":{"status":"not_applicable","evidence":"e"},"contracts":{"status":"not_applicable","evidence":"e"},"resources_concurrency":{"status":"not_applicable","evidence":"e"},"intent":{"status":"not_applicable","evidence":"e"}}}'
+PD_VALID_VERDICT='{"verdict":"CLEAN","findings":[],"summary":null,"dimensions":{"correctness":{"status":"not_applicable","evidence":"e"},"security":{"status":"not_applicable","evidence":"e"},"performance":{"status":"not_applicable","evidence":"e"},"reuse":{"status":"not_applicable","evidence":"e"},"contracts":{"status":"not_applicable","evidence":"e"},"resources_concurrency":{"status":"not_applicable","evidence":"e"},"intent":{"status":"not_applicable","evidence":"e"}},"material_reviewed":true,"material_receipt":null,"material_receipt_index":null}'
 
 # --- sanity: the fake codex itself, on a scenario meant to succeed,
 # actually produces ok:true (fresh and resume) -- every case below relies
@@ -1557,10 +1557,10 @@ rm -f "$FC_INVOCATION_LOG"
 # have advanced to 2.
 FC_GROUP_STATE="$(mktemp -d)"
 cat > "$FC_GROUP_STATE/round-0-final-answer.json" <<'EOF'
-{"verdict":"CLEAN","findings":[],"summary":"round zero scripted verdict","dimensions":{"correctness":{"status":"not_applicable","evidence":"e"},"security":{"status":"not_applicable","evidence":"e"},"performance":{"status":"not_applicable","evidence":"e"},"reuse":{"status":"not_applicable","evidence":"e"},"contracts":{"status":"not_applicable","evidence":"e"},"resources_concurrency":{"status":"not_applicable","evidence":"e"},"intent":{"status":"not_applicable","evidence":"e"}}}
+{"verdict":"CLEAN","findings":[],"summary":"round zero scripted verdict","dimensions":{"correctness":{"status":"not_applicable","evidence":"e"},"security":{"status":"not_applicable","evidence":"e"},"performance":{"status":"not_applicable","evidence":"e"},"reuse":{"status":"not_applicable","evidence":"e"},"contracts":{"status":"not_applicable","evidence":"e"},"resources_concurrency":{"status":"not_applicable","evidence":"e"},"intent":{"status":"not_applicable","evidence":"e"}},"material_reviewed":true,"material_receipt":null,"material_receipt_index":null}
 EOF
 cat > "$FC_GROUP_STATE/round-1-final-answer.json" <<'EOF'
-{"verdict":"CLEAN","findings":[],"summary":"round one scripted verdict","dimensions":{"correctness":{"status":"not_applicable","evidence":"e"},"security":{"status":"not_applicable","evidence":"e"},"performance":{"status":"not_applicable","evidence":"e"},"reuse":{"status":"not_applicable","evidence":"e"},"contracts":{"status":"not_applicable","evidence":"e"},"resources_concurrency":{"status":"not_applicable","evidence":"e"},"intent":{"status":"not_applicable","evidence":"e"}}}
+{"verdict":"CLEAN","findings":[],"summary":"round one scripted verdict","dimensions":{"correctness":{"status":"not_applicable","evidence":"e"},"security":{"status":"not_applicable","evidence":"e"},"performance":{"status":"not_applicable","evidence":"e"},"reuse":{"status":"not_applicable","evidence":"e"},"contracts":{"status":"not_applicable","evidence":"e"},"resources_concurrency":{"status":"not_applicable","evidence":"e"},"intent":{"status":"not_applicable","evidence":"e"}},"material_reviewed":true,"material_receipt":null,"material_receipt_index":null}
 EOF
 export FAKE_CODEX_SCENARIO=normal FAKE_CODEX_GROUP_STATE="$FC_GROUP_STATE"
 OUT_R0="$(pd_run fresh)"

@@ -30,7 +30,10 @@ print(json.dumps({
   'verdict': 'ISSUES',
   'findings': [{'file':'lib.py','line':2,'severity':'low','summary':'huge finding for byte-budget test','evidence': $HUGE_EVIDENCE_JSON,'verification':'v'}],
   'summary': None,
-  'dimensions': {d: {'status':'checked','evidence':'e'} for d in ['correctness','security','performance','reuse','contracts','resources_concurrency','intent']}
+  'dimensions': {d: {'status':'checked','evidence':'e'} for d in ['correctness','security','performance','reuse','contracts','resources_concurrency','intent']},
+  'material_reviewed': True,
+  'material_receipt': None,
+  'material_receipt_index': None
 }))
 " > "$ROUND1_ANSWER_FILE"
 
