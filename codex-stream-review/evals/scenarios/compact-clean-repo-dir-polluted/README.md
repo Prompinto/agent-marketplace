@@ -1,6 +1,6 @@
 # Scenario: compact-clean-repo-dir-polluted
 
-**Group:** F (`compaction.md` opt-in-feature coverage) — the one scenario in this suite covering
+**Group:** H (`compaction.md` opt-in-feature coverage) — the one scenario in this suite covering
 `references/compaction.md`'s "Restart mechanism" step 2 `CLEAN_REPO_DIR` cleanliness recheck,
 for a genuine non-repo-artifact session.
 

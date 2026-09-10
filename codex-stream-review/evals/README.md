@@ -77,14 +77,14 @@ Their coverage lives instead as Tier 1 unit tests in `tests/test-run-ccs-review.
 total)** -- one per distinct terminal/latch outcome the opt-in thread-compaction feature
 introduces: the basic successful restart, the benefit-free-restart-loop baseline circuit breaker,
 the byte-budget preflight latch, the retry-topology fresh-B escalation, and the `CLEAN_REPO_DIR`
-cleanliness recheck's fail-closed behavior. Four of the five (`compact-trigger-uncommitted-success`,
-`compact-baseline-still-over-threshold`, `compact-byte-budget-exceeded`,
-`compact-fresh-b-escalation`) fabricate a synthetic `.result.json`/session `.jsonl` pair directly
-and run only `expect.sh` against it, matching Groups A-D's own scripted convention. The fifth,
-`compact-clean-repo-dir-polluted`, requires genuine mid-session manual intervention (planting a
-stray file into a path `/ccs` itself only allocates at runtime) and was driven as a real, live
-`codex-stream-review:ccs --compact` session — see that scenario's own `README.md` for why it can't
-be pre-scripted the way the other four are. The `COMPACTION_CONSECUTIVE_FRESH_FAILURES`
+cleanliness recheck's fail-closed behavior. All five follow this harness's own standard two-phase
+convention (`setup.sh`, then a live `codex-stream-review:ccs --compact` invocation, then
+`check-result.sh` against the real resulting `.result.json`) -- see each scenario's own
+`README.md` for its exact task text/env vars. `compact-clean-repo-dir-polluted` is the one
+scenario among the five needing genuine mid-session manual intervention (planting a stray file
+into a path `/ccs` itself only allocates at runtime, printed during the live session rather than
+knowable in advance) -- see that scenario's own `README.md` for why it can't be as fully
+pre-scripted as the other four. The `COMPACTION_CONSECUTIVE_FRESH_FAILURES`
 repeated-fresh-dispatch-failure circuit breaker and the digest structural-verification-failure path
 are not separately covered here — both are straightforward compositions of mechanics these five
 scenarios already exercise individually, and can be added later following the exact same pattern.
