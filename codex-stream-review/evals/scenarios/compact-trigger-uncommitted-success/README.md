@@ -50,4 +50,6 @@ bash codex-stream-review/evals/check-result.sh <result.json> compact-trigger-unc
 - `threads`: two entries -- `{"group":"main","thread_id":B,"kind":"current","cleanup":"deleted"}`
   and `{"group":"main","thread_id":A,"kind":"leaked","cleanup":"deleted"}`
 - The fixed invocation log shows exactly 2 `mode=fresh ` lines (two DIFFERENT `thread_id` values
-  -- A then B) and ZERO `mode=resume ` lines.
+  -- A then B) and ZERO `mode=resume ` lines. `expect.sh` also cross-references the specific IDs:
+  `leaked` must equal the FIRST fresh dispatch's `thread_id` (A) and `current` must equal the
+  SECOND (B) -- not merely "two distinct IDs exist in each of two places".

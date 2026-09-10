@@ -45,8 +45,14 @@ else
   check "invocation log fresh-mode count" "$FRESH_COUNT" "2"
   check "invocation log resume-mode count" "$RESUME_COUNT" "0"
 
-  FRESH_DISTINCT_IDS="$(grep '^mode=fresh ' "$INVOCATION_LOG" | sed -E 's/^mode=fresh thread_id=([^ ]*).*/\1/' | sort -u | wc -l | tr -d ' ')"
+  FRESH_IDS_ORDERED="$(grep '^mode=fresh ' "$INVOCATION_LOG" | sed -E 's/^mode=fresh thread_id=([^ ]*).*/\1/')"
+  FRESH_DISTINCT_IDS="$(echo "$FRESH_IDS_ORDERED" | sort -u | wc -l | tr -d ' ')"
   check "distinct thread_id values across the 2 fresh invocations" "$FRESH_DISTINCT_IDS" "2"
+
+  FIRST_FRESH_ID="$(echo "$FRESH_IDS_ORDERED" | sed -n '1p')"
+  SECOND_FRESH_ID="$(echo "$FRESH_IDS_ORDERED" | sed -n '2p')"
+  check "leaked thread_id matches the FIRST fresh dispatch (original candidate A)" "$LEAKED_ID" "$FIRST_FRESH_ID"
+  check "current thread_id matches the SECOND fresh dispatch (post-compaction thread B)" "$CURRENT_ID" "$SECOND_FRESH_ID"
 fi
 
 exit "$FAIL"
