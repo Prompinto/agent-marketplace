@@ -109,6 +109,72 @@ baseline that IS `>= COMPACT_THRESHOLD`: record `compaction_disabled_reason: "ba
 and disable compaction for the remainder of the session. An unverifiable baseline is treated as a
 failed one, not a free pass.
 
+**A second circuit breaker for repeated FAILED fresh-dispatch attempts.** The baseline guard
+above only ever engages after a compaction dispatch SUCCEEDS. Every `ok:false` compaction
+attempt — including `timeout` (a real possibility for a genuinely large diff, given the
+wrapper's own default fresh-dispatch deadline of 1800 seconds) and `nonzero_exit` — instead falls
+through to the normal fallback `--resume` (see "On failure" below), with the threshold check
+simply running again next round. A diff large/slow enough to reliably time out the fresh dispatch
+would otherwise trigger another identical, doomed fresh attempt every single subsequent round.
+
+Fixed: a second session-scoped counter, `COMPACTION_CONSECUTIVE_FRESH_FAILURES`, increments by
+one every time a compaction attempt's own fresh dispatch (after exhausting whatever bounded retry
+the retry topology below already applies to that one round's own attempt) still ends up
+`ok:false` and falls through to the fallback — and resets to `0` every time a compaction attempt
+succeeds. This counter must ALSO increment on a purely LOCAL pre-dispatch failure, not only a
+wrapper `ok:false` — a persistent local problem (the candidate's own `git diff`/`shasum`
+collection failing, or the byte preflight's own authoritative untracked-file collector invocation
+failing) falls straight through to the fallback WITHOUT ever reaching a real wrapper dispatch at
+all, so this counter is broadened to increment on ANY compaction attempt that falls through to
+the fallback without completing a real successful compaction — local collection/hash failure,
+local preflight-collector failure, OR a wrapper `ok:false` alike — the one exception being
+`byte_budget_exceeded`, which gets its own dedicated, immediate latch (see "Byte-budget
+preflight" below) precisely because a successful measurement over budget is a distinct,
+already-fully-diagnosed cause that doesn't need this counter's slower two-strikes bound.
+
+Once this counter reaches `COMPACTION_MAX_CONSECUTIVE_FRESH_FAILURES = 2`, compaction is disabled
+for the remainder of the session — via the same `compaction_disabled_reason` mechanism below,
+with the value `"repeated_fresh_dispatch_failure"` — a small, deliberately conservative bound
+consistent with this design's other fixed, non-configurable limits (`COMPACT_THRESHOLD`,
+`CLOSED_CLAIM_LIMIT`, `COMPACT_BYTE_BUDGET`).
+
+**Durable recording — the counter's own intermediate value, not only the final "disabled"
+decision.** Every round whose own compaction attempt fails (falls through to the fallback)
+durably records the counter's CURRENT value (after incrementing) as a new field,
+`compaction_attempt_failure_count`, on that round's own line — this is a pre-append-decided
+value, exactly like `compaction_attempt_failed_thread` (see "Retry topology" and "Ordering on
+success" below), since the failure is known before that round's own real (fallback) result is
+ever logged. Without this, a session recovering from a lost in-memory state after exactly ONE
+fresh-dispatch failure — not yet two — would reconstruct the counter as `0`, silently doubling
+the effective failure budget across that recovery event.
+
+**A successful compaction's own reset must be durably recorded too.** A successful compaction
+round (the same round already appending `compacted_from_thread` and the `snapshot_digest_*` pair
+— see "Restart mechanism" below) ALSO durably records `compaction_attempt_failure_count: 0` on
+that SAME line, explicitly representing the reset rather than leaving it implicit. Without this,
+a state-loss recovery reading only the latest recorded value across the log could find an OLDER
+nonzero count from before a since-succeeded reset and restore it as if no reset had ever
+happened — the very next fresh-dispatch failure after that recovery would then reach `2` and
+wrongly disable compaction, even though it is really only the first consecutive failure since the
+last success. Continuity recovery reconstructs `COMPACTION_CONSECUTIVE_FRESH_FAILURES` from
+whichever of these two fields — a failure's incremented value or a success's explicit `0` — was
+recorded MOST RECENTLY across the whole session log (by round order, not by which field name it
+is), defaulting to `0` only when neither has ever been recorded at all.
+
+**The "disabled for the rest of the session" decision must be durably logged and recoverable —
+never in-memory-only.** The compaction round that sets this latch (because its own baseline was
+`>= COMPACT_THRESHOLD`, its own telemetry was unusable, `COMPACTION_CONSECUTIVE_FRESH_FAILURES`
+reached its bound, OR the byte preflight below found the exact assembled payload over
+`COMPACT_BYTE_BUDGET`) durably records a new field, `compaction_disabled_reason` (a short
+string — exactly one of `"baseline_at_or_above_threshold"`, `"baseline_unusable"`,
+`"repeated_fresh_dispatch_failure"`, or `"byte_budget_exceeded"`), on that SAME round's own JSONL
+line — never a separate append. `SKILL.md`'s continuity recovery (see "Review history log" →
+"Read (continuity)") is extended, alongside its existing reconstruction of
+`GROUP_THREADS`/`LEAKED_THREAD_IDS`/claim state, to also check whether ANY prior round in the
+session's log ever recorded this field — if so, compaction is reconstructed as disabled for the
+rest of the session, exactly matching whatever the original in-memory decision would have been,
+never silently forgotten and re-enabled.
+
 ## Scope (v1)
 
 - **Single-reviewer only (`GROUP="main"`).** Parallel mode is explicitly out of scope for v1 —
