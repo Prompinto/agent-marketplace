@@ -350,6 +350,144 @@ update was needed), this step proceeds exactly as already described, now correct
 Outside of continuity recovery — the ordinary case, no interruption having occurred — there is
 nothing to reconcile and this step simply runs first as originally stated.
 
+### Step 1 — build and verify `COMPACT_DIGEST`
+
+Build `COMPACT_DIGEST` via the structured-data-first construction in "Digest construction and
+verification" above; abort to the normal `--resume` fallback (step 6 below) immediately if its
+own structural verification fails.
+
+### Step 2 — non-repo-artifact sessions are a SEPARATE case, handled BEFORE the scope branches below
+
+A non-repo-artifact session (`references/non-repo-artifact.md`) dispatches `--uncommitted`
+against an intentionally EMPTY `CLEAN_REPO_DIR` — the actual reviewed material lives only in
+`--focus` text, never in the diff. If compaction naively re-collected "the diff" here, it would
+recollect an empty diff and the fresh thread would never see the artifact at all. Fixed: for a
+non-repo-artifact session, compaction (a) allocates NO new snapshot — like `--commit` scope, the
+ORIGINAL round-1 snapshot (which already holds the exact pasted artifact bytes for this session
+type, per `references/snapshot-integrity.md`) remains active and untouched throughout; (b) the
+fresh restart's focus text includes the ORIGINAL ARTIFACT TEXT in addition to `COMPACT_DIGEST` —
+exactly mirroring how round 1 itself had to paste the artifact into focus text for this session
+type.
+
+**Bind the dispatched bytes to the SAME verified copy the hash-check ran against — never a
+separate re-read.** Read `SNAPSHOT_FILE`'s content into a captured copy exactly ONCE, at this
+step — hash that SAME captured copy and confirm it equals `SNAPSHOT_DIGEST` before using it for
+anything. If it matches, embed that verified copy's content into the fresh restart's focus text
+(never re-open or re-read the original file a second time for this purpose). If it does NOT
+match, this is the EXISTING `🛑 SNAPSHOT INTEGRITY FAILURE` hard stop, exactly as an ordinary
+round's own pre-dispatch revalidation already handles.
+
+**Revalidate `CLEAN_REPO_DIR`'s own cleanliness before trusting it — never simply assumed.**
+`CLEAN_REPO_DIR` is created once and reused for the whole session — if anything unexpected
+polluted it since round 1, a fresh dispatch against it would collect REAL tracked/untracked
+content and silently mix it into what is supposed to be a strictly artifact-only review.
+`git status`, in ANY combination of flags, can never prove the directory holds nothing —
+committed content is invisible to it entirely (confirmed live: `git status --short
+--untracked-files=all --ignored=matching` reports changes RELATIVE TO `HEAD` and produces EXACTLY
+ZERO bytes of output against an ordinary clean repo with real committed files, while
+`git ls-files`/`git rev-parse --verify -q HEAD` both show real content is present).
+
+Cleanliness means ALL EIGHT of the following checks pass — a bare, freshly-`git init`'d,
+genuinely-independent, non-symlinked, self-contained git repo directory with no files, no
+commits, no borrowed metadata, and no borrowed objects:
+
+1. **No stray entries.** The directory contains NO entries at all other than `.git` itself — a
+   literal directory listing, e.g. `find "$CLEAN_REPO_DIR" -mindepth 1 -maxdepth 1 ! -name .git`,
+   through the same anchored/sanitized invocation pattern as every other direct git-adjacent call
+   in this skill, expected to produce no output.
+2. **Genuinely inside a work tree.** `git rev-parse --is-inside-work-tree` expected to output
+   EXACTLY `true`.
+3. **HEAD has never been given a commit.** `git rev-parse --verify -q HEAD` expected to FAIL/exit
+   nonzero (an unborn HEAD).
+4. **`CLEAN_REPO_DIR`'s own literal path is NOT a symlink.** `[ ! -L "$CLEAN_REPO_DIR" ]` —
+   otherwise `CLEAN_REPO_DIR` could be swapped for a symlink pointing at a DIFFERENT, also-empty,
+   also-commit-less git repo, and checks 1-3 would still report clean while every dispatch
+   actually operated against a completely different directory.
+5. **`CLEAN_REPO_DIR` is the ROOT of its own independent repository, not merely nested inside
+   one.** `git rev-parse --show-toplevel` output EQUALS `CLEAN_REPO_DIR`'s own canonical path
+   exactly — `--is-inside-work-tree` alone only confirms the path lives SOMEWHERE inside SOME
+   working tree (confirmed live: a nested subdirectory of an unrelated repository also reports
+   `--is-inside-work-tree=true`, while its own `--show-toplevel` correctly resolves to the PARENT
+   repository, not itself).
+6. **`.git` itself is a genuine, self-contained directory.** `[ -d "$CLEAN_REPO_DIR/.git" ] && [
+   ! -L "$CLEAN_REPO_DIR/.git" ]` — never a plain file (the standard git-worktree gitfile format,
+   `gitdir: <path>`) and never a symlink; both would let a linked git WORKTREE's own
+   `--show-toplevel` return its own local root (satisfying check 5) while its `--git-dir`/
+   `--git-common-dir` point OUTSIDE it, into a completely different repository's shared metadata.
+7. **No `git-dir`/`common-dir` metadata borrowing.** `git rev-parse --git-dir` AND
+   `git rev-parse --git-common-dir`, each resolved to its own canonical absolute path, must BOTH
+   equal `CLEAN_REPO_DIR/.git`'s own canonical absolute path — this subsumes both the
+   gitfile/symlink indirection (check 6) and a separate, independent `commondir`-file indirection
+   (per git's own `gitrepository-layout(5)`: a `commondir` file inside an otherwise entirely
+   ordinary, non-symlink `.git` directory sets the effective `GIT_COMMON_DIR` to its own target,
+   confirmed live to pass every check through check 6 while `git rev-parse --git-common-dir`
+   reveals the borrowed external path).
+8. **No object-store borrowing.** `CLEAN_REPO_DIR/.git/objects/info/alternates` must NOT exist
+   (or, if present, must be empty) — per git's own `gitrepository-layout(5)` documentation, this
+   file lets git borrow OBJECTS from a listed external repository's own object store, entirely
+   independent of `--git-dir`/`--git-common-dir` (confirmed live: with such a file present, all
+   seven checks above still pass while `git cat-file -p` successfully reads real content from the
+   foreign repository's own object store).
+
+**A candid scope statement.** This checklist cannot claim to be an EXHAUSTIVE, adversarially-
+hardened defense against every conceivable git extension point (hooks, submodules, custom refs,
+sparse-checkout redirection, and others not yet enumerated) — closing each CONFIRMED gap as it is
+found is the practical, honest bar this design holds itself to. `CLEAN_REPO_DIR` is created once
+by this skill's own trusted Phase 0 setup; these checks exist to catch UNEXPECTED, ACCIDENTAL
+drift, not to defend against a deliberately adversarial actor with enough local access to plant a
+crafted `.git` directory in the first place (that same actor would have comparable access to
+sabotage the session through many other paths this design has no power to close either). A
+residual, disclosed risk this does not close: `scripts/lib/git-safe.sh`'s own sanitization
+protects the WRAPPER's own git invocations specifically — it says nothing about whatever Codex
+itself might independently choose to read or execute from `.git/config` during its own
+investigation of this same CWD; hardening Codex's own sandboxed behavior against a hypothetically
+malicious `.git` directory is a base-sandbox-model concern beyond this design's own scope. A
+second residual, disclosed risk: a check-then-use race remains between these eight checks
+completing and the wrapper's own LATER, separate re-resolution of the same `$CWD` pathname (once
+for its own `git -C "$CWD"` calls, once for its `cd "$CWD"` launch step) — inherent to any
+"verify a pathname locally, then hand it to a separately-invoked process" pattern, accepted as a
+narrow, low-probability window. This compaction-owned recheck is the ONLY point at which
+`CLEAN_REPO_DIR`'s cleanliness is EVER verified anywhere in this whole mechanism — round 1's own
+very first artifact dispatch, and any session that never triggers compaction at all, remain fully
+exposed to this same pollution risk with NO check of any kind, a real, disclosed, PRE-EXISTING
+gap in the base mechanism itself, not introduced or widened by compaction, and out of scope for
+this feature to close (doing so would mean adding a new check to the base skill's own Phase 0/
+Phase 1 setup, which this file does not own).
+
+If any of the eight checks is not clean, this is treated exactly like any other compaction
+failure (log the narration, fall through to the normal `--resume` fallback in step 6 below) —
+never dispatch against a `CLEAN_REPO_DIR` whose emptiness wasn't just reconfirmed. Only once this
+check passes does the `--uncommitted` dispatch against `CLEAN_REPO_DIR` proceed, producing an
+empty diff as designed, with the wrapper's own no-diff branch falling back to reviewing the focus
+text — now containing both the artifact and the digest.
+
+**This recheck runs before EVERY separate fresh dispatch for a non-repo-artifact session** — the
+original attempt, the no-threadId fresh retry (see "Retry topology" below), and thread B's own
+fresh dispatch alike — never assumed still valid from an earlier check moments or minutes in the
+past. **Also required immediately before the step-6 fallback dispatch**, whenever this session is
+non-repo-artifact: if it fails there, this is logged as a disclosed risk, never a hard stop, since
+the fallback is this round's own real, required outcome with no further fallback beneath it.
+Ordinary, non-compaction `--resume` rounds sharing this identical base-skill property (no round
+is otherwise ever forced to recheck `CLEAN_REPO_DIR`'s cleanliness before an ordinary resume) are
+an inherited, pre-existing limitation this feature does not newly introduce.
+
+**Fail CLOSED wherever a real alternative still exists.** Candidate A's own resume-retries and
+the bullet-3 same-thread retry (see "Retry topology" below) treat a failed recheck exactly like
+any other compaction failure — abandon this compaction attempt, fall through to step 6's
+fallback, never dispatch into a KNOWN-polluted directory. This abandonment unconditionally adds
+A's own already-known thread id to `LEAKED_THREAD_IDS`/`compaction_attempt_failed_thread` before
+falling through — this is a LOCAL, pre-dispatch check failure, never a wrapper response, so the
+abandonment is entirely local knowledge, nothing to discover from a response. The "log and
+continue, disclosed risk" treatment is reserved ONLY for the step-6 fallback dispatch itself and
+any retry OF that fallback — the true last resort, genuinely having nowhere further to fall back
+to. The ORIGINAL fresh dispatches (candidate A's first attempt, the no-threadId retry, thread B)
+keep their existing hard "fall through to the normal compaction failure path" behavior when this
+recheck fails.
+
+**A non-repo-artifact round is always single-group `main` anyway** (see "Scope (v1)" above and
+`references/non-repo-artifact.md`), so this recheck never interacts with any group-count merge
+logic.
+
 ## Scope (v1)
 
 - **Single-reviewer only (`GROUP="main"`).** Parallel mode is explicitly out of scope for v1 —
