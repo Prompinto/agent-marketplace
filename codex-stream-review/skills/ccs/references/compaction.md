@@ -132,7 +132,7 @@ local preflight-collector failure, OR a wrapper `ok:false` alike — the one exc
 preflight" below) precisely because a successful measurement over budget is a distinct,
 already-fully-diagnosed cause that doesn't need this counter's slower two-strikes bound.
 
-Once this counter reaches `COMPACTION_MAX_CONSECUTIVE_FRESH_FAILURES = 2`, compaction is disabled
+Once this counter reaches `COMPACTION_MAX_CONSECUTIVE_FAILURES = 2`, compaction is disabled
 for the remainder of the session — via the same `compaction_disabled_reason` mechanism below,
 with the value `"repeated_fresh_dispatch_failure"` — a small, deliberately conservative bound
 consistent with this design's other fixed, non-configurable limits (`COMPACT_THRESHOLD`,
