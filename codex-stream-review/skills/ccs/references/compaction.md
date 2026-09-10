@@ -1148,6 +1148,85 @@ per round number):
    through the EXISTING mandatory append-verify hard stop — these fields inherit that same
    mandatory (never best-effort) guarantee.
 
+## Failure isolation from the round loop
+
+A compaction attempt's own dispatch (steps 4-6 of "Restart mechanism"/"On failure" above) must
+never be confused with, or reported as, a SEPARATE round from the loop's perspective.
+Concretely, round R has exactly ONE real OUTCOME, not one literal network call — "never both"
+describes the RESULT, never the dispatch count: a failed fresh compaction attempt IS explicitly
+followed by a real, required, SEPARATE fallback `--resume` dispatch — two genuine network calls
+for that one round, not one. Round R's own real, reportable OUTCOME is either the compaction
+fresh-dispatch's own success or the fallback `--resume`'s own result — never both simultaneously
+claimed as round R's terminal status — and a compaction attempt's own failure reason (e.g.
+`artifact_too_large`) is NEVER surfaced as round R's own terminal status regardless of how many
+underlying dispatches it took to get there; it is purely an internal detail of "how round R's
+real outcome was reached," logged as one narration line plus the durable `compaction_attempt_*`
+fields above.
+
+**This directly conflicts with two of `references/retry-guards.md`'s own contracts — shipping
+this feature requires a companion amendment to that file (see Task 19):**
+1. `references/retry-guards.md`'s own MANDATORY terminal-outcome rules for `artifact_too_large`
+   (required to end the group/round as `🛑 INPUT TOO LARGE`) and exhausted retries (required to
+   end as `⚠️ COULD NOT VERIFY`) do NOT apply to a failure occurring WITHIN a self-contained
+   compaction ATTEMPT on the NEW candidate thread specifically — this design deliberately absorbs
+   that failure into "fall through to the fallback" rather than surfacing it as the round's own
+   terminal status. A compaction attempt is not "a group" in `retry-guards.md`'s own sense; it is
+   an internal sub-step of producing round R's one real outcome. The base skill's own ordinary,
+   non-compaction failure handling for a REAL group's `ok:false` response remains governed by
+   `retry-guards.md`'s existing, unmodified rules.
+2. `references/retry-guards.md`'s own no-threadId-fresh-retry and fresh-B escalation rules are
+   explicitly scoped to a group's OWN true first-ever attempt, "only possible on round 1" — but a
+   compaction restart's own candidate dispatch is STRUCTURALLY always at session round 2 or
+   later. For candidate A specifically (never B — B already gets NONE of bullets 1-4's retry
+   machinery, per "Retry topology" above, and a broader "any compaction candidate" wording would
+   silently re-enable exactly the bug that exclusion closes), `retry-guards.md`'s own "no entry
+   yet"/"true first-ever attempt" language is keyed on the CANDIDATE's own independent
+   thread-history tracking (see "Retry topology" above), NOT on the session's own round-index,
+   and NOT on `GROUP_THREADS` (which keeps meaning the OLD, pre-existing thread throughout a
+   compaction attempt, per this section above). Candidate A is its own independent "first
+   attempt" lifecycle for these SPECIFIC mechanics, by construction, REGARDLESS of what round
+   number in the session it actually occurs at — the base skill's own ordinary round-1 groups
+   keep `retry-guards.md`'s literal round-1 scoping exactly as written; this is a scoped
+   exception for candidate A only, never B, and never a change to what "round 1" means for an
+   ordinary group.
+
+## Interaction with `--keep-evidence`
+
+It is not yet known, at compaction time, whether this SESSION will end CLEAN or not — and the
+`--keep-evidence` contract requires every thread in `GROUP_THREADS`/`LEAKED_THREAD_IDS` to
+survive an eligible non-CLEAN outcome for later inspection. **The old thread is never eagerly
+deleted.** "Ordering on success"'s own promotion step above always routes it through the EXISTING
+`LEAKED_THREAD_IDS` mechanism instead of a direct `--cleanup` call — `SKILL.md`'s Phase 3's
+already-keep-evidence-gated terminal cleanup then handles it with zero special-casing: deleted
+normally on `✅ CLEAN` (or any outcome with `--keep-evidence` OFF), preserved alongside the new
+thread on an eligible non-CLEAN outcome with `--keep-evidence` ON. This reuses machinery that
+already exists for exactly this "an earlier thread was abandoned mid-session" shape (see
+`SKILL.md`'s own Guards → "Empty / failed review" handling for round-1 retries), rather than
+inventing a second cleanup path with its own edge cases.
+
+## Durable backstop for abandoned threads
+
+`LEAKED_THREAD_IDS`/`GROUP_THREADS` are in-memory facts Claude carries across separately-
+dispatched tool calls for the rest of the run — the existing design already relies on this for
+ordinary round-1 retries. Compaction adds more state of this shape (an abandoned old thread on
+every successful restart; a dead-end thread on every failed attempt), extended to cover both here
+too, rather than leaving compaction as the one mechanism relying on memory alone:
+- A successful compaction's `compacted_from_thread` field (already logged — see "Logging" below)
+  is itself sufficient to reconstruct that the named thread is abandoned and needs the same
+  treatment as a `LEAKED_THREAD_IDS` entry, purely by reading the JSONL log.
+- A FAILED compaction attempt's own threadId(s) (when any exist) are additionally recorded as a
+  REQUIRED field on that same round's own single JSONL line (never a separate append, and never
+  best-effort — see "On failure" above) — `compaction_attempt_failed_thread`, an ARRAY of 1 or 2
+  thread ids (see "Retry topology" above). This field is what makes the "never permanently
+  unaccounted-for" guarantee actually true, so it inherits the SAME mandatory append-verify
+  guarantee as the rest of that round's line.
+- `SKILL.md`'s Phase 3 and the final-verdict artifact's own thread enumeration
+  (`references/keep-evidence.md`'s retention rules; the `threads[]` array in the durable result
+  artifact) are both extended to union in every `compacted_from_thread` and
+  `compaction_attempt_failed_thread` value found anywhere in the session's own JSONL log, in
+  addition to whatever `GROUP_THREADS`/`LEAKED_THREAD_IDS` memory currently holds (see Task 21
+  for the exact `SKILL.md` edit).
+
 ## Scope (v1)
 
 - **Single-reviewer only (`GROUP="main"`).** Parallel mode is explicitly out of scope for v1 —
