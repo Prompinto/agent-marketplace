@@ -1067,6 +1067,87 @@ ordinary "On failure" compaction-fallback path below, which structurally cannot 
 round's own success line is already committed. Each retry attempt REPEATS both live checks above
 first, immediately before that specific attempt's own `mv`.
 
+## On failure
+
+On any `ok:false` reason (including `artifact_too_large`) — self-contained fallback, never this
+round's own terminal outcome, and NEVER a separate JSONL append (a standalone append for the
+failed attempt would conflict with the append-verify contract requiring exactly one JSONL object
+per round number):
+
+1. **Three independent checks on the failed attempt's own response — each captured whenever
+   present, none gated on whether another is present** (`no_thread_started` carries no
+   `threadId`, since the wrapper's own reason table shows that branch requires an empty
+   `THREAD_ID`, but still carries a genuine `execution` object, since Codex was already launched
+   and timed before that failure was detected — nesting the captures would silently drop real
+   telemetry):
+   - If a `threadId` is present, remember it in-memory in `LEAKED_THREAD_IDS` immediately — this
+     is a REQUIRED step whenever a threadId exists, not best-effort (see "Durable backstop for
+     abandoned threads" below).
+   - If an `execution` object is present, remember it (see "Preserving failed-attempt telemetry"
+     below).
+   - **A failed compaction attempt's coverage is DURABLY LOGGED for audit, but NEVER folded into
+     the shared convergence-gating reducer.** `coverage` describes whether file COLLECTION
+     completed for the CANDIDATE diff — it says nothing about whether a real Codex VERDICT was
+     ever produced for that candidate. When the attempt fails, the candidate is discarded and the
+     round falls back to `--resume` on the OLD thread, which only ever continues reviewing the
+     OLD thread's own original diff context (`--resume` cannot be combined with a scope flag and
+     never re-collects a diff). Folding the candidate's own "complete" collection status into the
+     session's overall coverage would therefore claim the codebase was fully reviewed when the
+     specific content that triggered this compaction attempt was, in fact, reviewed by NOBODY.
+     This DIFFERS from `references/retry-guards.md`'s existing round-1 retry precedent, which
+     works because retrying preserves and eventually resumes the SAME thread that will itself go
+     on to produce a real verdict for that SAME collected diff — a failed COMPACTION attempt's
+     fallback explicitly does NOT do this.
+
+     Fixed: `compaction_attempt_coverage` is still recorded on the round's own JSONL line
+     whenever a real FRESH `--uncommitted` wrapper dispatch specifically was attempted and
+     returned `ok:false` — `coverage.source` when present, or the `"unknown"` sentinel when
+     absent — but purely as a durable, best-effort AUDIT record. This is scoped to a failed FRESH
+     `--uncommitted` dispatch alone — never a failed `--resume` call within the same round's own
+     retry machinery, which never carries coverage at all. It is explicitly EXCLUDED from the
+     shared reducer's convergence-gating computation — the CLEAN gate, continuity recovery, and
+     the final artifact's own `coverage` field all consider ONLY successful fresh `--uncommitted`
+     dispatches' coverage (round 1, or a compaction restart that actually succeeded), never a
+     failed attempt's. A LOCAL pre-dispatch failure (digest verification, candidate collection/
+     hash failure, or the byte-size preflight rejection) records no coverage field at all, for
+     the same underlying reason plus the additional fact that no real dispatch was ever
+     attempted. For `--base`/`--commit` scope, no coverage field is ever recorded. A non-repo-
+     artifact session is NOT exempt from the general rule that a SUCCESSFUL restart's coverage
+     DOES fold into the reducer — its `--uncommitted` dispatch against `CLEAN_REPO_DIR` DOES
+     report coverage on success, ordinarily `{"status":"complete","reviewed_file_count":0,
+     "omitted":[]}` against the always-empty clean repo — but a FAILED non-repo-artifact
+     compaction attempt's coverage is excluded from the reducer for the exact same reason as any
+     other scope's failed attempt.
+2. Delete the candidate snapshot file (if one was allocated this attempt — never for `--commit`
+   scope or a non-repo-artifact session, neither of which allocates one) — it was never used for
+   anything. On a failed deletion here, add its path to `retired_snapshot_files` (see "Restart
+   mechanism" step 3 above).
+3. Log one narration line noting the compaction attempt failed and why.
+4. Fall through to a NORMAL `--resume` dispatch against the STILL-ALIVE old thread (still the
+   active `GROUP_THREADS` entry — never touched by a failed attempt), validated against the
+   STILL-ACTIVE, untouched original snapshot, using this round's real History/Scope focus text
+   exactly as an ordinary round would — this IS round R's real dispatch in the failure case.
+   **This fallback dispatch is subject to the EXISTING retry-by-failure-reason procedure
+   (`references/retry-guards.md`) exactly like any other round's own dispatch would be** — the
+   compaction-attempt fields from steps 1 and 3 above are carried through that entire retry
+   sequence in memory, and attached only once, to whatever single result eventually gets
+   appended for round R (its own eventual accepted success, or its own eventual terminal
+   non-CLEAN outcome if retries are exhausted) — never an intermediate failed fallback attempt
+   logged as if it were round R's final result. The compaction threshold check runs again next
+   round if still exceeded.
+5. **This round's own single JSONL line — written once, after step 4's fallback dispatch (and any
+   of its own retries) reaches its final result, exactly like any other round — additionally
+   carries the failed attempt's own `compaction_attempt_failed_thread` (and
+   `compaction_attempt_execution`, when available) as REQUIRED fields on THAT SAME line whenever
+   step 1 applies**, alongside the incremented `compaction_attempt_failure_count` this failure
+   already produced (see "Trigger" above — the same counter, not a new one). There is no separate
+   append for the failed attempt at any point — round R
+   still produces exactly one JSONL object, satisfying the existing one-object-per-round
+   append-verify contract unchanged; the failed attempt is recorded only as additional fields
+   riding on round R's own real (fallback) result, and — because that line's append already goes
+   through the EXISTING mandatory append-verify hard stop — these fields inherit that same
+   mandatory (never best-effort) guarantee.
+
 ## Scope (v1)
 
 - **Single-reviewer only (`GROUP="main"`).** Parallel mode is explicitly out of scope for v1 —
