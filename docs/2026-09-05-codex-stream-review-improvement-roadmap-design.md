@@ -861,6 +861,18 @@ interactive skill's own already-established disagreement-over-coverage-gap prece
 
 ### Phase 5 — diff/artifact-size preflight and a durable interactive result artifact (negotiated to CLEAN, implemented)
 
+**Superseded update (2026-09-10):** Item A below (the `PROMPT_SIZE_LIMIT_BYTES=131072` preflight,
+its `artifact_too_large` reason, the `🛑 INPUT TOO LARGE` status, and CI's `exit_state:
+"INPUT_TOO_LARGE"`/`exit_code: 6`/`input_errors[]`) was **removed entirely** by a later PR
+(`04996d2`), independently reviewed clean over 4 rounds. A genuinely oversized prompt now simply
+surfaces as an ordinary dispatch failure (`timeout`, `nonzero_exit`, `no_final_answer`, etc.) —
+`input_errors` is always `null`, the CI exit-state enum has only 6 values (codes 0-5), and no
+concrete byte-size threshold is checked anywhere in `run-ccs-review.sh`. The rest of this section
+(Item B, the durable interactive result artifact, and the 2026-09-06 implementation-review
+outcome below) is entirely UNAFFECTED and remains current. Item A's own text below is kept as the
+historical record of what was originally built and negotiated — do not treat it as describing
+current behavior.
+
 Two items from the gap-list disposition audit below (#10, #23) needed a real code change, not just
 a documentation disposition. Negotiated to CLEAN over an 8-round `/ccs` non-repo-artifact session
 (18 real findings across those rounds, on the design draft this section originally sketched) —
