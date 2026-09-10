@@ -1036,7 +1036,7 @@ else
   elif [ -n "$SCHEMA" ] && ! printf '%s' "$FINAL_TEXT" | jq -e '
         (.verdict == "CLEAN" or .verdict == "ISSUES") and
         has("summary") and (.summary == null or (.summary | type) == "string") and
-        ((keys_unsorted - ["verdict","findings","summary","dimensions"]) == []) and
+        ((keys_unsorted - ["verdict","findings","summary","dimensions","material_reviewed","material_receipt","material_receipt_index"]) == []) and
         (.findings | type == "array") and
         (.findings | all(
           (has("file") and (.file | type) == "string") and
@@ -1054,7 +1054,13 @@ else
           (has("status") and (.status == "checked" or .status == "not_applicable" or .status == "blocked")) and
           (has("evidence") and (.evidence | type) == "string" and (.evidence | test("\\S"))) and
           ((keys_unsorted - ["status","evidence"]) == [])
-        ))
+        )) and
+        has("material_reviewed") and (.material_reviewed | type) == "boolean" and
+        (if .material_reviewed == false then false else true end) and
+        has("material_receipt") and has("material_receipt_index") and
+        ((.material_receipt | type) == "null" or (.material_receipt | type) == "string") and
+        ((.material_receipt_index | type) == "null" or ((.material_receipt_index | type) == "number" and (.material_receipt_index | floor) == .material_receipt_index and .material_receipt_index >= 1)) and
+        (((.material_receipt | type) == "null") == ((.material_receipt_index | type) == "null"))
       ' >/dev/null 2>&1; then
     JUDGE_OUTPUT="$(printf '{"ok":false,"reason":"schema_mismatch","threadId":%s,"detail":"final answer JSON does not satisfy review-verdict semantic rules"}\n' "$THREAD_ID_JSON")"
     RESULT=1

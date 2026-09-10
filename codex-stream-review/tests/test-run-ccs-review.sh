@@ -615,6 +615,39 @@ else
 fi
 unset FAKE_CODEX_SCENARIO FAKE_CODEX_FINAL_ANSWER
 
+# --- schema_mismatch: material_reviewed / material_receipt cross-field
+# checks (Task 5 of the material-verification plan) -- material_reviewed:
+# false must be rejected regardless of verdict (the exact gap an earlier
+# design draft left open by only checking the CLEAN combination), and
+# material_receipt/material_receipt_index must be both null or both
+# non-null, never one of each.
+MV_BASE='{"verdict":"CLEAN","findings":[],"summary":null,"dimensions":{"correctness":{"status":"not_applicable","evidence":"e"},"security":{"status":"not_applicable","evidence":"e"},"performance":{"status":"not_applicable","evidence":"e"},"reuse":{"status":"not_applicable","evidence":"e"},"contracts":{"status":"not_applicable","evidence":"e"},"resources_concurrency":{"status":"not_applicable","evidence":"e"},"intent":{"status":"not_applicable","evidence":"e"}}}'
+
+BAD_ANSWER="$(printf '%s' "$MV_BASE" | jq -c '. + {material_reviewed:false, material_receipt:null, material_receipt_index:null}')"
+export FAKE_CODEX_SCENARIO=schema_mismatch FAKE_CODEX_FINAL_ANSWER="$BAD_ANSWER"
+OUT="$(pd_run fresh)"
+pd_assert_reason "$OUT" "schema_mismatch" "material_reviewed:false + CLEAN rejected"
+
+BAD_ANSWER2="$(printf '%s' "$MV_BASE" | jq -c '.verdict = "ISSUES" | .findings = [{"file":"x.py","line":1,"severity":"low","summary":"s","evidence":"e","verification":"v"}] | . + {material_reviewed:false, material_receipt:null, material_receipt_index:null}')"
+export FAKE_CODEX_SCENARIO=schema_mismatch FAKE_CODEX_FINAL_ANSWER="$BAD_ANSWER2"
+OUT="$(pd_run fresh)"
+pd_assert_reason "$OUT" "schema_mismatch" "material_reviewed:false + ISSUES/nonempty-findings ALSO rejected"
+
+BAD_ANSWER3="$(printf '%s' "$MV_BASE" | jq -c '. + {material_reviewed:true, material_receipt:"abc123", material_receipt_index:null}')"
+export FAKE_CODEX_SCENARIO=schema_mismatch FAKE_CODEX_FINAL_ANSWER="$BAD_ANSWER3"
+OUT="$(pd_run fresh)"
+pd_assert_reason "$OUT" "schema_mismatch" "one-null-one-populated receipt pair rejected"
+
+GOOD_ANSWER="$(printf '%s' "$MV_BASE" | jq -c '. + {material_reviewed:true, material_receipt:null, material_receipt_index:null}')"
+export FAKE_CODEX_SCENARIO=normal FAKE_CODEX_FINAL_ANSWER="$GOOD_ANSWER"
+OUT="$(pd_run fresh)"
+if [ "$(printf '%s' "$OUT" | tail -1 | jq -r '.ok')" = "true" ]; then
+  pass "material_reviewed:true + null-null receipt pair accepted"
+else
+  fail "material_reviewed:true + null-null pair should be accepted, got: $OUT"
+fi
+unset FAKE_CODEX_SCENARIO FAKE_CODEX_FINAL_ANSWER
+
 # --- investigation_evidence extraction fixtures (capture-evidence, no real API calls) ---
 # Exercises the two jq filters documented in skills/ccs/SKILL.md's
 # "Investigation evidence capture" section, copied VERBATIM from that file
