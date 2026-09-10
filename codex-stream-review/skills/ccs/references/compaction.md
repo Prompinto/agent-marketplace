@@ -773,6 +773,94 @@ describes only the resumed turn's marginal usage. Only when the fresh attempt's 
 response carried no usable telemetry at all does the existing "fail closed when telemetry is
 unusable" rule (see "Trigger" above) apply.
 
+## Retry topology
+
+A compaction attempt's brand-new candidate thread structurally has "no pre-existing thread" —
+it has never appeared in `GROUP_THREADS` before this attempt. `references/retry-guards.md`'s own
+tested, EXISTING behavior for exactly this shape of failure is: fresh A → resume A → resume A →
+if BOTH resumes are STILL exhausted, one further FULL fresh retry with a brand NEW thread B,
+abandoning A to `LEAKED_THREAD_IDS`, before ever giving up (see
+`evals/scenarios/retry-exhausted-round1-fresh-fallback` for a live-exercised example of this exact
+sequence). Compaction reuses this EXACT existing topology rather than inventing a
+compaction-specific variant — consistent with this design's own "reuse existing mechanisms"
+principle elsewhere.
+
+Apply `references/retry-guards.md`'s own THREE bullets, in the SAME priority order it already
+uses, to candidate A ONLY — tracked as its own fact, independent of `GROUP_THREADS` (which keeps
+meaning "the old thread" throughout, per "Failure isolation from the round loop" below). Thread
+B's own, deliberately simpler treatment is Task 12.
+
+1. **`artifact_too_large` first, regardless of threadId presence:** never retried. This candidate
+   attempt is immediately exhausted — fall straight through to step 6's fallback (this design's
+   own failure-isolation principle means this is never surfaced as its own distinct outcome,
+   unlike the base skill's `🛑 INPUT TOO LARGE` for an ordinary round).
+2. **Else, if THIS SPECIFIC response captured no threadId AND the current candidate has NEVER
+   previously captured one either, across any earlier response in this same attempt sequence:**
+   apply `references/retry-guards.md`'s "no entry yet" bullet to THIS candidate specifically: one
+   fresh retry. Checking only "did THIS response lack a threadId" would wrongly treat a
+   `--resume` call's own no-threadId failure (e.g. `bad_args` from a stdin mistake) as proof the
+   candidate thread never existed — `references/retry-guards.md`'s own explicit rule for exactly
+   that case is "that existing thread is untouched, not abandoned... retry the exact same
+   `--resume` call again," so the candidate's own thread history must be checked, never inferred
+   from this one response alone.
+
+   **This retry ALSO re-collects a genuinely FRESH candidate — never reuse the already-collected
+   `candidate_snapshot_path`/digest.** The wrapper accepts no snapshot input at all; EVERY fresh
+   dispatch, retry included, independently re-collects `DIFF_TEXT` live from the repository at
+   ITS OWN moment. A real, meaningful amount of wall-clock time elapses between the original
+   failed attempt and this retry — enough for the worktree or `HEAD` to have moved — so promoting
+   the OLD, earlier-collected candidate would durably record a digest for content that is NOT
+   what this retry's own dispatch actually reviewed. Fixed, for `--uncommitted`/`--base` scope
+   specifically (for non-repo-artifact/`--commit` scope, this retry involves no candidate file,
+   exactly like the original failed attempt did not): this retry re-collects and re-hashes a
+   brand new candidate (new `candidate_snapshot_path`, new digest) exactly like the original
+   attempt did; the OLD (now-superseded) candidate is deleted immediately (folding a failed
+   deletion into `retired_snapshot_files`, per "Restart mechanism" step 3 above).
+
+   **This retry ALSO reconstructs the COMPLETE compaction focus text identically to "Restart
+   mechanism" step 4 above** — this is a genuinely fresh `codex exec` call with no prior turn of
+   its own to inherit anything from, so whatever focus text it sends is the entirety of what this
+   new dispatch ever sees.
+
+   If this retry fails AGAIN, for ANY reason (excluding `artifact_too_large`, which bullet 1
+   above always takes priority over): this candidate is exhausted. **Check whether THIS retry's
+   own response captured a threadId before assuming nothing needs tracking** — this retry is
+   itself a genuinely fresh dispatch, and can fail with a reason that DOES carry a threadId even
+   when the ORIGINAL attempt's own failure did not (e.g. the original fails `no_thread_started`
+   [no ID], this retry then fails `timeout` or `nonzero_exit` [captures a real, live threadId
+   before failing]). If this retry's own response DID capture a threadId, add it to
+   `LEAKED_THREAD_IDS`/`compaction_attempt_failed_thread` exactly like any other abandoned
+   thread; only when this retry's response ALSO captured no threadId is there genuinely nothing
+   to add. Delete this retry's own candidate too, when one exists. Fall straight through to step
+   6's fallback. **The fresh-B escalation (Task 12) is never reached from this bullet**,
+   regardless of what the retry's own second failure looks like.
+3. **Else (a threadId WAS captured for the current candidate, either by this response or an
+   earlier one in the same sequence): if THIS specific response itself lacks a threadId despite
+   the candidate already having one** — retry the SAME already-captured thread EXACTLY ONCE,
+   never more, and never re-entering the ordinary bounded-resume/fresh-B escalation on ANY
+   outcome of this one retry besides success (`references/retry-guards.md`'s own literal rule
+   for this exact case describes only two outcomes: it succeeds, or "the retry ALSO fails, stop —
+   report `⚠️ COULD NOT VERIFY`," with no carve-out for a different escalation path based on
+   what the second failure's own reason happens to be). If that one retry fails AGAIN, for ANY
+   reason: exhausted. **Always record the ALREADY-KNOWN thread id on exhaustion here** — this
+   bullet's own precondition guarantees one exists, unlike bullet 2's genuinely-uncertain case —
+   add it to `LEAKED_THREAD_IDS`/`compaction_attempt_failed_thread` unconditionally, then fall
+   straight through to step 6's fallback (never `⚠️ COULD NOT VERIFY`, per this design's own
+   failure-isolation principle — see below). Only if this one retry SUCCEEDS does the candidate
+   continue as this round's own live, active attempt, exactly as if no no-ID hiccup had ever
+   occurred.
+4. **Else (THIS response DOES carry a threadId — the ordinary, most common case, whether this is
+   the candidate's own first-ever captured id or a later response that continues to carry one):**
+   this is the ordinary case — apply the standard bounded-resume-retry-then-fresh-B escalation
+   directly: 2 bounded `--resume` retries against this SAME thread; if both are exhausted, the
+   fresh-B escalation (Task 12).
+
+The fresh-B escalation is reached ONLY via bullet 4's own ordinary path — a genuinely NEW
+resume-safe failure that carries a threadId on its OWN first occurrence for this candidate (never
+via a no-ID recovery scenario per bullet 3) — never via bullet 1 or bullet 2's own exhaustion
+either, both of which fall straight to step 6's fallback without ever creating a second candidate
+thread.
+
 ## Scope (v1)
 
 - **Single-reviewer only (`GROUP="main"`).** Parallel mode is explicitly out of scope for v1 —
