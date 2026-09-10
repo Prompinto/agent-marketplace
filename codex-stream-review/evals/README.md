@@ -73,6 +73,22 @@ faithfully-scripted dispatch at all -- see each one's own `README.md` for the fu
 Their coverage lives instead as Tier 1 unit tests in `tests/test-run-ccs-review.sh` against
 `tests/fixtures/quick-mode-decision.jq`.
 
+**Group H (below), added for `--compact`, adds 5 more `built + verified` live scenarios (40
+total)** -- one per distinct terminal/latch outcome the opt-in thread-compaction feature
+introduces: the basic successful restart, the benefit-free-restart-loop baseline circuit breaker,
+the byte-budget preflight latch, the retry-topology fresh-B escalation, and the `CLEAN_REPO_DIR`
+cleanliness recheck's fail-closed behavior. Four of the five (`compact-trigger-uncommitted-success`,
+`compact-baseline-still-over-threshold`, `compact-byte-budget-exceeded`,
+`compact-fresh-b-escalation`) fabricate a synthetic `.result.json`/session `.jsonl` pair directly
+and run only `expect.sh` against it, matching Groups A-D's own scripted convention. The fifth,
+`compact-clean-repo-dir-polluted`, requires genuine mid-session manual intervention (planting a
+stray file into a path `/ccs` itself only allocates at runtime) and was driven as a real, live
+`codex-stream-review:ccs --compact` session — see that scenario's own `README.md` for why it can't
+be pre-scripted the way the other four are. The `COMPACTION_CONSECUTIVE_FRESH_FAILURES`
+repeated-fresh-dispatch-failure circuit breaker and the digest structural-verification-failure path
+are not separately covered here — both are straightforward compositions of mechanics these five
+scenarios already exercise individually, and can be added later following the exact same pattern.
+
 ### Group A — one scenario per terminal status (7 named entries; `review-log-integrity-failure`
 was split into 2 distinct scenarios per its two distinct real triggers, for 8 built)
 
@@ -168,6 +184,16 @@ chain for why the two stub scenarios cannot be driven live, are explained in eac
 `README.md` -- read those before assuming either stub represents a gap in coverage rather than a
 structural impossibility.
 
+### Group H — opt-in thread compaction (`--compact`; 5 built)
+
+| Scenario | Targets | Status |
+|---|---|---|
+| `compact-trigger-uncommitted-success` | A round whose own usage crosses `COMPACT_THRESHOLD` causes the very next round to be a genuine fresh restart (never `--resume`); the old thread ends up `"kind":"leaked"`/`"cleanup":"deleted"`; session still reaches `CLEAN` | **built + verified** |
+| `compact-baseline-still-over-threshold` | The benefit-free-restart-loop guard: a fresh restart whose OWN baseline usage is ALSO `>= COMPACT_THRESHOLD` latches `compaction_disabled_reason: "baseline_at_or_above_threshold"` and never attempts compaction again for the rest of the session | **built + verified** |
+| `compact-byte-budget-exceeded` | The byte-budget preflight: an assembled focus text exceeding `COMPACT_BYTE_BUDGET` latches `compaction_disabled_reason: "byte_budget_exceeded"` WITHOUT ever dispatching a real fresh call for that attempt, falling straight through to the ordinary `--resume` fallback | **built + verified** |
+| `compact-fresh-b-escalation` | Retry topology's fresh-B escalation: candidate A's own bounded resume-retries exhaust, thread B succeeds on its own single, unretried attempt -- `compaction_attempt_failed_thread: ["A"]`, both the pre-existing old thread AND candidate A end up leaked/deleted, B becomes current | **built + verified** |
+| `compact-clean-repo-dir-polluted` | The 8-check `CLEAN_REPO_DIR` cleanliness recheck fails CLOSED when a stray file is planted into that directory mid-session -- no fresh dispatch for the compaction attempt, no thread ever created for it, immediate fallback to `--resume` on the still-alive old thread | **built + verified** (driven as a real live session -- see that scenario's own `README.md`) |
+
 ### Secondary tier — live-Codex acceptance (2, built after the 8 scripted scenarios above)
 
 | Scenario | Targets | Status |
@@ -199,7 +225,7 @@ you hand it, e.g.:
 bash codex-stream-review/evals/check-consistency.sh claim-ledger-live-acceptance run1.result.json run2.result.json run3.result.json
 ```
 
-It is NOT useful for any of the other 30 scripted (fake-codex-driven) scenarios in this harness --
+It is NOT useful for any of the other 35 scripted (fake-codex-driven) scenarios in this harness --
 those each have exactly one structurally forced outcome already, so there is no consistency question
 to ask of them.
 
