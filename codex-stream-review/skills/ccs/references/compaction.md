@@ -742,23 +742,28 @@ the original artifact text included in focus) with focus text composed of, in or
 ordinary Phase 2 steps exactly like any other round's; no separate follow-up dispatch happens in
 the success case.
 
-**A dedicated field is required for the Why/Scope component — `target.focus` is NOT a stable
-source for this.** `target.focus` records whatever focus text was sent for round 1's own FINAL
-logged dispatch ATTEMPT, not a stable "original task framing" fact — it diverges in two confirmed
-real ways: (1) if round 1's own dispatch initially failed and needed a resume-safe retry, the
-retry's own focus text is just a short "Retrying after a `<reason>` failure..." note plus the
-generic scope constraint, NOT the original Why/Scope; (2) for a non-repo-artifact session,
-`target.focus` ALREADY embeds the full original artifact text, so reading it back AND separately
-re-embedding the artifact (per step 2 above) would duplicate the artifact in the fresh prompt.
-Fixed: a new, dedicated, write-once field — `target.original_scope_framing` — captured exactly
-ONCE, at the moment round 1's OWN focus text is first constructed (`SKILL.md`'s Phase 1 Step 0,
-BEFORE the very first dispatch attempt of any kind, retry or not), holding ONLY the Why +
-task-specific Scope text. For a non-repo-artifact session, this field explicitly EXCLUDES the
-pasted artifact text (which stays available separately, via the unchanged snapshot). This field
-is written once to round 1's own JSONL line and is NEVER overwritten by a later retry — a retry
-only ever changes what is actually dispatched for that attempt (`target.focus`, serving its
-existing, unchanged diagnostic/continuity purpose), never this separately-recorded
-original-framing fact.
+**This step CONSUMES a dedicated Why/Scope field this reference file does not itself own —
+`target.focus` is NOT a stable source for it.** `target.focus` records whatever focus text was
+sent for round 1's own FINAL logged dispatch ATTEMPT, not a stable "original task framing" fact —
+it diverges in two confirmed real ways: (1) if round 1's own dispatch initially failed and needed
+a resume-safe retry, the retry's own focus text is just a short "Retrying after a `<reason>`
+failure..." note plus the generic scope constraint, NOT the original Why/Scope; (2) for a
+non-repo-artifact session, `target.focus` ALREADY embeds the full original artifact text, so
+reading it back AND separately re-embedding the artifact (per step 2 above) would duplicate the
+artifact in the fresh prompt. The dedicated, write-once field this step relies on —
+`target.original_scope_framing` — is captured exactly ONCE, unconditionally for EVERY session
+(`--compact` or not), at the moment round 1's OWN focus text is first constructed (`SKILL.md`'s
+Phase 1 Step 0, BEFORE the very first dispatch attempt of any kind, retry or not — see that
+section for the full construction), holding ONLY the Why + task-specific Scope text. For a
+non-repo-artifact session, this field explicitly EXCLUDES the pasted artifact text (which stays
+available separately, via the unchanged snapshot). This field is written once to round 1's own
+JSONL line and is NEVER overwritten by a later retry — a retry only ever changes what is actually
+dispatched for that attempt (`target.focus`, serving its existing, unchanged
+diagnostic/continuity purpose), never this separately-recorded original-framing fact. **This
+section is not the reason the field exists** — it is captured unconditionally by `SKILL.md` for
+every session precisely because `references/retry-guards.md`'s `no_material_reviewed` restart also
+needs it, and that restart can occur in a session where `--compact` is OFF; this Step 4 dispatch
+is simply this field's other consumer.
 
 **Coverage epoch.** For a `--uncommitted` compaction dispatch specifically, this call can report
 its own `coverage.source` exactly like any fresh `--uncommitted` dispatch can — this is a SECOND
@@ -1037,13 +1042,16 @@ carry a `threadId` at all):
   additionally non-empty, on whichever round actually carries a DEFERRED backfill from an earlier
   recovery-discovered candidate deletion failure** (see "Restart mechanism" step 3's own
   post-append-window recovery step 2 above).
-- **Round 1's own line, whenever `--compact` was given for this session:**
-  `target.original_scope_framing` is REQUIRED on round 1's own line whenever `--compact` was given for
-  the session (regardless of scope); `target.scope_value` is ADDITIONALLY REQUIRED specifically
-  for `--base`/`--commit` scope (never for `--uncommitted`). `target.resolved_commit_sha` is
-  REQUIRED additionally, specifically for `--commit` scope, WHENEVER resolution succeeded (never
-  required when resolution itself failed verification and round 1 deliberately fell back to the
-  original unpinned literal value instead — see "Restart mechanism" step 3 above).
+- **Round 1's own line, EVERY session, `--compact` or not:** `target.original_scope_framing` is
+  REQUIRED on round 1's own line unconditionally (see `SKILL.md`'s Phase 1 Step 0) — not a
+  `--compact`-specific requirement, so this check applies even though the rest of this section is
+  only ever read when `--compact` is ON.
+- **Round 1's own line, whenever `--compact` was given for this session:** `target.scope_value` is
+  REQUIRED specifically for `--base`/`--commit` scope (never for `--uncommitted`).
+  `target.resolved_commit_sha` is REQUIRED additionally, specifically for `--commit` scope,
+  WHENEVER resolution succeeded (never required when resolution itself failed verification and
+  round 1 deliberately fell back to the original unpinned literal value instead — see "Restart
+  mechanism" step 3 above).
 
 **Presence and type are not enough on their own — every durability-critical field must also
 match the VALUE Claude itself already computed for this transition, not merely its shape.**
@@ -1388,10 +1396,12 @@ the round(s) they actually apply to:
   `--base`/`--commit` argument value, omitted for `--uncommitted`.
 - `target.resolved_commit_sha` — round 1's own line only, `--commit` scope, whenever resolution
   succeeded.
-- `target.original_scope_framing` — round 1's own line only, whenever `--compact` was given
-  (regardless of scope): the Why + task-specific Scope text captured once, before round 1's own
-  first dispatch attempt, excluding any pasted artifact text, never overwritten by a later
-  retry's own different focus.
+- `target.original_scope_framing` — round 1's own line, EVERY session (NOT `--compact`-exclusive —
+  see `SKILL.md`'s Phase 1 Step 0, which is where this field is actually captured): the Why +
+  task-specific Scope text captured once, before round 1's own first dispatch attempt, excluding
+  any pasted artifact text, never overwritten by a later retry's own different focus. This step's
+  Step 4 dispatch, and `references/retry-guards.md`'s `no_material_reviewed` restart, are this
+  field's two consumers — neither is its owner.
 
 `finding_id`/`claim_id` numbering continues incrementing globally across the compaction boundary —
 never reset — so the existing claim-ledger reducer keeps working over the whole log unmodified.
@@ -1408,6 +1418,11 @@ never reset — so the existing claim-ledger reducer keeps working over the whol
   forced to single-group `main`, regardless of what the normal file-count sizing heuristic would
   otherwise select — a hard override, not a rejection of the `--compact` request (see Task 20 for
   the exact `SKILL.md` edit). Removing this restriction is future work, not a v1 goal.
+  **This restriction is specific to `--compact`'s OWN trigger/detection logic, not to the restart
+  PROCEDURE this section documents.** `references/retry-guards.md`'s `no_material_reviewed` rule
+  reuses this section's restart mechanism PER-GROUP, in any review mode including parallel — a
+  different, already-parallel-mode-compatible consumer of the same shared procedure; do not read
+  this bullet as blocking that reuse.
 - **`MAX_ROUNDS` unaffected in meaning** — a compaction round consumes one increment of the round
   counter like any other round; no separate cap or exemption.
 

@@ -248,6 +248,18 @@ including round 2+, since resuming has already been proven useless and there is 
 "no fresh scope left" concern that applies here (this thread's own accumulated context has zero
 remaining value once proven hollow).
 
+**This reuse is PER-GROUP and fully compatible with parallel mode.** `references/compaction.md`'s
+own "Scope (v1)" section restricts `--compact` ITSELF to single-reviewer `main` — but that
+restriction is about `--compact`'s own triggering/detection complexity (each group crossing its
+own byte/token threshold at a different round), never about the underlying restart PROCEDURE
+(digest construction, snapshot revalidation/promotion, fresh dispatch with a fresh receipt
+schedule) this section reuses. This file's own failure handling is already explicitly per-group
+(see the "Per-group retry (parallel mode)" bullet above); when a SPECIFIC group's thread hits
+`no_material_reviewed`, every step of the reused restart procedure applies to THAT group's own
+thread/schedule/snapshot state only — exactly like this file's other per-group recovery rules —
+regardless of whether `--compact` is ON, OFF, or not applicable because this session is running in
+parallel mode.
+
 ## Compaction-only exception (`--compact`, opt-in — see `references/compaction.md`)
 
 Two narrow, explicitly-scoped exceptions apply ONLY when `--compact` is ON for this session AND
