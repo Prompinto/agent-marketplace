@@ -141,7 +141,7 @@ bash codex-stream-review/evals/check-result.sh <result.json> receipt-null-pair-r
 ### Live verification actually performed (genuinely live, via the real Skill tool)
 
 **This replaces an earlier run (session `2026-09-11T141050-91272`) that predated the
-`--keep-last-message` fix below** — that prior run's own round-1 dispatch never actually passed
+`--keep-last-message` fix described immediately below** — that prior run's own round-1 dispatch never actually passed
 `--keep-last-message` (a review round caught the bug: `setup.sh`'s printed dispatch instructions
 had the flag's value backslash-escaped, `\$ROUND1_LAST_MESSAGE_FILE`, so a driver following them
 literally would have interpolated nothing and passed an empty path), so its "Known limitation"
@@ -340,7 +340,10 @@ JSONL/invocation-log artifacts alone (one leaked + one current thread, both clea
 restart receipt) are structurally IDENTICAL across all three `no_material_reviewed` trigger routes
 — Task 12's wrapper-level `material_reviewed:false` rejection, Task 13's Phase-2 value mismatch,
 and this scenario's own genuine null-pair — so nothing durable could mechanically prove which of
-the three actually fired. This is now closed: round 1's dispatch passes `run-ccs-review.sh`'s own
+the three actually fired. **That specific route-discrimination gap is now closed** (this is
+narrower than "this scenario's own target behavior is now fully mechanically proven end to end" —
+see the SEPARATE, still-open active-schedule limitation two paragraphs below, which this fix does
+NOT resolve): round 1's dispatch passes `run-ccs-review.sh`'s own
 standalone `--keep-last-message` flag (see "Mechanical setup" above), and `expect.sh` asserts that
 captured file's content is exactly this scenario's own null-pair shape, via type-strict `has()` +
 `type` checks (mirroring `run-ccs-review.sh`'s own semantic-validation pattern) rather than a
