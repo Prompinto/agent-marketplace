@@ -38,10 +38,20 @@ INTEGRITY_FAILURE_STATES = {"SNAPSHOT_INTEGRITY_FAILURE", "REVIEW_LOG_INTEGRITY_
 
 
 def _is_int(v):
-    """JSON integer, never a JSON boolean (Python's bool is an int subclass,
-    so isinstance(True, int) is True -- a naive check would silently accept
-    a `true`/`false` value wherever an integer is required)."""
-    return isinstance(v, int) and not isinstance(v, bool)
+    """JSON Schema's `integer` type, which is satisfied by ANY JSON number with
+    a zero fractional part (e.g. 1.0), not just a JSON-encoded whole-number
+    literal -- so a Python float must be accepted here when v.is_integer() is
+    true. float.is_integer() already correctly returns False for nan/inf, so
+    those still fail as they must. Still never a JSON boolean (Python's bool
+    is an int subclass, so isinstance(True, int) is True -- a naive check
+    would silently accept a `true`/`false` value wherever an integer is
+    required). Mirrors the sibling scripts/validate_ci_result.py's own
+    _is_int()."""
+    if isinstance(v, bool):
+        return False
+    if isinstance(v, int):
+        return True
+    return isinstance(v, float) and v.is_integer()
 
 
 def _valid_target(target):
@@ -240,6 +250,12 @@ def _selftest():
         # wrong allOf branch: scope in {base, commit} requires coverage:null
         (False, {**base, "target": {"repo": "/tmp/r", "scope": "base"}, "coverage": {"status": "complete", "reviewed_file_count": 1, "omitted": []}}),
         (True, {**base, "target": {"repo": "/tmp/r", "scope": "base"}, "coverage": None}),
+        # _is_int() integer-boundary cases (a whole-valued float IS a valid
+        # JSON Schema integer; bool/nan/inf are still never valid)
+        (True, {**base, "round_count": 1.0}),
+        (False, {**base, "round_count": True}),
+        (False, {**base, "round_count": float("nan")}),
+        (False, {**base, "round_count": float("inf")}),
     ]
 
     failures = 0

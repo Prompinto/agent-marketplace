@@ -47,10 +47,19 @@ INFRA_KEYS = {"message", "detail"}
 
 
 def _is_int(v):
-    """JSON integer, never a JSON boolean (Python's bool is an int subclass,
-    so isinstance(True, int) is True -- a naive check would silently accept
-    a `true`/`false` value wherever an integer is required)."""
-    return isinstance(v, int) and not isinstance(v, bool)
+    """JSON Schema's `integer` type, which is satisfied by ANY JSON number with
+    a zero fractional part (e.g. 1.0), not just a JSON-encoded whole-number
+    literal -- so a Python float must be accepted here when v.is_integer() is
+    true. float.is_integer() already correctly returns False for nan/inf, so
+    those still fail as they must. Still never a JSON boolean (Python's bool
+    is an int subclass, so isinstance(True, int) is True -- a naive check
+    would silently accept a `true`/`false` value wherever an integer is
+    required)."""
+    if isinstance(v, bool):
+        return False
+    if isinstance(v, int):
+        return True
+    return isinstance(v, float) and v.is_integer()
 
 
 def _valid_finding_item(item):
@@ -282,6 +291,17 @@ def _selftest():
     cases.append((False, {**base, "exit_state": "CONFIRMED_ISSUES", "exit_code": 1, "verdict": "ISSUES",
                            "findings": [1], "coverage": [],
                            "infrastructure_error": None}))  # findings item and coverage both wrong shape
+
+    # _is_int() integer-boundary cases on pr_number (a whole-valued float IS a
+    # valid JSON Schema integer; bool/nan/inf are still never valid)
+    clean_shape = {"exit_state": "CLEAN", "exit_code": 0, "verdict": "CLEAN", "findings": [],
+                   "coverage": {"status": "complete", "reviewed_file_count": 1, "omitted": []},
+                   "infrastructure_error": None}
+    cases.append((True, {**base, **clean_shape, "pr_number": 1.0}))
+    cases.append((False, {**base, **clean_shape, "pr_number": 1.5}))
+    cases.append((False, {**base, **clean_shape, "pr_number": True}))
+    cases.append((False, {**base, **clean_shape, "pr_number": float("nan")}))
+    cases.append((False, {**base, **clean_shape, "pr_number": float("inf")}))
 
     failures = 0
     for expect_ok, doc in cases:
