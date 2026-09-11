@@ -28,6 +28,39 @@
 # reach a real `codex` binary.
 set -u
 
+# L-005 backstop: every fixture below already removes its own top-level
+# mktemp scratch file/dir right after use (on every path -- pass or fail,
+# since fail() only records a failure, it never exits) -- but an early hard
+# exit (a must() failure, an explicit "SETUP FAILED" exit, or `set -u`
+# itself terminating the script on an unbound-variable reference) can still
+# happen BETWEEN a resource's creation and its own inline cleanup line,
+# leaking it. This trap is only that backstop: every path listed here is
+# normally already gone (rm -f/-rf on an already-removed or never-created
+# path is a silent no-op) by the time this fires. It intentionally does not
+# replace any fixture's own inline cleanup -- this file's per-section
+# cleanup pattern is otherwise left as-is.
+cleanup_on_exit() {
+  rm -rf -- \
+    "${FAKE_BIN_DIR:-}" "${TMP_REPO:-}" "${DECOY_REPO:-}" "${SAFE_GIT_HOME:-}" \
+    "${DECOY_BIN_DIR:-}" "${FAKE_HOME:-}" "${PD_REPO:-}" "${CAPTURE_DIR:-}" \
+    "${SR_REPO:-}" "${FC_GROUP_STATE:-}" \
+    "${MARKER_FILE:-}" "${FSMON_MARKER:-}" "${COLLECT_FSMON_MARKER:-}" "${COLLECT_COVERAGE_OUT:-}" \
+    "${WRONG_SCHEDULE_FILE:-}" "${BYPASS_SCHEDULE_FILE:-}" "${TRAILING_BLANKS_SCHEDULE_FILE:-}" \
+    "${SAME_LABEL_SCHEDULE_FILE:-}" "${SAME_TOKEN_SCHEDULE_FILE:-}" "${STDERR_CAPTURE:-}" \
+    "${VALID_SCHEDULE_FILE:-}" \
+    "${CL_FIXTURE_1:-}" "${CL_FIXTURE_2:-}" "${CL_FIXTURE_3:-}" "${CL_FIXTURE_4:-}" \
+    "${QD_FIXTURE_1:-}" "${QD_FIXTURE_2:-}" "${QD_FIXTURE_3:-}" "${QD_FIXTURE_4:-}" \
+    "${QD_FIXTURE_5:-}" "${QD_FIXTURE_6:-}" "${QD_FIXTURE_7:-}" "${QD_FIXTURE_8:-}" \
+    "${DM_FIXTURE_1:-}" "${DM_FIXTURE_2:-}" "${DM_FIXTURE_3:-}" "${DM_FIXTURE_4:-}" \
+    "${DM_FIXTURE_5:-}" "${DM_FIXTURE_6:-}" "${DM_FIXTURE_7:-}" "${DM_FIXTURE_8:-}" \
+    "${DM_FIXTURE_9:-}" "${DM_FIXTURE_10:-}" "${DM_FIXTURE_11:-}" "${DM_FIXTURE_12:-}" \
+    "${DM_FIXTURE_13:-}" "${DM_FIXTURE_14:-}" \
+    "${FC_INVOCATION_LOG:-}" "${CB_VALID_FILE:-}" "${CSR005_MALFORMED_FILE:-}" \
+    2>/dev/null
+  return 0
+}
+trap cleanup_on_exit EXIT
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WRAPPER="$SCRIPT_DIR/../scripts/run-ccs-review.sh"
 LIB_GIT_SAFE="$SCRIPT_DIR/../scripts/lib/git-safe.sh"
@@ -110,7 +143,12 @@ fi
 # (b) a hostile PATH set AFTER GIT_BIN was already resolved must not divert
 # execution to a decoy `git` placed earlier on it.
 DECOY_BIN_DIR="$(mktemp -d)"
-MARKER_FILE="$(mktemp -u)"
+# mktemp (not -u): reserves a genuinely unique path via a real file, then
+# immediately removes it -- closes mktemp -u's TOCTOU window (a guessed name
+# that no one has created yet) while restoring the "does not exist yet"
+# state this fixture's own `[ ! -e "$MARKER_FILE" ]` check below depends on.
+MARKER_FILE="$(mktemp)"
+rm -f "$MARKER_FILE"
 cat > "$DECOY_BIN_DIR/git" <<EOF || { echo "SETUP FAILED: writing decoy git script" >&2; exit 1; }
 #!/bin/sh
 touch "$MARKER_FILE"
@@ -130,7 +168,11 @@ rm -rf "$DECOY_BIN_DIR"
 # (c) a repo-local core.fsmonitor hook must never fire during a real diff --
 # the one thing env-var sanitization alone cannot reach, since it lives in
 # the target repo's own tracked .git/config.
-FSMON_MARKER="$(mktemp -u)"
+# mktemp (not -u): see the MARKER_FILE comment above -- same TOCTOU fix,
+# same "must start absent" requirement for the `[ ! -e "$FSMON_MARKER" ]`
+# check below.
+FSMON_MARKER="$(mktemp)"
+rm -f "$FSMON_MARKER"
 must git -C "$TMP_REPO" config core.fsmonitor "touch $FSMON_MARKER; true"
 git_safe diff --no-ext-diff --no-textconv >/dev/null 2>&1
 GIT_SAFE_STATUS=$?
@@ -148,7 +190,11 @@ must git -C "$TMP_REPO" config --unset core.fsmonitor
 # git_safe() directly, never this separate subprocess the collector runs,
 # invoked here the same way run-ccs-review.sh now invokes it post-fix.
 COLLECT_PY="$SCRIPT_DIR/../scripts/collect_untracked_files.py"
-COLLECT_FSMON_MARKER="$(mktemp -u)"
+# mktemp (not -u): see the MARKER_FILE comment above -- same TOCTOU fix,
+# same "must start absent" requirement for the `[ ! -e "$COLLECT_FSMON_MARKER" ]`
+# check below.
+COLLECT_FSMON_MARKER="$(mktemp)"
+rm -f "$COLLECT_FSMON_MARKER"
 must git -C "$TMP_REPO" config core.fsmonitor "touch $COLLECT_FSMON_MARKER; true"
 COLLECT_COVERAGE_OUT="$(mktemp)"
 GIT_SAFE_BIN="$GIT_BIN" GIT_SAFE_HOME="$SAFE_GIT_HOME" \
@@ -297,7 +343,11 @@ pd_test_interrupted() {
   local mode="$1" tid="${2:-}" capture_path="${3:-}" check_coverage="${4:-}" check_execution="${5:-}"
   local label="$mode"
   local marker outfile wrapper_pid
-  marker="$(mktemp -u)"
+  # mktemp (not -u): see the top-of-file MARKER_FILE comment -- same TOCTOU
+  # fix, same "must start absent" requirement for the wait loop below, which
+  # polls for fake-codex to CREATE this path.
+  marker="$(mktemp)"
+  rm -f "$marker"
   outfile="$(mktemp)"
   export FAKE_CODEX_SCENARIO=hang FAKE_CODEX_SLEEP_SECS=30 FAKE_CODEX_MARKER_FILE="$marker"
   # Deliberately NOT routed through pd_run here: backgrounding a shell
@@ -419,7 +469,11 @@ SR_REPO="$(mktemp -d)"
 
 sr_test_double_signal_one_json_line() {
   local marker outfile wrapper_pid waited json_line_count
-  marker="$(mktemp -u)"
+  # mktemp (not -u): see pd_test_interrupted's identical comment above --
+  # same TOCTOU fix, same "must start absent" requirement for the wait loop
+  # below.
+  marker="$(mktemp)"
+  rm -f "$marker"
   outfile="$(mktemp)"
   export FAKE_CODEX_SCENARIO=hang FAKE_CODEX_SLEEP_SECS=30 FAKE_CODEX_MARKER_FILE="$marker"
   # Same rationale as pd_test_interrupted above for invoking the wrapper

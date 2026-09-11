@@ -20,8 +20,13 @@ source "$SCRIPT_DIR/../../lib/common.sh"
 REPO_DIR="$(eval_make_fixture_repo_sized parallel-one-group-fails 23)"
 BIN_DIR="$(mktemp -d)"
 ln -s "$SCRIPT_DIR/../../../tests/fixtures/fake-codex" "$BIN_DIR/codex"
-G1_LOG="$(mktemp -u /tmp/ccs-eval-g1-invocations.XXXXXX)"
-G2_LOG="$(mktemp -u /tmp/ccs-eval-g2-invocations.XXXXXX)"
+# mktemp (not -u): FAKE_CODEX_INVOCATION_LOG is appended to (>>), which
+# creates the file itself if it doesn't already exist -- reserving a
+# genuinely unique path via a real file, rather than mktemp -u's guessed
+# (and possibly already-taken) name, closes the TOCTOU window with no
+# downstream effect on the append-based logging this file is used for.
+G1_LOG="$(mktemp /tmp/ccs-eval-g1-invocations.XXXXXX)"
+G2_LOG="$(mktemp /tmp/ccs-eval-g2-invocations.XXXXXX)"
 
 echo "REPO_DIR=$REPO_DIR"
 echo "BIN_DIR=$BIN_DIR"
