@@ -266,19 +266,29 @@ under any thread id, exactly one leaked + one current thread, an exact 1:1 recon
 against this file's own real `PENDING:...` records, a genuinely persisted receipt on the accepted
 round). They cannot re-verify that the receipt-VALUE comparison itself (round 1's receipt vs its
 schedule's slot-1 token; the restart's receipt vs its own schedule's slot-1 token) actually
-happened — as `SKILL.md`'s "Receipt schedule generation" section is CURRENTLY documented, a
-`RECEIPT_SCHEDULE_FILE`'s content is never included in any `FOCUS_FILE`, never excerpted into
-JSONL History text, and never part of any JSONL line, so no durable artifact of today's design ever
-holds the schedule value a checker could compare against after the fact. This is a deliberate
-confidentiality property of the CURRENT schedule mechanism, not an oversight, and it is not
-something this eval should try to work around by weakening that guarantee. It is a disclosed
-limitation of the current design, not an unavoidable law of nature: a commitment-based scheme
-(persisting a SHA-256 hash of the expected token at issuance, and a hash of the received value on a
-rejected attempt) could in principle make the match/mismatch outcome durably, artifact-only
-verifiable without ever storing the raw token — but that would be a production-feature change to
-`SKILL.md`'s own JSONL schema, out of scope for this eval-scenario-only task, and is not implemented
-here. (This session's own persistent memory separately tracks a related, still-open idea in this
-area — preserving a hollow attempt's own mismatched receipt/token values for diagnosis — see
+happened. This is narrower than "no durable artifact ever holds a schedule-derived value at all" —
+the ACCEPTED round's own real receipt token (`material_receipt`, e.g. `f127c0283bfbe5e78e8ca739`
+in the live run above) IS durably persisted in the JSONL, per `SKILL.md`'s documented
+`codex_review` schema, and this scenario's own checks above verify it landed there intact. The
+actual, narrower gap is twofold: (1) there is no INDEPENDENTLY COMMITTED *expected* value recorded
+at issuance time (e.g. alongside the `PENDING:...` `receipt_issued` line) to compare a response's
+receipt against after the fact, and (2) a REJECTED response's own (wrong) receipt value is never
+persisted anywhere, since a hollow round-1 response is never separately persisted at all, by this
+scenario's own established design (see the `round==1` count check above). So a checker reading the
+JSONL after the fact can confirm the accepted round's receipt value is present and well-formed, but
+cannot confirm it was actually the value the live schedule demanded, nor see what the rejected
+round's own (wrong) value had been. This is a deliberate confidentiality property of the CURRENT
+schedule mechanism (per `SKILL.md`'s "Receipt schedule generation" section, a
+`RECEIPT_SCHEDULE_FILE`'s content is never included in any `FOCUS_FILE`, never excerpted into JSONL
+History text, and never part of any JSONL line), not an oversight, and it is not something this
+eval should try to work around by weakening that guarantee. It is a disclosed limitation of the
+current design, not an unavoidable law of nature: a commitment-based scheme (persisting a SHA-256
+hash of the expected token at issuance, and a hash of the received value on a rejected attempt)
+could in principle make the match/mismatch outcome durably, artifact-only verifiable without ever
+storing the raw token — but that would be a production-feature change to `SKILL.md`'s own JSONL
+schema, out of scope for this eval-scenario-only task, and is not implemented here. (This session's
+own persistent memory separately tracks a related, still-open idea in this area — preserving a
+hollow attempt's own mismatched receipt/token values for diagnosis — see
 `ccs_backlog_from_real_usage_feedback.md`'s "Candidate 5".) The only evidence that the comparison
 genuinely happened, absent such a future scheme, is the one-time live-verification narrative
 captured above in "Live verification actually performed" (steps 4 and 7), which recorded the real

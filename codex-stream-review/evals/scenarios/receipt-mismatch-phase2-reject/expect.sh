@@ -165,23 +165,31 @@ else
   # PENDING:... thread_ids (not just any string), and its index must match that specific
   # PENDING record's own index -- not merely the right thread-id SET (guards against garbage
   # reconciles/index values paired with an otherwise-correct thread-id set).
+  #
+  # This comparison is done as a single jq invocation reading $JSONL_FILE directly (jq opens
+  # the file itself -- no bash pipe, process substitution, or `while read` loop is involved),
+  # captured via a plain `VAR="$(jq ...)"` command substitution. Under `set -e`, a failure in
+  # a bare assignment's command substitution DOES halt the script (unlike a `while read`
+  # loop's own input-redirection failure, which can be silently skipped instead) -- this is
+  # what makes the check fail closed rather than fail open under resource exhaustion.
   PENDING_RECORDS="$(jq -c 'select(.receipt_issued != null) | select(.receipt_issued.thread_id | startswith("PENDING:")) | {tid: .receipt_issued.thread_id, idx: .receipt_issued.index}' "$JSONL_FILE")"
   RECONCILE_RECORDS="$(jq -c 'select(.receipt_issued != null) | select(.receipt_issued.reconciles != null) | {tid: .receipt_issued.thread_id, idx: .receipt_issued.index, reconciles: .receipt_issued.reconciles}' "$JSONL_FILE")"
 
-  while IFS= read -r REC; do
-    [ -z "$REC" ] && continue
-    REC_TID="$(echo "$REC" | jq -r '.tid')"
-    REC_IDX="$(echo "$REC" | jq -r '.idx')"
-    REC_RECONCILES="$(echo "$REC" | jq -r '.reconciles')"
-    PENDING_MATCH="$(printf '%s\n' "$PENDING_RECORDS" | jq -c --arg tid "$REC_RECONCILES" 'select(.tid == $tid)' | head -n 1)"
-    if [ -z "$PENDING_MATCH" ]; then
-      echo "receipt-mismatch-phase2-reject: FAIL -- reconciliation record for thread [$REC_TID] reconciles [$REC_RECONCILES], which is not one of this JSONL's own real PENDING:... records" >&2
-      FAIL=1
-      continue
-    fi
-    PENDING_IDX="$(echo "$PENDING_MATCH" | jq -r '.idx')"
-    check "reconciliation record for thread [$REC_TID]: index matches the PENDING record it claims to reconcile ([$REC_RECONCILES])" "$REC_IDX" "$PENDING_IDX"
-  done < <(printf '%s\n' "$RECONCILE_RECORDS")
+  RECONCILE_MISMATCHES="$(jq -s -c '
+    . as $lines
+    | ($lines | map(select(.receipt_issued != null) | select(.receipt_issued.thread_id | startswith("PENDING:")) | {tid: .receipt_issued.thread_id, idx: .receipt_issued.index})) as $pending
+    | ($lines | map(select(.receipt_issued != null) | select(.receipt_issued.reconciles != null) | {tid: .receipt_issued.thread_id, idx: .receipt_issued.index, reconciles: .receipt_issued.reconciles})) as $reconcile
+    | [ $reconcile[] | . as $r
+        | ($pending | map(select(.tid == $r.reconciles)) | first) as $p
+        | if $p == null then
+            {tid: $r.tid, reconciles: $r.reconciles, reason: "reconciles value is not one of this JSONL own real PENDING records"}
+          elif $p.idx != $r.idx then
+            {tid: $r.tid, reconciles: $r.reconciles, expected_idx: $p.idx, actual_idx: $r.idx, reason: "index does not match the matching PENDING record index"}
+          else empty
+          end
+      ]
+  ' "$JSONL_FILE")"
+  check "reconciliation records with an invalid reconciles target or a mismatched index" "$RECONCILE_MISMATCHES" "[]"
 
   RECONCILES_VALUES_SORTED="$(printf '%s\n' "$RECONCILE_RECORDS" | jq -r '.reconciles' | sort)"
   PENDING_TIDS_SORTED="$(printf '%s\n' "$PENDING_RECORDS" | jq -r '.tid' | sort)"
