@@ -34,29 +34,30 @@ set -u
 # exit (a must() failure, an explicit "SETUP FAILED" exit, or `set -u`
 # itself terminating the script on an unbound-variable reference) can still
 # happen BETWEEN a resource's creation and its own inline cleanup line,
-# leaking it. This trap is only that backstop: every path listed here is
-# normally already gone (rm -f/-rf on an already-removed or never-created
-# path is a silent no-op) by the time this fires. It intentionally does not
-# replace any fixture's own inline cleanup -- this file's per-section
-# cleanup pattern is otherwise left as-is.
+# leaking it. This trap is only that backstop -- it does not replace any
+# fixture's own inline cleanup, which stays exactly as-is.
+#
+# Ports this plugin's own production register_temp_file/cleanup_temp_files
+# pattern (scripts/run-ccs-review.sh) rather than a hand-maintained
+# "${VAR:-}" list: a FILE-based registry (not a bash array) is callable
+# from anywhere, including inside a function whose `local` variables an
+# EXIT trap can never see once that function returns -- confirmed directly
+# (`bash -c 'trap ... EXIT; f(){ local x=hi; exit 1; }; f'` shows the trap
+# sees $x as unset). register_scratch is called right after every mktemp
+# creation below, top-level or inside a function; rm -rf handles both
+# files and directories, so (unlike the production version, file-only via
+# plain rm -f) no separate directory carve-out is needed here.
+SCRATCH_REGISTRY="$(mktemp)"
+register_scratch() {
+  printf '%s\0' "$1" >> "$SCRATCH_REGISTRY"
+}
 cleanup_on_exit() {
-  rm -rf -- \
-    "${FAKE_BIN_DIR:-}" "${TMP_REPO:-}" "${DECOY_REPO:-}" "${SAFE_GIT_HOME:-}" \
-    "${DECOY_BIN_DIR:-}" "${FAKE_HOME:-}" "${PD_REPO:-}" "${CAPTURE_DIR:-}" \
-    "${SR_REPO:-}" "${FC_GROUP_STATE:-}" \
-    "${MARKER_FILE:-}" "${FSMON_MARKER:-}" "${COLLECT_FSMON_MARKER:-}" "${COLLECT_COVERAGE_OUT:-}" \
-    "${WRONG_SCHEDULE_FILE:-}" "${BYPASS_SCHEDULE_FILE:-}" "${TRAILING_BLANKS_SCHEDULE_FILE:-}" \
-    "${SAME_LABEL_SCHEDULE_FILE:-}" "${SAME_TOKEN_SCHEDULE_FILE:-}" "${STDERR_CAPTURE:-}" \
-    "${VALID_SCHEDULE_FILE:-}" \
-    "${CL_FIXTURE_1:-}" "${CL_FIXTURE_2:-}" "${CL_FIXTURE_3:-}" "${CL_FIXTURE_4:-}" \
-    "${QD_FIXTURE_1:-}" "${QD_FIXTURE_2:-}" "${QD_FIXTURE_3:-}" "${QD_FIXTURE_4:-}" \
-    "${QD_FIXTURE_5:-}" "${QD_FIXTURE_6:-}" "${QD_FIXTURE_7:-}" "${QD_FIXTURE_8:-}" \
-    "${DM_FIXTURE_1:-}" "${DM_FIXTURE_2:-}" "${DM_FIXTURE_3:-}" "${DM_FIXTURE_4:-}" \
-    "${DM_FIXTURE_5:-}" "${DM_FIXTURE_6:-}" "${DM_FIXTURE_7:-}" "${DM_FIXTURE_8:-}" \
-    "${DM_FIXTURE_9:-}" "${DM_FIXTURE_10:-}" "${DM_FIXTURE_11:-}" "${DM_FIXTURE_12:-}" \
-    "${DM_FIXTURE_13:-}" "${DM_FIXTURE_14:-}" \
-    "${FC_INVOCATION_LOG:-}" "${CB_VALID_FILE:-}" "${CSR005_MALFORMED_FILE:-}" \
-    2>/dev/null
+  if [ -f "$SCRATCH_REGISTRY" ]; then
+    while IFS= read -r -d '' scratch_path || [ -n "$scratch_path" ]; do
+      [ -n "$scratch_path" ] && rm -rf -- "$scratch_path"
+    done < "$SCRATCH_REGISTRY"
+    rm -f "$SCRATCH_REGISTRY"
+  fi
   return 0
 }
 trap cleanup_on_exit EXIT
@@ -66,6 +67,7 @@ WRAPPER="$SCRIPT_DIR/../scripts/run-ccs-review.sh"
 LIB_GIT_SAFE="$SCRIPT_DIR/../scripts/lib/git-safe.sh"
 FAKE_CODEX="$SCRIPT_DIR/fixtures/fake-codex"
 FAKE_BIN_DIR="$(mktemp -d)"
+register_scratch "$FAKE_BIN_DIR"
 ln -s "$FAKE_CODEX" "$FAKE_BIN_DIR/codex" || { echo "SETUP FAILED: linking fake codex" >&2; exit 1; }
 PATH="$FAKE_BIN_DIR:$PATH"
 
@@ -111,6 +113,7 @@ fi
 # --- git isolation fixtures -- exercise git_safe() directly, no codex exec ---
 
 TMP_REPO="$(mktemp -d)"
+register_scratch "$TMP_REPO"
 must git -C "$TMP_REPO" init -q
 must git -C "$TMP_REPO" -c user.email=test@example.com -c user.name=test commit --allow-empty -q -m init
 echo "content" > "$TMP_REPO/file.txt" || { echo "SETUP FAILED: writing file.txt (content)" >&2; exit 1; }
@@ -119,10 +122,12 @@ must git -C "$TMP_REPO" -c user.email=test@example.com -c user.name=test commit 
 echo "changed" > "$TMP_REPO/file.txt" || { echo "SETUP FAILED: writing file.txt (changed)" >&2; exit 1; }
 
 DECOY_REPO="$(mktemp -d)"
+register_scratch "$DECOY_REPO"
 must git -C "$DECOY_REPO" init -q
 
 CWD="$TMP_REPO"
 SAFE_GIT_HOME="$(mktemp -d)"
+register_scratch "$SAFE_GIT_HOME"
 # shellcheck source=../scripts/lib/git-safe.sh
 source "$LIB_GIT_SAFE"
 
@@ -143,12 +148,19 @@ fi
 # (b) a hostile PATH set AFTER GIT_BIN was already resolved must not divert
 # execution to a decoy `git` placed earlier on it.
 DECOY_BIN_DIR="$(mktemp -d)"
-# mktemp (not -u): reserves a genuinely unique path via a real file, then
-# immediately removes it -- closes mktemp -u's TOCTOU window (a guessed name
-# that no one has created yet) while restoring the "does not exist yet"
-# state this fixture's own `[ ! -e "$MARKER_FILE" ]` check below depends on.
-MARKER_FILE="$(mktemp)"
-rm -f "$MARKER_FILE"
+register_scratch "$DECOY_BIN_DIR"
+# mktemp -d, fixed filename inside (not mktemp -u, not mktemp+rm): a
+# create-then-delete of a single file only proves the name was free AT
+# THAT INSTANT, then immediately reopens the exact same race mktemp -u
+# had -- it does not close the TOCTOU window, it just relocates it by one
+# instruction. A private directory nobody else knows about, reserved
+# atomically via real `mktemp -d` and never deleted before use, makes a
+# fixed filename inside it collision-proof with no reserve-then-release
+# cycle at all -- same pattern this file already uses for CAPTURE_DIR/
+# CAPTURE_PATH below.
+MARKER_DIR="$(mktemp -d)"
+register_scratch "$MARKER_DIR"
+MARKER_FILE="$MARKER_DIR/marker"
 cat > "$DECOY_BIN_DIR/git" <<EOF || { echo "SETUP FAILED: writing decoy git script" >&2; exit 1; }
 #!/bin/sh
 touch "$MARKER_FILE"
@@ -161,18 +173,18 @@ if [ "$GIT_SAFE_STATUS" -eq 0 ] && [ ! -e "$MARKER_FILE" ]; then
   pass "git_safe ignores a hostile PATH decoy git executable"
 else
   fail "git_safe executed a decoy git binary from a hostile PATH, or failed outright (exit $GIT_SAFE_STATUS)"
-  rm -f "$MARKER_FILE"
 fi
-rm -rf "$DECOY_BIN_DIR"
+rm -rf "$MARKER_DIR" "$DECOY_BIN_DIR"
 
 # (c) a repo-local core.fsmonitor hook must never fire during a real diff --
 # the one thing env-var sanitization alone cannot reach, since it lives in
 # the target repo's own tracked .git/config.
-# mktemp (not -u): see the MARKER_FILE comment above -- same TOCTOU fix,
-# same "must start absent" requirement for the `[ ! -e "$FSMON_MARKER" ]`
-# check below.
-FSMON_MARKER="$(mktemp)"
-rm -f "$FSMON_MARKER"
+# mktemp -d, fixed filename inside: see the MARKER_DIR comment above --
+# same TOCTOU fix, same "must start absent" requirement for the
+# `[ ! -e "$FSMON_MARKER" ]` check below.
+FSMON_MARKER_DIR="$(mktemp -d)"
+register_scratch "$FSMON_MARKER_DIR"
+FSMON_MARKER="$FSMON_MARKER_DIR/marker"
 must git -C "$TMP_REPO" config core.fsmonitor "touch $FSMON_MARKER; true"
 git_safe diff --no-ext-diff --no-textconv >/dev/null 2>&1
 GIT_SAFE_STATUS=$?
@@ -180,8 +192,8 @@ if [ "$GIT_SAFE_STATUS" -eq 0 ] && [ ! -e "$FSMON_MARKER" ]; then
   pass "git_safe disables a repo-local core.fsmonitor hook"
 else
   fail "git_safe let a repo-local core.fsmonitor hook execute, or failed outright (exit $GIT_SAFE_STATUS)"
-  rm -f "$FSMON_MARKER"
 fi
+rm -rf "$FSMON_MARKER_DIR"
 must git -C "$TMP_REPO" config --unset core.fsmonitor
 
 # (d) collect_untracked_files.py's OWN git subprocess (the actual vulnerable
@@ -190,13 +202,15 @@ must git -C "$TMP_REPO" config --unset core.fsmonitor
 # git_safe() directly, never this separate subprocess the collector runs,
 # invoked here the same way run-ccs-review.sh now invokes it post-fix.
 COLLECT_PY="$SCRIPT_DIR/../scripts/collect_untracked_files.py"
-# mktemp (not -u): see the MARKER_FILE comment above -- same TOCTOU fix,
-# same "must start absent" requirement for the `[ ! -e "$COLLECT_FSMON_MARKER" ]`
-# check below.
-COLLECT_FSMON_MARKER="$(mktemp)"
-rm -f "$COLLECT_FSMON_MARKER"
+# mktemp -d, fixed filename inside: see the MARKER_DIR comment above --
+# same TOCTOU fix, same "must start absent" requirement for the
+# `[ ! -e "$COLLECT_FSMON_MARKER" ]` check below.
+COLLECT_FSMON_MARKER_DIR="$(mktemp -d)"
+register_scratch "$COLLECT_FSMON_MARKER_DIR"
+COLLECT_FSMON_MARKER="$COLLECT_FSMON_MARKER_DIR/marker"
 must git -C "$TMP_REPO" config core.fsmonitor "touch $COLLECT_FSMON_MARKER; true"
 COLLECT_COVERAGE_OUT="$(mktemp)"
+register_scratch "$COLLECT_COVERAGE_OUT"
 GIT_SAFE_BIN="$GIT_BIN" GIT_SAFE_HOME="$SAFE_GIT_HOME" \
   GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.fsmonitor GIT_CONFIG_VALUE_0="touch $COLLECT_FSMON_MARKER; true" \
   python3 "$COLLECT_PY" "$TMP_REPO" --deadline-secs 5 --max-bytes 65536 --coverage-out "$COLLECT_COVERAGE_OUT" \
@@ -208,7 +222,8 @@ else
   fail "collect_untracked_files.py should exit 0 without firing the fsmonitor hook (exit $COLLECT_STATUS, marker exists: $([ -e "$COLLECT_FSMON_MARKER" ] && echo yes || echo no))"
 fi
 must git -C "$TMP_REPO" config --unset core.fsmonitor
-rm -f "$COLLECT_FSMON_MARKER" "$COLLECT_COVERAGE_OUT"
+rm -rf "$COLLECT_FSMON_MARKER_DIR"
+rm -f "$COLLECT_COVERAGE_OUT"
 
 rm -rf "$TMP_REPO" "$DECOY_REPO" "$SAFE_GIT_HOME"
 
@@ -221,8 +236,10 @@ rm -rf "$TMP_REPO" "$DECOY_REPO" "$SAFE_GIT_HOME"
 # the real Codex CLI's own state) is specific to this section.
 
 FAKE_HOME="$(mktemp -d)"
+register_scratch "$FAKE_HOME"
 
 PD_REPO="$(mktemp -d)"
+register_scratch "$PD_REPO"
 must git -C "$PD_REPO" init -q
 must git -C "$PD_REPO" -c user.email=test@example.com -c user.name=test commit --allow-empty -q -m init
 echo "line" > "$PD_REPO/f.txt" || { echo "SETUP FAILED: writing PD_REPO/f.txt" >&2; exit 1; }
@@ -342,13 +359,15 @@ pd_test_interrupted() {
   # time the SIGTERM below is sent).
   local mode="$1" tid="${2:-}" capture_path="${3:-}" check_coverage="${4:-}" check_execution="${5:-}"
   local label="$mode"
-  local marker outfile wrapper_pid
-  # mktemp (not -u): see the top-of-file MARKER_FILE comment -- same TOCTOU
-  # fix, same "must start absent" requirement for the wait loop below, which
-  # polls for fake-codex to CREATE this path.
-  marker="$(mktemp)"
-  rm -f "$marker"
+  local marker_dir marker outfile wrapper_pid
+  # mktemp -d, fixed filename inside: see the top-of-file MARKER_DIR
+  # comment -- same TOCTOU fix, same "must start absent" requirement for
+  # the wait loop below, which polls for fake-codex to CREATE this path.
+  marker_dir="$(mktemp -d)"
+  register_scratch "$marker_dir"
+  marker="$marker_dir/marker"
   outfile="$(mktemp)"
+  register_scratch "$outfile"
   export FAKE_CODEX_SCENARIO=hang FAKE_CODEX_SLEEP_SECS=30 FAKE_CODEX_MARKER_FILE="$marker"
   # Deliberately NOT routed through pd_run here: backgrounding a shell
   # FUNCTION call (`pd_run ... &`) forks an extra supervisor process for
@@ -383,7 +402,7 @@ pd_test_interrupted() {
     fail "interrupted ($label): fake-codex never started (marker not seen within 5s)"
     kill -TERM "$wrapper_pid" 2>/dev/null
     wait "$wrapper_pid" 2>/dev/null
-    rm -f "$marker" "$outfile"
+    rm -rf "$marker_dir"; rm -f "$outfile"
     unset FAKE_CODEX_SCENARIO FAKE_CODEX_SLEEP_SECS FAKE_CODEX_MARKER_FILE
     return
   fi
@@ -422,7 +441,7 @@ pd_test_interrupted() {
       fail "interrupted ($label): expected a real execution.elapsed_seconds, got: $OUT"
     fi
   fi
-  rm -f "$marker" "$outfile"
+  rm -rf "$marker_dir"; rm -f "$outfile"
   unset FAKE_CODEX_SCENARIO FAKE_CODEX_SLEEP_SECS FAKE_CODEX_MARKER_FILE
 }
 pd_test_interrupted fresh
@@ -444,6 +463,7 @@ pd_test_interrupted fresh "" "" check_coverage
 # round never populates the requested capture path. Worth locking in
 # explicitly rather than leaving it an unverified assumption.
 CAPTURE_DIR="$(mktemp -d)"; CAPTURE_PATH="$CAPTURE_DIR/eventlog.jsonl"
+register_scratch "$CAPTURE_DIR"
 pd_test_interrupted fresh "" "$CAPTURE_PATH"
 if [ ! -e "$CAPTURE_PATH" ]; then
   pass "interrupted: --capture-eventlog is NOT populated (on_signal skips the copy step)"
@@ -466,15 +486,18 @@ rm -rf "$CAPTURE_DIR"
 # where the original handler's trap was still live.
 WRAPPER_STREAM="$SCRIPT_DIR/../scripts/run-stream-review.sh"
 SR_REPO="$(mktemp -d)"
+register_scratch "$SR_REPO"
 
 sr_test_double_signal_one_json_line() {
-  local marker outfile wrapper_pid waited json_line_count
-  # mktemp (not -u): see pd_test_interrupted's identical comment above --
-  # same TOCTOU fix, same "must start absent" requirement for the wait loop
-  # below.
-  marker="$(mktemp)"
-  rm -f "$marker"
+  local marker_dir marker outfile wrapper_pid waited json_line_count
+  # mktemp -d, fixed filename inside: see pd_test_interrupted's identical
+  # comment above -- same TOCTOU fix, same "must start absent" requirement
+  # for the wait loop below.
+  marker_dir="$(mktemp -d)"
+  register_scratch "$marker_dir"
+  marker="$marker_dir/marker"
   outfile="$(mktemp)"
+  register_scratch "$outfile"
   export FAKE_CODEX_SCENARIO=hang FAKE_CODEX_SLEEP_SECS=30 FAKE_CODEX_MARKER_FILE="$marker"
   # Same rationale as pd_test_interrupted above for invoking the wrapper
   # directly (not via a helper function) as the backgrounded command: $!
@@ -490,7 +513,7 @@ sr_test_double_signal_one_json_line() {
     fail "CSR-001 double-signal: fake-codex never started (marker not seen within 5s)"
     kill -TERM "$wrapper_pid" 2>/dev/null
     wait "$wrapper_pid" 2>/dev/null
-    rm -f "$marker" "$outfile"
+    rm -rf "$marker_dir"; rm -f "$outfile"
     unset FAKE_CODEX_SCENARIO FAKE_CODEX_SLEEP_SECS FAKE_CODEX_MARKER_FILE
     return
   fi
@@ -509,7 +532,7 @@ sr_test_double_signal_one_json_line() {
   else
     fail "CSR-001: expected exactly 1 interrupted JSON line from run-stream-review.sh, got $json_line_count (full output: $(cat "$outfile"))"
   fi
-  rm -f "$marker" "$outfile"
+  rm -rf "$marker_dir"; rm -f "$outfile"
   unset FAKE_CODEX_SCENARIO FAKE_CODEX_SLEEP_SECS FAKE_CODEX_MARKER_FILE
 }
 sr_test_double_signal_one_json_line
@@ -616,6 +639,7 @@ else
 fi
 
 WRONG_SCHEDULE_FILE="$(mktemp)"
+register_scratch "$WRONG_SCHEDULE_FILE"
 printf 'not a real schedule\n' > "$WRONG_SCHEDULE_FILE"
 OUT="$(pd_run fresh --receipt-schedule-file "$WRONG_SCHEDULE_FILE")"
 if printf '%s' "$OUT" | jq -e '.reason == "bad_args"' >/dev/null 2>&1; then
@@ -629,6 +653,7 @@ rm -f "$WRONG_SCHEDULE_FILE"
 # entries) must still be rejected -- the check must inspect the WHOLE file,
 # not bail out after line 1.
 BYPASS_SCHEDULE_FILE="$(mktemp)"
+register_scratch "$BYPASS_SCHEDULE_FILE"
 { echo "REVIEW_RECEIPT_SCHEDULE"; echo "not a real entry"; } > "$BYPASS_SCHEDULE_FILE"
 OUT="$(pd_run fresh --receipt-schedule-file "$BYPASS_SCHEDULE_FILE")"
 if printf '%s' "$OUT" | jq -e '.reason == "bad_args"' >/dev/null 2>&1; then
@@ -644,6 +669,7 @@ rm -f "$BYPASS_SCHEDULE_FILE"
 # ALL trailing newline bytes and would otherwise normalize this back down to
 # what looks like a clean 71-line file before the count is ever checked.
 TRAILING_BLANKS_SCHEDULE_FILE="$(mktemp)"
+register_scratch "$TRAILING_BLANKS_SCHEDULE_FILE"
 gen_valid_schedule_file "$TRAILING_BLANKS_SCHEDULE_FILE"
 printf '\n\n\n' >> "$TRAILING_BLANKS_SCHEDULE_FILE"
 OUT="$(pd_run fresh --receipt-schedule-file "$TRAILING_BLANKS_SCHEDULE_FILE")"
@@ -660,6 +686,7 @@ rm -f "$TRAILING_BLANKS_SCHEDULE_FILE"
 # receipt replayable across slots). The per-line regex alone can't catch
 # either -- the sequential-labels/distinct-tokens check must.
 SAME_LABEL_SCHEDULE_FILE="$(mktemp)"
+register_scratch "$SAME_LABEL_SCHEDULE_FILE"
 {
   echo "REVIEW_RECEIPT_SCHEDULE"
   for i in $(seq 1 70); do printf '1: %024x\n' "$i"; done
@@ -673,6 +700,7 @@ fi
 rm -f "$SAME_LABEL_SCHEDULE_FILE"
 
 SAME_TOKEN_SCHEDULE_FILE="$(mktemp)"
+register_scratch "$SAME_TOKEN_SCHEDULE_FILE"
 {
   echo "REVIEW_RECEIPT_SCHEDULE"
   for i in $(seq 1 70); do printf '%d: aaaaaaaaaaaaaaaaaaaaaaaa\n' "$i"; done
@@ -692,6 +720,7 @@ rm -f "$SAME_TOKEN_SCHEDULE_FILE"
 # (which already merges both streams) -- same verification style as Task 4's
 # own --receipt-slot overflow fixture.
 STDERR_CAPTURE="$(mktemp)"
+register_scratch "$STDERR_CAPTURE"
 DIR_OUT="$(printf '%s' x | PATH="$FAKE_BIN_DIR:$PATH" HOME="$FAKE_HOME" "$WRAPPER" --cwd "$PD_REPO" --uncommitted --receipt-schedule-file /tmp 2>"$STDERR_CAPTURE")"
 if printf '%s' "$DIR_OUT" | jq -e '.reason == "bad_args"' >/dev/null 2>&1 && [ ! -s "$STDERR_CAPTURE" ]; then
   pass "--receipt-schedule-file pointed at a directory rejected as bad_args, no stray stderr line ahead of it"
@@ -701,6 +730,7 @@ fi
 rm -f "$STDERR_CAPTURE"
 
 VALID_SCHEDULE_FILE="$(mktemp)"
+register_scratch "$VALID_SCHEDULE_FILE"
 gen_valid_schedule_file "$VALID_SCHEDULE_FILE"
 export FAKE_CODEX_SCENARIO=normal
 OUT="$(pd_run fresh --receipt-schedule-file "$VALID_SCHEDULE_FILE")"
@@ -749,6 +779,7 @@ done
 # --capture-eventlog must contain fake-codex's own raw stdout for a
 # non-signal failure path (unlike interrupted above).
 CAPTURE_DIR="$(mktemp -d)"; CAPTURE_PATH="$CAPTURE_DIR/eventlog.jsonl"
+register_scratch "$CAPTURE_DIR"
 export FAKE_CODEX_SCENARIO=exit_nonzero FAKE_CODEX_EXIT_CODE=1
 OUT="$(pd_run fresh --capture-eventlog "$CAPTURE_PATH")"
 pd_assert_reason "$OUT" "nonzero_exit" "nonzero_exit (fresh, --capture-eventlog)"
@@ -805,6 +836,7 @@ for VARIANT in "${PD_INVALID_JSON_VARIANTS[@]}"; do
 done
 
 CAPTURE_DIR="$(mktemp -d)"; CAPTURE_PATH="$CAPTURE_DIR/eventlog.jsonl"
+register_scratch "$CAPTURE_DIR"
 export FAKE_CODEX_SCENARIO=invalid_json FAKE_CODEX_FINAL_ANSWER="${PD_INVALID_JSON_VARIANTS[0]}"
 OUT="$(pd_run fresh --capture-eventlog "$CAPTURE_PATH")"
 pd_assert_reason "$OUT" "invalid_json" "invalid_json (fresh, --capture-eventlog)"
@@ -879,6 +911,7 @@ for NAME_IDX in 0 1; do
 done
 
 CAPTURE_DIR="$(mktemp -d)"; CAPTURE_PATH="$CAPTURE_DIR/eventlog.jsonl"
+register_scratch "$CAPTURE_DIR"
 export FAKE_CODEX_SCENARIO=schema_mismatch FAKE_CODEX_FINAL_ANSWER="${PD_SCHEMA_MISMATCH_JSON[0]}"
 OUT="$(pd_run fresh --capture-eventlog "$CAPTURE_PATH")"
 pd_assert_reason "$OUT" "schema_mismatch" "schema_mismatch (fresh, --capture-eventlog)"
@@ -1000,6 +1033,7 @@ IE_CMD1='grep -rn "foo $HOME" src/dir'
 IE_CMD2='cat package.json'
 IE_CMD3='npm test -- --watch=false'
 CAPTURE_DIR="$(mktemp -d)"; CAPTURE_PATH="$CAPTURE_DIR/eventlog.jsonl"
+register_scratch "$CAPTURE_DIR"
 export FAKE_CODEX_SCENARIO=normal FAKE_CODEX_COMMANDS="$IE_CMD1
 $IE_CMD2
 $IE_CMD3"
@@ -1025,6 +1059,7 @@ unset FAKE_CODEX_SCENARIO FAKE_CODEX_COMMANDS
 # the extraction filter must report a real, honest zero here, distinct from
 # the (separately-decided, not tested here) skip-extraction-entirely case.
 CAPTURE_DIR="$(mktemp -d)"; CAPTURE_PATH="$CAPTURE_DIR/eventlog.jsonl"
+register_scratch "$CAPTURE_DIR"
 export FAKE_CODEX_SCENARIO=normal
 OUT="$(pd_run fresh --capture-eventlog "$CAPTURE_PATH")"
 if [ "$(printf '%s' "$OUT" | tail -1 | jq -r '.ok')" = "true" ]; then
@@ -1047,6 +1082,7 @@ unset FAKE_CODEX_SCENARIO
 IE_CMD_A='echo hello'
 IE_CMD_B='ls -la /tmp'
 CAPTURE_DIR="$(mktemp -d)"; CAPTURE_PATH="$CAPTURE_DIR/eventlog.jsonl"
+register_scratch "$CAPTURE_DIR"
 export FAKE_CODEX_SCENARIO=normal FAKE_CODEX_GARBAGE_LINE=1 FAKE_CODEX_COMMANDS="$IE_CMD_A
 $IE_CMD_B"
 OUT="$(pd_run fresh --capture-eventlog "$CAPTURE_PATH")"
@@ -1098,6 +1134,7 @@ IE_CMD2R='cat package.json'
 IE_CMD3R='npm test -- --watch=false'
 TID="$(pd_new_tid)"
 CAPTURE_DIR="$(mktemp -d)"; CAPTURE_PATH="$CAPTURE_DIR/eventlog.jsonl"
+register_scratch "$CAPTURE_DIR"
 export FAKE_CODEX_SCENARIO=normal FAKE_CODEX_COMMANDS="$IE_CMD1R
 $IE_CMD2R
 $IE_CMD3R"
@@ -1274,6 +1311,7 @@ cl_status_for() {
 
 # 1. Cleanly-closed claim: raised round 1, closed "resolved" in round 2.
 CL_FIXTURE_1="$(mktemp)"
+register_scratch "$CL_FIXTURE_1"
 cat > "$CL_FIXTURE_1" <<'EOF'
 {"round":1,"claude_verification":[{"finding_id":"f1","claim_id":"f1","action":"accept","rationale":"looks right"}]}
 {"round":2,"claude_verification":[],"claim_closures":[{"claim_id":"f1","disposition":"resolved","source_round":2,"marker_reason":"fix confirmed by re-read"}]}
@@ -1289,6 +1327,7 @@ rm -f "$CL_FIXTURE_1"
 
 # 2. Still-open claim: raised, never closed.
 CL_FIXTURE_2="$(mktemp)"
+register_scratch "$CL_FIXTURE_2"
 cat > "$CL_FIXTURE_2" <<'EOF'
 {"round":1,"claude_verification":[{"finding_id":"f2","claim_id":"f2","action":"accept","rationale":"valid, fix pending"}]}
 EOF
@@ -1309,6 +1348,7 @@ rm -f "$CL_FIXTURE_2"
 # oscillation-guard DECISION built on top of it is Claude's job per
 # SKILL.md, not tested here.
 CL_FIXTURE_3="$(mktemp)"
+register_scratch "$CL_FIXTURE_3"
 cat > "$CL_FIXTURE_3" <<'EOF'
 {"round":1,"claude_verification":[{"finding_id":"f3","claim_id":"f3","action":"reject_with_rationale","rationale":"disagree"}]}
 {"round":2,"claude_verification":[]}
@@ -1325,6 +1365,7 @@ rm -f "$CL_FIXTURE_3"
 
 # 4. Reasserted with genuinely new evidence -- must surface "new", not stale.
 CL_FIXTURE_4="$(mktemp)"
+register_scratch "$CL_FIXTURE_4"
 cat > "$CL_FIXTURE_4" <<'EOF'
 {"round":1,"claude_verification":[{"finding_id":"f4","claim_id":"f4","action":"reject_with_rationale","rationale":"disagree"}]}
 {"round":2,"claude_verification":[]}
@@ -1366,6 +1407,7 @@ qd_decision_line() {
 
 # 1. Sole open claim's latest severity is "medium" -> MINOR_ISSUES_ACKNOWLEDGED.
 QD_FIXTURE_1="$(mktemp)"
+register_scratch "$QD_FIXTURE_1"
 cat > "$QD_FIXTURE_1" <<'EOF'
 {"round":1,"codex_review":{"findings":[{"id":"f1","severity":"medium"}]},"claude_verification":[{"finding_id":"f1","claim_id":"f1","action":"reject_with_rationale"}]}
 {"round":2,"codex_review":{"findings":[{"id":"f1","severity":"medium"}]},"claude_verification":[{"finding_id":"f1","claim_id":"f1","action":"reject_with_rationale","evidence_delta":"new"}]}
@@ -1387,6 +1429,7 @@ rm -f "$QD_FIXTURE_1"
 # either way), so the decision field ALONE cannot distinguish "escalation correctly includes
 # CRITICAL" from "escalation only checks HIGH" -- escalated must be asserted directly.
 QD_FIXTURE_2="$(mktemp)"
+register_scratch "$QD_FIXTURE_2"
 cat > "$QD_FIXTURE_2" <<'EOF'
 {"round":1,"codex_review":{"findings":[{"id":"f2","severity":"critical"}]},"claude_verification":[{"finding_id":"f2","claim_id":"f2","action":"reject_with_rationale"}]}
 EOF
@@ -1403,6 +1446,7 @@ rm -f "$QD_FIXTURE_2"
 # unreachable via a real dispatch, must fail closed to NOT_ELIGIBLE, never treated as minor and
 # never treated as a third "ambiguous" category.
 QD_FIXTURE_3="$(mktemp)"
+register_scratch "$QD_FIXTURE_3"
 cat > "$QD_FIXTURE_3" <<'EOF'
 {"round":1,"codex_review":{"findings":[{"id":"f3","severity":"SEV-2"}]},"claude_verification":[{"finding_id":"f3","claim_id":"f3","action":"reject_with_rationale"}]}
 EOF
@@ -1418,6 +1462,7 @@ rm -f "$QD_FIXTURE_3"
 # 4. Sole open claim's severity was never recorded (null on its only occurrence) -- the MISSING
 # fail-closed subcase must never be treated as "no data, so pass."
 QD_FIXTURE_4="$(mktemp)"
+register_scratch "$QD_FIXTURE_4"
 cat > "$QD_FIXTURE_4" <<'EOF'
 {"round":1,"codex_review":{"findings":[{"id":"f4","severity":null}]},"claude_verification":[{"finding_id":"f4","claim_id":"f4","action":"reject_with_rationale"}]}
 EOF
@@ -1434,6 +1479,7 @@ rm -f "$QD_FIXTURE_4"
 # "medium" by its latest occurrence round 2 -> canonical severity must be "medium" (eligible),
 # proving this lookup is NOT the same as Phase 3's own origin-severity claims[] join.
 QD_FIXTURE_5="$(mktemp)"
+register_scratch "$QD_FIXTURE_5"
 cat > "$QD_FIXTURE_5" <<'EOF'
 {"round":1,"codex_review":{"findings":[{"id":"f5","severity":"high"}]},"claude_verification":[{"finding_id":"f5","claim_id":"f5","action":"reject_with_rationale"}]}
 {"round":2,"codex_review":{"findings":[{"id":"f5","severity":"medium"}]},"claude_verification":[{"finding_id":"f5","claim_id":"f5","action":"reject_with_rationale","evidence_delta":"new"}]}
@@ -1451,6 +1497,7 @@ rm -f "$QD_FIXTURE_5"
 # 6. No open claims at all (K=0, the sole claim already resolved) -- never eligible regardless of
 # its last-known severity.
 QD_FIXTURE_6="$(mktemp)"
+register_scratch "$QD_FIXTURE_6"
 cat > "$QD_FIXTURE_6" <<'EOF'
 {"round":1,"codex_review":{"findings":[{"id":"f6","severity":"medium"}]},"claude_verification":[{"finding_id":"f6","claim_id":"f6","action":"accept"}]}
 {"round":2,"claim_closures":[{"claim_id":"f6","disposition":"resolved","source_round":2,"marker_reason":"fixed"}]}
@@ -1473,6 +1520,7 @@ rm -f "$QD_FIXTURE_6"
 # ORIGIN severity for any re-raise, exactly backwards from the "most recent occurrence" rule this
 # filter exists to implement.
 QD_FIXTURE_7="$(mktemp)"
+register_scratch "$QD_FIXTURE_7"
 cat > "$QD_FIXTURE_7" <<'EOF'
 {"round":1,"codex_review":{"findings":[{"id":"f7","severity":"medium"}]},"claude_verification":[{"finding_id":"f7","claim_id":"f7","action":"reject_with_rationale"}]}
 {"round":2,"codex_review":{"findings":[{"id":"f8","severity":null}]},"claude_verification":[{"finding_id":"f8","claim_id":"f7","action":"reject_with_rationale","evidence_delta":"new"}]}
@@ -1497,6 +1545,7 @@ rm -f "$QD_FIXTURE_7"
 # carry a combined "g1:f1" id (an earlier, incorrect draft of this fixture did exactly that,
 # masking this bug) would silently fail to match and wrongly fall through to NOT_ELIGIBLE.
 QD_FIXTURE_8="$(mktemp)"
+register_scratch "$QD_FIXTURE_8"
 cat > "$QD_FIXTURE_8" <<'EOF'
 {"round":1,"codex_review":{"findings":[{"id":"f1","group":"g1","severity":"medium"}]},"claude_verification":[{"finding_id":"g1:f1","claim_id":"g1:f1","action":"reject_with_rationale"}]}
 EOF
@@ -1523,6 +1572,7 @@ dm_line_for() {
 
 # 1. One valid marker of each kind (RESOLVED / RETRACTED / STILL OPEN).
 DM_FIXTURE_1="$(mktemp)"
+register_scratch "$DM_FIXTURE_1"
 cat > "$DM_FIXTURE_1" <<'EOF'
 Some narration before the markers.
 DISPOSITION f1: RESOLVED -- the null check now covers the empty-array case
@@ -1542,6 +1592,7 @@ rm -f "$DM_FIXTURE_1"
 
 # 2. Duplicate marker for the same claim_id -- must fail closed.
 DM_FIXTURE_2="$(mktemp)"
+register_scratch "$DM_FIXTURE_2"
 cat > "$DM_FIXTURE_2" <<'EOF'
 DISPOSITION f4: RESOLVED -- first marker for this claim
 DISPOSITION f4: RETRACTED -- a second, conflicting marker for the same claim
@@ -1556,6 +1607,7 @@ rm -f "$DM_FIXTURE_2"
 
 # 3. Zero markers for a requested claim_id -- must fail closed as "missing".
 DM_FIXTURE_3="$(mktemp)"
+register_scratch "$DM_FIXTURE_3"
 cat > "$DM_FIXTURE_3" <<'EOF'
 No markers at all in this summary text.
 EOF
@@ -1571,6 +1623,7 @@ rm -f "$DM_FIXTURE_3"
 # be ignored entirely -- never surfaced, never treated as a closure for
 # anything, and must not disturb parsing of the claim_id that WAS requested.
 DM_FIXTURE_4="$(mktemp)"
+register_scratch "$DM_FIXTURE_4"
 cat > "$DM_FIXTURE_4" <<'EOF'
 DISPOSITION f6: RESOLVED -- this one was actually requested
 DISPOSITION f_never_requested: RESOLVED -- nobody asked about this claim_id
@@ -1586,6 +1639,7 @@ rm -f "$DM_FIXTURE_4"
 
 # 5. Empty reason -- must fail closed as "empty_reason".
 DM_FIXTURE_5="$(mktemp)"
+register_scratch "$DM_FIXTURE_5"
 cat > "$DM_FIXTURE_5" <<'EOF'
 DISPOSITION f7: RESOLVED --
 EOF
@@ -1602,6 +1656,7 @@ rm -f "$DM_FIXTURE_5"
 # never match, leaving the claim un-parsed (fails closed as "missing", since
 # zero valid markers were found for it).
 DM_FIXTURE_6="$(mktemp)"
+register_scratch "$DM_FIXTURE_6"
 printf 'DISPOSITION f8: RESOLVED \xe2\x80\x94 em dash used instead of two ASCII hyphens\n' > "$DM_FIXTURE_6"
 DM_OUT="$(bash "$DISPOSITION_PARSER" "$DM_FIXTURE_6" f8)"
 if [ "$(dm_line_for "$DM_OUT" f8)" = "f8 FAIL_CLOSED missing" ]; then
@@ -1615,6 +1670,7 @@ rm -f "$DM_FIXTURE_6"
 # same line) must NOT match -- a whole-text substring search would catch
 # this, but the line-anchored column-zero grammar must not.
 DM_FIXTURE_7="$(mktemp)"
+register_scratch "$DM_FIXTURE_7"
 cat > "$DM_FIXTURE_7" <<'EOF'
 A prior response said DISPOSITION f9: RESOLVED -- embedded mid-sentence, not a real marker
 EOF
@@ -1630,6 +1686,7 @@ rm -f "$DM_FIXTURE_7"
 # agreeing on the disposition -- must still fail closed as duplicate (a
 # stricter case than fixture 2's conflicting-disposition duplicate).
 DM_FIXTURE_8="$(mktemp)"
+register_scratch "$DM_FIXTURE_8"
 cat > "$DM_FIXTURE_8" <<'EOF'
 DISPOSITION f17: RESOLVED -- first occurrence, agrees
 DISPOSITION f17: RESOLVED -- second occurrence, same disposition, still a duplicate
@@ -1646,6 +1703,7 @@ rm -f "$DM_FIXTURE_8"
 # (column-zero anchoring also excludes Markdown's own indented-code-block
 # convention, which needs >=4 leading spaces).
 DM_FIXTURE_9="$(mktemp)"
+register_scratch "$DM_FIXTURE_9"
 printf '    DISPOSITION f18: RESOLVED -- indented 4 spaces, must not match\n' > "$DM_FIXTURE_9"
 DM_OUT="$(bash "$DISPOSITION_PARSER" "$DM_FIXTURE_9" f18)"
 if [ "$(dm_line_for "$DM_OUT" f18)" = "f18 FAIL_CLOSED missing" ]; then
@@ -1658,6 +1716,7 @@ rm -f "$DM_FIXTURE_9"
 # 10. The exact same valid marker text, inside a backtick fence with a
 # language tag -- content inside a fence is excluded entirely.
 DM_FIXTURE_10="$(mktemp)"
+register_scratch "$DM_FIXTURE_10"
 cat > "$DM_FIXTURE_10" <<'EOF'
 ```text
 DISPOSITION f19: RESOLVED -- inside a backtick fence with a language tag
@@ -1674,6 +1733,7 @@ rm -f "$DM_FIXTURE_10"
 # 11. The exact same valid marker text, inside a tilde fence -- content
 # inside a tilde-fenced block is excluded exactly like a backtick fence.
 DM_FIXTURE_11="$(mktemp)"
+register_scratch "$DM_FIXTURE_11"
 cat > "$DM_FIXTURE_11" <<'EOF'
 ~~~
 DISPOSITION f20: RESOLVED -- inside a tilde fence
@@ -1692,6 +1752,7 @@ rm -f "$DM_FIXTURE_11"
 # real marker between the fake close and the real 4-backtick closer stays
 # excluded.
 DM_FIXTURE_12="$(mktemp)"
+register_scratch "$DM_FIXTURE_12"
 cat > "$DM_FIXTURE_12" <<'EOF'
 ````
 ```
@@ -1711,6 +1772,7 @@ rm -f "$DM_FIXTURE_12"
 # this round (not just the one inside the fence), since the whole response
 # is malformed.
 DM_FIXTURE_13="$(mktemp)"
+register_scratch "$DM_FIXTURE_13"
 cat > "$DM_FIXTURE_13" <<'EOF'
 DISPOSITION f22: RESOLVED -- this one sits outside the fence, before it opens
 ```
@@ -1729,6 +1791,7 @@ rm -f "$DM_FIXTURE_13"
 # AFTER a properly closed fence -- must still match normally (closing a
 # fence must not leak "still fenced" state past its own close line).
 DM_FIXTURE_14="$(mktemp)"
+register_scratch "$DM_FIXTURE_14"
 cat > "$DM_FIXTURE_14" <<'EOF'
 ```
 irrelevant fenced content
@@ -1852,6 +1915,7 @@ fi
 # mode order, each carrying the actually-resolved thread id and the
 # scenario in effect.
 FC_INVOCATION_LOG="$(mktemp)"
+register_scratch "$FC_INVOCATION_LOG"
 export FAKE_CODEX_SCENARIO=normal FAKE_CODEX_INVOCATION_LOG="$FC_INVOCATION_LOG"
 OUT="$(pd_run fresh)"
 FC_TID="$(pd_threadid "$OUT")"
@@ -1873,6 +1937,7 @@ rm -f "$FC_INVOCATION_LOG"
 # final answers, in order, and the state directory's own round counter must
 # have advanced to 2.
 FC_GROUP_STATE="$(mktemp -d)"
+register_scratch "$FC_GROUP_STATE"
 cat > "$FC_GROUP_STATE/round-0-final-answer.json" <<'EOF'
 {"verdict":"CLEAN","findings":[],"summary":"round zero scripted verdict","dimensions":{"correctness":{"status":"not_applicable","evidence":"e"},"security":{"status":"not_applicable","evidence":"e"},"performance":{"status":"not_applicable","evidence":"e"},"reuse":{"status":"not_applicable","evidence":"e"},"contracts":{"status":"not_applicable","evidence":"e"},"resources_concurrency":{"status":"not_applicable","evidence":"e"},"intent":{"status":"not_applicable","evidence":"e"}},"material_reviewed":true,"material_receipt":null,"material_receipt_index":null}
 EOF
@@ -1915,6 +1980,7 @@ CHECK_RESULT_SH="$SCRIPT_DIR/../evals/check-result.sh"
 CB_VALID_JSON='{"session_id":"cb-fixture-session","target":{"repo":"/tmp/cb-fixture-repo","scope":"uncommitted"},"exit_state":"CLEAN","round_count":1,"threads":[{"group":"main","thread_id":"cb-fixture-thread","kind":"current","cleanup":"deleted"}],"claims":[],"coverage":{"status":"complete","reviewed_file_count":0,"omitted":[]},"input_errors":null}'
 
 CB_VALID_FILE="$(mktemp)"
+register_scratch "$CB_VALID_FILE"
 printf '%s' "$CB_VALID_JSON" > "$CB_VALID_FILE"
 if bash "$CHECK_RESULT_SH" "$CB_VALID_FILE" clean-basic >/dev/null 2>&1; then
   pass "check-result.sh contract: unmodified canned-valid clean-basic fixture PASSES"
@@ -1925,6 +1991,7 @@ fi
 cb_mutation_should_fail() {
   local label="$1" jq_filter="$2" mutated_file
   mutated_file="$(mktemp)"
+  register_scratch "$mutated_file"
   printf '%s' "$CB_VALID_JSON" | jq -c "$jq_filter" > "$mutated_file"
   if bash "$CHECK_RESULT_SH" "$mutated_file" clean-basic >/dev/null 2>&1; then
     fail "check-result.sh contract: $label should FAIL, but PASSED"
@@ -1953,6 +2020,7 @@ rm -f "$CB_VALID_FILE"
 # hand-written lib/schema-check.jq reported "schema OK" for this artifact.
 CSR005_MALFORMED_JSON='{"session_id":"audit-csr005-repro","target":{"repo":12345,"scope":"uncommitted"},"exit_state":"CLEAN","round_count":1.5,"threads":[{"group":"main","thread_id":"","kind":"current","cleanup":"deleted"}],"claims":[{"claim_id":"c1","file":"a.py","line":1,"severity":"high","summary":"x","evidence":"y","disposition":"open"}],"coverage":{"status":"complete","reviewed_file_count":0,"omitted":[]},"input_errors":null,"extra_top_level_key":true}'
 CSR005_MALFORMED_FILE="$(mktemp)"
+register_scratch "$CSR005_MALFORMED_FILE"
 printf '%s' "$CSR005_MALFORMED_JSON" > "$CSR005_MALFORMED_FILE"
 if bash "$CHECK_RESULT_SH" "$CSR005_MALFORMED_FILE" >/dev/null 2>&1; then
   fail "check-result.sh contract: CSR-005 audit repro (numeric target.repo, round_count 1.5, empty thread_id, extra top-level key, malformed claim) should FAIL schema validation, but PASSED"
