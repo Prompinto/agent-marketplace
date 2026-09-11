@@ -132,19 +132,19 @@ RESULT_DIR="$(dirname "$RESULT_FILE")"
 SESSION_ID="$(jq -r '.session_id' "$RESULT_FILE")"
 JSONL_FILE="$RESULT_DIR/$SESSION_ID.jsonl"
 
-# Known, deliberate limitation: the checks below can only re-verify STRUCTURAL/mechanical
-# consequences of a correct Phase 2 step 1 receipt check (round 1's genuine null-pair response
-# never separately persisted, exactly one leaked + one current thread, exact reconciliation
-# pairing, a genuinely persisted non-null receipt on the accepted round). They CANNOT re-verify
-# that round 1's own thread genuinely HAD an active schedule at the moment the live orchestrating
-# agent recognized the null-null pair as a rejection rather than a legitimate no-schedule-active
-# report, because SKILL.md's "Receipt schedule generation" section deliberately guarantees
-# RECEIPT_SCHEDULE_FILE content is never included in any FOCUS_FILE, never excerpted into JSONL
-# History text, and never part of any JSONL line -- a confidentiality property, not an oversight,
-# so no durable artifact ever holds the schedule value (or even proof a schedule was active) a
-# checker could inspect after the fact. That evidence exists only in the one-time
-# live-verification narrative in this scenario's own README.md ("Live verification actually
-# performed" section). See README.md's "Known limitation" note for the full disclosure.
+# Known, deliberate limitation: the checks below (plus the kept-last-message checks above) can
+# re-verify every STRUCTURAL/mechanical consequence of a correct Phase 2 step 1 receipt check
+# (round 1's own dispatched content was genuinely the null-pair shape, round 1's hollow response
+# never separately persisted in the JSONL, exactly one leaked + one current thread, exact
+# reconciliation pairing, a genuinely persisted non-null receipt on the ACCEPTED round -- that
+# receipt IS durably present in the JSONL, not absent). What they CANNOT re-verify is narrower:
+# whether the accepted round's persisted receipt actually matches what the live schedule demanded,
+# since SKILL.md's "Receipt schedule generation" section deliberately guarantees the schedule's own
+# raw candidate tokens (RECEIPT_SCHEDULE_FILE's full content) are never included in any FOCUS_FILE,
+# never excerpted into JSONL History text, and never part of any JSONL line -- a confidentiality
+# property of the schedule's own raw contents, not of receipt VALUES a response echoes back (those
+# are ordinary persisted data). No INDEPENDENTLY COMMITTED expected value exists to compare
+# against after the fact. See README.md's "Known limitation" note for the full disclosure.
 if [ ! -f "$JSONL_FILE" ]; then
   echo "receipt-null-pair-reject: FAIL -- expected sibling JSONL log at $JSONL_FILE, not found (this scenario exists to prove material_reviewed/material_receipt and receipt reconciliation were genuinely recorded -- a missing log means that cannot be checked, so it must fail, not silently pass)" >&2
   FAIL=1

@@ -360,22 +360,35 @@ What remains a genuine, deliberate limitation (identical to what `receipt-mismat
 own README discloses for its value-mismatch case): `expect.sh` still cannot re-verify that round
 1's own thread genuinely HAD an active schedule at the moment the live orchestrating agent
 recognized the null-null pair as a rejection rather than a legitimate no-schedule-active report.
-`--keep-last-message` only captures the MODEL'S OWN reported answer — never the orchestrating
-agent's own internal schedule-tracking state — and `SKILL.md`'s "Receipt schedule generation"
-section deliberately guarantees `RECEIPT_SCHEDULE_FILE` content is never included in any
-`FOCUS_FILE`, never excerpted into JSONL History text, and never part of any JSONL line — a
-confidentiality property of a LIVE session's own ONGOING artifacts (what a real `/ccs` run writes
-to its durable JSONL/result log while it's actually operating), not an oversight. So no SESSION
-artifact `expect.sh` (or any future automated checker) could inspect after the fact ever holds the
-schedule value or even proof a schedule was active — that data plane is intentionally never
-persisted anywhere a live run itself writes to. This is a DIFFERENT thing from this scenario's own
-one-time, deliberate build-time disclosure below in "Live verification actually performed" (steps 4
-and 7): that section is documentation written once, by hand, when this scenario was constructed and
-verified, specifically to let a human reader confirm what was tested — it is not a session artifact,
-was never meant to be a durable secret, and recording the real tokens there does not contradict or
-weaken the production feature's own confidentiality guarantee for live sessions. Absent a future
-commitment-based scheme (see `receipt-mismatch-phase2-reject`'s own "Known limitation" section for
-the fuller discussion, and this session's own persistent memory tracking a related open idea —
-`ccs_backlog_from_real_usage_feedback.md`'s "Candidate 5"), this one-time build-time narrative is
-the only evidence, for a human reader, that the check genuinely happened as described — `expect.sh`
-itself cannot automatically re-derive it from any live run's own durable artifacts.
+This is narrower than "no durable artifact ever holds a schedule-derived value at all" — that
+claim would be FALSE: the restart's own real, non-null `material_receipt` token (e.g.
+`be2277ebd060bb1565922e33` in the live run above) IS durably persisted in the JSONL, per
+`SKILL.md`'s documented `codex_review` schema, and this scenario's own checks above verify it
+landed there intact. The actual, narrower gap is twofold: (1) there is no INDEPENDENTLY COMMITTED
+*expected* value recorded at issuance time (e.g. alongside the `PENDING:...` `receipt_issued`
+line) to compare a response's receipt against after the fact — so nothing proves the ACCEPTED
+round's persisted receipt genuinely matches what the schedule actually demanded, as opposed to
+some other coincidentally-valid-looking value — and (2) round 1's own null-pair response is never
+separately persisted in the JSONL at all (a hollow response is never given its own `codex_review`
+record, by this scenario's own established design — see the `round==1` count check above), so
+there is no durable JSONL record of round 1's OWN receipt fields to inspect either way; that is
+exactly what `--keep-last-message`'s capture (this fix round's own addition) exists to substitute
+for, mechanically, going forward. `SKILL.md`'s "Receipt schedule generation" section deliberately
+guarantees `RECEIPT_SCHEDULE_FILE` content itself (the raw candidate tokens for every slot, not
+just whichever one a response reports back) is never included in any `FOCUS_FILE`, never excerpted
+into JSONL History text, and never part of any JSONL line — a confidentiality property of the
+schedule's own raw contents, not of receipt VALUES a response actually echoes back (those ARE
+meant to be persisted, as ordinary `material_receipt` data). So a checker reading the JSONL after
+the fact can confirm the accepted round's receipt value is present and well-formed, and (via
+`--keep-last-message`) can now confirm round 1's own dispatched content was genuinely this
+scenario's null-pair shape — but cannot independently confirm the accepted receipt was actually the
+value the live schedule demanded (no separately-committed expected value exists to compare
+against), since the schedule's own raw candidate tokens are never durably recorded anywhere. Absent
+a future commitment-based scheme (see `receipt-mismatch-phase2-reject`'s own "Known limitation"
+section for the fuller discussion, and this session's own persistent memory tracking a related open
+idea — `ccs_backlog_from_real_usage_feedback.md`'s "Candidate 5"), that narrower gap's only evidence
+is the one-time, hand-written build-time narrative in "Live verification actually performed" above
+(steps 4 and 7), which recorded the real schedule tokens and the real check output at the time this
+scenario was built — a separate, deliberate disclosure for human readers, not a session artifact,
+and recording it there does not contradict or weaken the production feature's own confidentiality
+guarantee for a live session's own ongoing operation.
