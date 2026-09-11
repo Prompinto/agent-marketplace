@@ -497,8 +497,13 @@ up using `--capture-evidence` at all):**
 - **Unconditional stale-eventlog sweep (best-effort):** a best-effort sweep for orphaned raw
   event-log files left behind by a past, interrupted `--capture-evidence` session:
   ```bash
-  find /tmp -maxdepth 1 -name 'ccs-*-round-*-eventlog.jsonl*' -mmin +60 -delete
+  find /tmp -maxdepth 1 -name 'ccs-*-round-*-eventlog.jsonl*' -mmin +60 -user "$(id -un)" -delete
   ```
+  `-user "$(id -un)"` scopes the sweep to files owned by the invoking user, so it can never delete
+  another user's own similarly-named stale files on a shared multi-tenant host — a same-user false
+  positive (an unrelated project on the same machine coincidentally using a matching filename
+  pattern) remains a residual, accepted risk.
+
   Running this on EVERY `/ccs` invocation — capture-enabled or not — is what makes the cleanup
   bound honest: an orphaned eventlog is removed no later than the start of the very next `/ccs`
   invocation of any kind, at least 60 minutes after being orphaned. 60 minutes is safe because an
