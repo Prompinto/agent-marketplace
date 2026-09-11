@@ -136,6 +136,14 @@ RESULT_PATH="$REPO_ROOT/$RESULT_FILENAME"
 # negotiated design.
 write_result_atomic() {
   local json_text="$1" tmp_path
+  # `mv -f` onto a path that already names a directory silently moves the
+  # temp file INSIDE it and reports success -- defeating the fixed-path
+  # artifact contract .github/workflows/ccs-ci-review.yml relies on. Reject
+  # up front rather than letting that happen quietly.
+  if [ -e "$RESULT_PATH" ] && [ ! -f "$RESULT_PATH" ]; then
+    printf 'run-ccs-ci.sh: result path exists and is not a regular file: %s\n' "$RESULT_PATH" >&2
+    exit 1
+  fi
   tmp_path="$(mktemp "$REPO_ROOT/.ccs-ci-result.XXXXXX")" || {
     printf 'run-ccs-ci.sh: mktemp for result file failed\n' >&2
     exit 1
@@ -147,6 +155,13 @@ write_result_atomic() {
   fi
   if ! mv -f "$tmp_path" "$RESULT_PATH"; then
     printf 'run-ccs-ci.sh: atomic rename of result file to %s failed\n' "$RESULT_PATH" >&2
+    exit 1
+  fi
+  # Belt-and-suspenders in case of an unexpected race between the pre-check
+  # above and this mv (e.g. something else recreating $RESULT_PATH as a
+  # directory in between).
+  if [ ! -f "$RESULT_PATH" ]; then
+    printf 'run-ccs-ci.sh: result path is not a regular file after write: %s\n' "$RESULT_PATH" >&2
     exit 1
   fi
 }
