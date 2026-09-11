@@ -201,6 +201,7 @@ structural impossibility.
 | `receipt-mismatch-phase2-reject` | A wrapper-schema-valid receipt mismatch is caught by Claude's own stateful Phase 2 check (the wrapper alone cannot detect this), routed to no_material_reviewed BEFORE any finding/claim processing | **built + verified** |
 | `receipt-null-pair-reject` | A genuine null-pair response from a thread with an active schedule is routed to no_material_reviewed identically to a value mismatch, not treated as a separate softer case | **built + verified** |
 | `no-material-reviewed-fresh-restart` | The fresh-restart recovery genuinely reuses compaction's own digest-carryforward + snapshot-integrity mechanism (not a lighter reinvented version), confirmed via a real resolved+open claim pair surviving into the restart's own seed | **built + verified** |
+| `no-material-reviewed-second-hollow` | A second no_material_reviewed on the restart's own new thread terminates at COULD_NOT_VERIFY, never a third thread -- both threads end up leaked, neither becomes current | **built + verified** |
 
 ### Secondary tier — live-Codex acceptance (2, built after the 37 scripted scenarios above)
 
