@@ -260,8 +260,11 @@ itself, never the reason table),
 in both sets at once. `SKILL.md`'s own Phase 3 `threads` computation derives a `"current"` entry
 from every `GROUP_THREADS` entry and a `"leaked"` entry from every `LEAKED_THREAD_IDS` entry; a
 thread abandoned via this route is never a session's own `"current"` thread, so it must not remain
-in `GROUP_THREADS` to be double-counted as one. Then issue exactly ONE fresh restart — same scope flag as round 1
-(`--uncommitted`/`--base`/`--commit`), never `--resume`, to a brand-new thread. **This restart does
+in `GROUP_THREADS` to be double-counted as one. Then issue exactly ONE fresh restart — same scope
+flag as round 1 against `$REPO_ROOT` (`--uncommitted`/`--base`/`--commit`), OR, for a
+non-repo-artifact session (`references/non-repo-artifact.md`), `--uncommitted` against
+`CLEAN_REPO_DIR` with the original artifact text included in focus per the dedicated bullet below —
+never `--resume`, to a brand-new thread. **This restart does
 NOT re-snapshot or promote a new candidate onto `SNAPSHOT_FILE`** — deliberately simpler than
 `--compact`'s own restart, by design:
 it dispatches this round's own ordinary Step 1 sequence (`SKILL.md`'s Phase 1 Step 1) exactly like
@@ -276,11 +279,29 @@ any round would, just substituting a fresh dispatch for what would otherwise be 
   invisible to it as long as that file stays intact on disk. So this restart tolerates working-tree
   drift exactly like `--compact`'s own restart already does — the one real difference from
   `--compact`'s restart is that this restart never promotes a new "official" session snapshot onto
-  `SNAPSHOT_FILE`; it simply re-reviews whatever the working tree currently looks like.
+  `SNAPSHOT_FILE`; it simply re-reviews whatever the working tree currently looks like. **For a
+  non-repo-artifact session specifically, this SAME re-verified copy is also the source the
+  dedicated bullet below pulls the original artifact text from — never a separate re-read of
+  `SNAPSHOT_FILE` for that purpose.**
 - The claim ledger digest is carried forward into the fresh thread's own seed, built from the
   durable JSONL log's own reducer state (`references/compaction.md`'s "Digest construction and
   verification" section — a general, `--compact`-agnostic procedure with no JSONL-field footprint
   of its own, reused here as-is) — never from the abandoned thread's own internal state.
+- **Non-repo-artifact session only (`references/non-repo-artifact.md`): the original artifact
+  text, read from the SAME verified `SNAPSHOT_FILE` copy the snapshot-revalidation bullet above
+  already re-hashed against `SNAPSHOT_DIGEST` — never a separate re-read.** `CLEAN_REPO_DIR` stays
+  intentionally empty for this session type, so a fresh `--uncommitted` dispatch against it
+  collects an empty diff; without the artifact text embedded in this restart's own focus, the new
+  thread would have nothing to review at all and would immediately reproduce the identical
+  `no_material_reviewed` failure it was meant to recover from. `SNAPSHOT_FILE` already holds the
+  exact pasted artifact bytes for this session type (round 1 captured them there, per
+  `references/snapshot-integrity.md`), and this restart never re-snapshots (see above), so the
+  original round-1 copy is exactly what gets embedded here, unmodified. Positioned immediately
+  after the claim ledger digest above and before the original Why + Scope framing below, mirroring
+  `references/compaction.md`'s own Step 4 focus-text order (digest, then artifact text, then
+  original Why/Scope) for the analogous `--compact` restart. Not applicable to a repo-diff
+  session, where this restart's own `--uncommitted`/`--base`/`--commit` scope flag against the
+  real `$REPO_ROOT` already supplies the material to review.
 - The same original Why + task-specific Scope framing, read from `target.original_scope_framing`
   (`SKILL.md`'s Phase 1 Step 0 — captured unconditionally, every session, since this restart is
   one of its two consumers) — never from `target.focus`.

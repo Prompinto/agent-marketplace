@@ -95,6 +95,17 @@
      uses `--resume` exactly as normal (the resumed thread already has the pasted artifact
      content in its own context, same as any other round 2+).
 
+     **Exception: a round 2+ that hits `no_material_reviewed` does not use `--resume` at all.**
+     Per `references/retry-guards.md`'s "`no_material_reviewed` — never resume-safe, one bounded
+     fresh restart" recovery, ANY round (including round 2+) that hits this failure abandons its
+     thread and issues a genuinely fresh `--uncommitted` dispatch against this SAME
+     `CLEAN_REPO_DIR`, with the original artifact text re-embedded in that restart's own focus
+     text (read from the same verified `SNAPSHOT_FILE` copy — see that same reference's dedicated
+     bullet) — never a `--resume` call to the now-proven-hollow thread. This mirrors the identical
+     carve-out `references/retry-guards.md`'s own "two known exceptions to the general round-2+
+     resume rule" section already documents for the general (repo-diff) case; a non-repo-artifact
+     session is not exempt from it just because it is always single-group `main`.
+
      **Cleanup:** `CLEAN_REPO_DIR` (when created this session) is removed in
      `codex-stream-review/skills/ccs/SKILL.md`'s own Phase 3 alongside
      `REPO_ROOT_FILE`/`INSTALL_PATH_FILE`. It is created lazily (only if this
@@ -136,7 +147,9 @@ even though diff collection itself is skipped on resume — passing `$REPO_ROOT`
 artifact round would silently hand Codex's tool context back to the user's real, unrelated working
 tree for that round, defeating the whole point of the isolation `CLEAN_REPO_DIR` exists to
 guarantee. Only the diff-collection scope flag changes between round 1 (`--uncommitted`) and round
-2+ (`--resume <threadId>`) — `--cwd "$CLEAN_REPO_DIR"` stays constant across every round of the
-session. (A non-repo-artifact round is always single-group `main` — see Phase 0 step 4 and
+2+ (ordinarily `--resume <threadId>`, or a fresh `--uncommitted` dispatch on the
+`no_material_reviewed` exception noted above) — `--cwd "$CLEAN_REPO_DIR"` stays constant across
+every round of the session regardless of which of those two applies. (A non-repo-artifact round is
+always single-group `main` — see Phase 0 step 4 and
 `codex-stream-review/skills/ccs/SKILL.md`'s own "Determine review mode" section — so this
 substitution never applies to more than one group.)
