@@ -372,8 +372,8 @@ some other coincidentally-valid-looking value — and (2) round 1's own null-pai
 separately persisted in the JSONL at all (a hollow response is never given its own `codex_review`
 record, by this scenario's own established design — see the `round==1` count check above), so
 there is no durable JSONL record of round 1's OWN receipt fields to inspect either way; that is
-exactly what `--keep-last-message`'s capture (this fix round's own addition) exists to substitute
-for, mechanically, going forward. `SKILL.md`'s "Receipt schedule generation" section deliberately
+exactly what `--keep-last-message`'s capture (added by an earlier fix round to this scenario,
+see this file's own git history) exists to substitute for, mechanically, going forward. `SKILL.md`'s "Receipt schedule generation" section deliberately
 guarantees `RECEIPT_SCHEDULE_FILE` content itself (the raw candidate tokens for every slot, not
 just whichever one a response reports back) is never included in any `FOCUS_FILE`, never excerpted
 into JSONL History text, and never part of any JSONL line — a confidentiality property of the
@@ -383,7 +383,13 @@ the fact can confirm the accepted round's receipt value is present and well-form
 `--keep-last-message`) can now confirm round 1's own dispatched content was genuinely this
 scenario's null-pair shape — but cannot independently confirm the accepted receipt was actually the
 value the live schedule demanded (no separately-committed expected value exists to compare
-against), since the schedule's own raw candidate tokens are never durably recorded anywhere. Absent
+against), since `SKILL.md`'s confidentiality guarantee excludes the schedule's own raw candidate
+tokens from any LIVE-SESSION artifact (`FOCUS_FILE`, JSONL History text, any JSONL line) that a
+future automated checker could inspect after the fact. This scenario's own build-time narrative
+below is a separate, one-time, hand-written disclosure — not a live-session artifact `expect.sh`
+itself could ever re-derive or check against — so it does not weaken or contradict that guarantee;
+it simply means a human reader has one-time evidence a future automated run cannot reconstruct.
+Absent
 a future commitment-based scheme (see `receipt-mismatch-phase2-reject`'s own "Known limitation"
 section for the fuller discussion, and this session's own persistent memory tracking a related open
 idea — `ccs_backlog_from_real_usage_feedback.md`'s "Candidate 5"), that narrower gap's only evidence
