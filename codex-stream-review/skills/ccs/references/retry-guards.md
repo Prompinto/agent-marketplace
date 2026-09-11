@@ -275,7 +275,9 @@ any round would, just substituting a fresh dispatch for what would otherwise be 
 resume" assumption.** `target.scope` is the ACTUAL scope flag this restart used (matching round
 1's own scope-logging rule), never `"resume"` — `SKILL.md`'s general "`resume` for every round
 2+" rule assumed, until this restart existed, that no round 2+ could ever be anything else; this
-restart is the one documented exception. For `--uncommitted` scope specifically, this round ALSO
+restart is one of TWO known exceptions to that general rule, the other being `--compact`'s own
+restart (`references/compaction.md`), which also logs its actual fresh scope rather than
+`"resume"` for the same underlying reason. For `--uncommitted` scope specifically, this round ALSO
 reports its own `coverage_source` exactly like a fresh `--uncommitted` dispatch would — but which
 role this plays depends on when the restart fires, exactly per `SKILL.md`'s own "Coverage is a
 Round-1-only property" section: if the restart occurs AT round 1 itself (the group's very

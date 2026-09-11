@@ -1208,7 +1208,7 @@ underlying dispatches it took to get there; it is purely an internal detail of "
 real outcome was reached," logged as one narration line plus the durable `compaction_attempt_*`
 fields above.
 
-**This directly conflicts with two of `references/retry-guards.md`'s own contracts — shipping
+**This directly conflicts with three of `references/retry-guards.md`'s own contracts — shipping
 this feature requires a companion amendment to that file (see Task 19):**
 1. `references/retry-guards.md`'s own MANDATORY terminal-outcome rule for exhausted retries
    (required to end as `⚠️ COULD NOT VERIFY`) does NOT apply to a failure occurring WITHIN a
@@ -1233,6 +1233,14 @@ this feature requires a companion amendment to that file (see Task 19):**
    keep `retry-guards.md`'s literal round-1 scoping exactly as written; this is a scoped
    exception for candidate A only, never B, and never a change to what "round 1" means for an
    ordinary group.
+3. `references/retry-guards.md`'s own `no_material_reviewed` recovery ("never resume-safe, one
+   bounded fresh restart") does NOT apply to a compaction candidate's own dispatch returning
+   `material_reviewed:false` or a receipt-mismatch — this design's own "On failure" handling above
+   already fully owns that failure (discard the candidate, fall through to the fallback `--resume`
+   on the OLD, still-alive thread), exactly like any other candidate-dispatch failure reason. This
+   does not conflict with `no_material_reviewed`'s "never resume a proven-hollow context" premise:
+   the thread resumed here is the PRE-COMPACTION old thread, which never itself returned
+   `no_material_reviewed` — only the abandoned candidate did, and it is discarded, never resumed.
 
 ## Interaction with `--keep-evidence`
 

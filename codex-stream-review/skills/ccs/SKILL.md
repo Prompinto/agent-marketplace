@@ -1550,14 +1550,18 @@ itself 100% CLEAN.
 Since only a fresh `--uncommitted` dispatch ever reports `coverage.source` — regardless of
 whether that particular dispatch attempt resulted in `ok:true`, one of the 7 unconditionally-
 eligible post-dispatch failure reasons, or a conditionally-eligible `interrupted` (see "Coverage"
-in the interface reference above) — and only round 1 is ever a
-fresh round in `/ccs` (round 2+ is always `--resume`, which never reports it either way), the
-coverage-completeness gate below is a property of **round 1's own log line**, not "the latest
-round's." Record round 1's `coverage_source` once — captured from whichever of round 1's dispatch
-attempts for that group actually carried it (ordinarily its one successful attempt, but see the
-Guards' resume-safe-retry capture note below for the case where an earlier FAILED attempt is the
-one that carried it) — and carry that determination forward through the rest of the loop; it is
-never re-collected on a resumed round.
+in the interface reference above) — and, ORDINARILY, only round 1 is ever a
+fresh round in `/ccs` (round 2+ is always `--resume`, which never reports it either way). **Two
+documented exceptions exist** — a `--compact` restart's own round (`references/compaction.md`'s
+"Coverage epoch" section) and a `no_material_reviewed` restart's own round at round 2+ (this
+section's own paragraph below) — each of which IS a genuinely fresh round and DOES report its own
+coverage. Absent those exceptions, the coverage-completeness gate below is a property of
+**round 1's own log line**, not "the latest round's." Record round 1's `coverage_source` once —
+captured from whichever of round 1's dispatch attempts for that group actually carried it
+(ordinarily its one successful attempt, but see the Guards' resume-safe-retry capture note below
+for the case where an earlier FAILED attempt is the one that carried it) — and carry that
+determination forward through the rest of the loop; it is never re-collected on an ordinary
+resumed round.
 
 **A round-1 `CLEAN_REPO_DIR` round needs no special-casing here.** Reasoning from the wrapper's
 own source (`run-ccs-review.sh`'s `--uncommitted` branch): even against a freshly-`git init`'d,
@@ -1588,8 +1592,9 @@ regardless of how many groups' threads are being resumed concurrently). A single
 (`GROUP="main"`) has nothing to merge and uses its own reported value directly, exactly as
 described above.
 
-**A `no_material_reviewed` restart's own round is the ONE exception to "only round 1 is ever a
-fresh round" — but which kind of exception depends on WHEN the restart fires.** When a
+**A `no_material_reviewed` restart's own round is ONE of the exceptions to "only round 1 is ever a
+fresh round" (the other being a `--compact` restart's own round, per `references/compaction.md`'s
+"Coverage epoch" section) — but which kind of exception depends on WHEN the restart fires.** When a
 `no_material_reviewed` restart (`references/retry-guards.md`) fires with `--uncommitted` scope, its
 own round is genuinely re-collecting the diff fresh, not resuming, so it is exempt from the "only
 round 1" rule above by the same reasoning that exempts it from `target.scope`'s "resume for every
