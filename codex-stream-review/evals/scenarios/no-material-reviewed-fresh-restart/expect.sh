@@ -258,7 +258,7 @@ else
             if ($m4 != null)
             then (
               $foc[($m4.offset + $m4.length):] as $tail
-              | ([$tail | match("(?m)^(OPEN CLAIM |Why:)")] | .[0]) as $next
+              | ([$tail | match("(?m)^(OPEN CLAIM|Why:)")] | .[0]) as $next
               | (if $next != null then $tail[0:$next.offset] else $tail end)
             )
             else null end
