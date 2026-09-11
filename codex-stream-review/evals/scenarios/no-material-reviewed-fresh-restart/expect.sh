@@ -202,10 +202,15 @@ else
     ROUND3_FOCUS_HAS_OPEN_CLAIM_MARKER="$(jq -r 'select(.round == 3) | .target.focus | test("(?m)^OPEN CLAIM f2:")' "$JSONL_FILE" | head -n 1)"
     check "round 3 target.focus contains the literal OPEN CLAIM f2: per-claim heading anchored at a line start" "$ROUND3_FOCUS_HAS_OPEN_CLAIM_MARKER" "true"
 
-    ROUND3_FOCUS_MARKER_ORDER="$(jq -r 'select(.round == 3) | .target.focus
-      | (indices("COMPACT_DIGEST") | first) as $p1
-      | (indices("CLOSED CLAIMS:") | first) as $p2
-      | (indices("OPEN CLAIM f2:") | first) as $p3
+    # The order check must derive its offsets from the SAME line-start-anchored match the 3
+    # checks above validate -- using unanchored indices() here would let an out-of-order (or
+    # missing) set of anchored markers still "pass" ordering via an earlier, coincidental,
+    # non-anchored mention of the same substrings elsewhere in the prose. match(...).offset with
+    # the identical "(?m)^..." pattern ties the order check to the exact same anchored match.
+    ROUND3_FOCUS_MARKER_ORDER="$(jq -r 'select(.round == 3) | .target.focus as $f
+      | (try ($f | match("(?m)^COMPACT_DIGEST").offset) catch null) as $p1
+      | (try ($f | match("(?m)^CLOSED CLAIMS:").offset) catch null) as $p2
+      | (try ($f | match("(?m)^OPEN CLAIM f2:").offset) catch null) as $p3
       | if ($p1 != null and $p2 != null and $p3 != null and $p1 < $p2 and $p2 < $p3) then "true" else "false" end' "$JSONL_FILE" | head -n 1)"
     check "round 3 target.focus markers appear in the correct relative order (COMPACT_DIGEST before CLOSED CLAIMS: before OPEN CLAIM f2:)" "$ROUND3_FOCUS_MARKER_ORDER" "true"
   fi
