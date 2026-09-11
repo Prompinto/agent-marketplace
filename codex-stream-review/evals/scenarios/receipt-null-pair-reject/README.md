@@ -364,11 +364,18 @@ recognized the null-null pair as a rejection rather than a legitimate no-schedul
 agent's own internal schedule-tracking state — and `SKILL.md`'s "Receipt schedule generation"
 section deliberately guarantees `RECEIPT_SCHEDULE_FILE` content is never included in any
 `FOCUS_FILE`, never excerpted into JSONL History text, and never part of any JSONL line — a
-confidentiality property, not an oversight, so no durable artifact ever holds the schedule value
-(or even proof a schedule was active) a checker could inspect after the fact. This narrower
-property's only evidence, absent a future commitment-based scheme (see that scenario's own "Known
-limitation" section for the fuller discussion, and this session's own persistent memory tracking a
-related open idea — `ccs_backlog_from_real_usage_feedback.md`'s "Candidate 5"), remains the one-time
-live-verification narrative captured above in "Live verification actually performed" (steps 4 and
-7), which recorded the real schedule tokens and the real check output at the time this scenario
-was built.
+confidentiality property of a LIVE session's own ONGOING artifacts (what a real `/ccs` run writes
+to its durable JSONL/result log while it's actually operating), not an oversight. So no SESSION
+artifact `expect.sh` (or any future automated checker) could inspect after the fact ever holds the
+schedule value or even proof a schedule was active — that data plane is intentionally never
+persisted anywhere a live run itself writes to. This is a DIFFERENT thing from this scenario's own
+one-time, deliberate build-time disclosure below in "Live verification actually performed" (steps 4
+and 7): that section is documentation written once, by hand, when this scenario was constructed and
+verified, specifically to let a human reader confirm what was tested — it is not a session artifact,
+was never meant to be a durable secret, and recording the real tokens there does not contradict or
+weaken the production feature's own confidentiality guarantee for live sessions. Absent a future
+commitment-based scheme (see `receipt-mismatch-phase2-reject`'s own "Known limitation" section for
+the fuller discussion, and this session's own persistent memory tracking a related open idea —
+`ccs_backlog_from_real_usage_feedback.md`'s "Candidate 5"), this one-time build-time narrative is
+the only evidence, for a human reader, that the check genuinely happened as described — `expect.sh`
+itself cannot automatically re-derive it from any live run's own durable artifacts.
