@@ -192,14 +192,17 @@ else
     # that merely NAMES all three headings somewhere in unstructured prose would still pass.
     # jq/oniguruma's "^" only becomes a per-line anchor inside an inline (?m) modifier group here
     # (confirmed against the real captured artifact -- neither the bare "^" nor the "m" test()
-    # flag anchors per-line in this jq build).
-    ROUND3_FOCUS_HAS_DIGEST_MARKER="$(jq -r 'select(.round == 3) | .target.focus | test("(?m)^COMPACT_DIGEST")' "$JSONL_FILE" | head -n 1)"
+    # flag anchors per-line in this jq build). Each pattern is ALSO end-anchored with "$" (also
+    # only a per-line anchor inside the same (?m) group) -- a start anchor alone would let a
+    # heading-prefixed non-canonical line (e.g. "COMPACT_DIGEST_not_a_heading") pass; the real
+    # captured digest has each marker as its own complete, standalone line.
+    ROUND3_FOCUS_HAS_DIGEST_MARKER="$(jq -r 'select(.round == 3) | .target.focus | test("(?m)^COMPACT_DIGEST$")' "$JSONL_FILE" | head -n 1)"
     check "round 3 target.focus contains the literal COMPACT_DIGEST marker anchored at a line start" "$ROUND3_FOCUS_HAS_DIGEST_MARKER" "true"
 
-    ROUND3_FOCUS_HAS_CLOSED_HEADING="$(jq -r 'select(.round == 3) | .target.focus | test("(?m)^CLOSED CLAIMS:")' "$JSONL_FILE" | head -n 1)"
+    ROUND3_FOCUS_HAS_CLOSED_HEADING="$(jq -r 'select(.round == 3) | .target.focus | test("(?m)^CLOSED CLAIMS:$")' "$JSONL_FILE" | head -n 1)"
     check "round 3 target.focus contains the literal CLOSED CLAIMS: section heading anchored at a line start" "$ROUND3_FOCUS_HAS_CLOSED_HEADING" "true"
 
-    ROUND3_FOCUS_HAS_OPEN_CLAIM_MARKER="$(jq -r 'select(.round == 3) | .target.focus | test("(?m)^OPEN CLAIM f2:")' "$JSONL_FILE" | head -n 1)"
+    ROUND3_FOCUS_HAS_OPEN_CLAIM_MARKER="$(jq -r 'select(.round == 3) | .target.focus | test("(?m)^OPEN CLAIM f2:$")' "$JSONL_FILE" | head -n 1)"
     check "round 3 target.focus contains the literal OPEN CLAIM f2: per-claim heading anchored at a line start" "$ROUND3_FOCUS_HAS_OPEN_CLAIM_MARKER" "true"
 
     # The order check must derive its offsets from the SAME line-start-anchored match the 3
@@ -208,9 +211,9 @@ else
     # non-anchored mention of the same substrings elsewhere in the prose. match(...).offset with
     # the identical "(?m)^..." pattern ties the order check to the exact same anchored match.
     ROUND3_FOCUS_MARKER_ORDER="$(jq -r 'select(.round == 3) | .target.focus as $f
-      | (try ($f | match("(?m)^COMPACT_DIGEST").offset) catch null) as $p1
-      | (try ($f | match("(?m)^CLOSED CLAIMS:").offset) catch null) as $p2
-      | (try ($f | match("(?m)^OPEN CLAIM f2:").offset) catch null) as $p3
+      | (try ($f | match("(?m)^COMPACT_DIGEST$").offset) catch null) as $p1
+      | (try ($f | match("(?m)^CLOSED CLAIMS:$").offset) catch null) as $p2
+      | (try ($f | match("(?m)^OPEN CLAIM f2:$").offset) catch null) as $p3
       | if ($p1 != null and $p2 != null and $p3 != null and $p1 < $p2 and $p2 < $p3) then "true" else "false" end' "$JSONL_FILE" | head -n 1)"
     check "round 3 target.focus markers appear in the correct relative order (COMPACT_DIGEST before CLOSED CLAIMS: before OPEN CLAIM f2:)" "$ROUND3_FOCUS_MARKER_ORDER" "true"
   fi
