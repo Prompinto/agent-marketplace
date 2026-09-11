@@ -28,6 +28,16 @@
 #     against round 1's own codex_review.findings[] entry for f2) -- never a blank/reset digest.
 #     This is the one property this scenario exists to prove: the restart's own seed is not merely
 #     "a new thread happens to get created," it genuinely contains the carried-forward claim state.
+#   - round 3's own target.focus also contains the actual literal structural markers
+#     references/compaction.md's digest-construction procedure produces (COMPACT_DIGEST,
+#     CLOSED CLAIMS:, OPEN CLAIM f2:) -- not merely the same substrings inside unrelated prose
+#   - round 3's own JSONL record has target.scope == "uncommitted" (never "resume") and its own
+#     coverage_source object, per references/retry-guards.md's "two known exceptions to the
+#     general round-2+ resume rule" section
+#   - the receipt_issued reconciliation records each pair a real "reconciles" value against ITS
+#     OWN matching PENDING:... record's index (not merely the right thread-id set), and thread A
+#     (leaked)'s own receipt_issued records span slots 1, 2, and 3 (one per round it was
+#     dispatched to before being abandoned)
 set -euo pipefail
 RESULT_FILE="${1:?usage: expect.sh <result.json>}"
 INVOCATION_LOG="/tmp/ccs-eval-no-material-reviewed-fresh-restart-invocation.log"
@@ -127,6 +137,16 @@ else
     ROUND3_MATERIAL_REVIEWED="$(jq -r 'select(.round == 3) | .codex_review.material_reviewed' "$JSONL_FILE" | head -n 1)"
     check "round 3 JSONL record: codex_review.material_reviewed" "$ROUND3_MATERIAL_REVIEWED" "true"
 
+    # references/retry-guards.md's "two known exceptions to the general round-2+ resume rule"
+    # section: a no_material_reviewed restart at round 2+ logs its OWN actual fresh scope, never
+    # "resume", and (for --uncommitted scope specifically) its own coverage_source as a genuine
+    # second, independent coverage-establishing event -- never folded into round 1's.
+    ROUND3_SCOPE="$(jq -r 'select(.round == 3) | .target.scope // ""' "$JSONL_FILE" | head -n 1)"
+    check "round 3 JSONL record: target.scope is its own actual fresh scope (never \"resume\")" "$ROUND3_SCOPE" "uncommitted"
+
+    ROUND3_COVERAGE_SOURCE_TYPE="$(jq -r 'select(.round == 3) | .coverage_source | type' "$JSONL_FILE" | head -n 1)"
+    check "round 3 JSONL record: coverage_source is present as its own object (a genuine second coverage-establishing event, not a resume)" "$ROUND3_COVERAGE_SOURCE_TYPE" "object"
+
     # The digest-carryforward check itself: round 3's own target.focus must be a non-empty string
     # (present, well-typed -- a missing/empty focus can never contain the digest at all) that
     # contains BOTH the closed claim's one-line reason (byte-exact against round 2's own
@@ -159,6 +179,22 @@ else
       F2_EVIDENCE_IN_ROUND3_FOCUS="$(jq -r --arg needle "$F2_EVIDENCE" 'select(.round == 3) | .target.focus | contains($needle)' "$JSONL_FILE" | head -n 1)"
       check "round 3 target.focus contains f2's own evidence text verbatim (byte-exact against round 1's own finding, unabridged)" "$F2_EVIDENCE_IN_ROUND3_FOCUS" "true"
     fi
+
+    # Structural-marker check: the content-substring checks above can be satisfied by unrelated
+    # prose that merely happens to contain the same substrings -- they never require the actual
+    # digest-construction markers references/compaction.md's "Digest construction and verification"
+    # procedure produces (COMPACT_DIGEST heading, the CLOSED CLAIMS: section, and the per-claim
+    # "OPEN CLAIM <claim_id>:" template). These are the literal, fixed strings that procedure
+    # emits -- not derivable from any other field in this JSONL -- so checking for them directly is
+    # the only way to distinguish a genuine digest from prose that only echoes the claim text.
+    ROUND3_FOCUS_HAS_DIGEST_MARKER="$(jq -r 'select(.round == 3) | .target.focus | contains("COMPACT_DIGEST")' "$JSONL_FILE" | head -n 1)"
+    check "round 3 target.focus contains the literal COMPACT_DIGEST marker" "$ROUND3_FOCUS_HAS_DIGEST_MARKER" "true"
+
+    ROUND3_FOCUS_HAS_CLOSED_HEADING="$(jq -r 'select(.round == 3) | .target.focus | contains("CLOSED CLAIMS:")' "$JSONL_FILE" | head -n 1)"
+    check "round 3 target.focus contains the literal CLOSED CLAIMS: section heading" "$ROUND3_FOCUS_HAS_CLOSED_HEADING" "true"
+
+    ROUND3_FOCUS_HAS_OPEN_CLAIM_MARKER="$(jq -r 'select(.round == 3) | .target.focus | contains("OPEN CLAIM f2:")' "$JSONL_FILE" | head -n 1)"
+    check "round 3 target.focus contains the literal OPEN CLAIM f2: per-claim heading" "$ROUND3_FOCUS_HAS_OPEN_CLAIM_MARKER" "true"
   fi
 
   # receipt_issued bookkeeping: exactly 2 PENDING placeholders (thread A's round-1 establishment,
@@ -173,6 +209,38 @@ else
 
   EXPECTED_RECONCILED_IDS="$(printf '%s\n' "$LEAKED_ID" "$CURRENT_ID" | sort)"
   check "receipt_issued reconciliations cover exactly the artifact's leaked+current thread ids" "$RECONCILED_IDS" "$EXPECTED_RECONCILED_IDS"
+
+  # A genuine reconciliation's "reconciles" value must be one of THIS file's own real PENDING:...
+  # thread_ids (not just any string), and its index must match that specific PENDING record's own
+  # index -- not merely the right thread-id SET. Single self-contained jq invocation reading
+  # $JSONL_FILE directly (no bash `while read` loop), same pattern as
+  # receipt-mismatch-phase2-reject/expect.sh's own reconciliation-pairing check.
+  RECONCILE_MISMATCHES="$(jq -s -c '
+    . as $lines
+    | ($lines | map(select(.receipt_issued != null) | select(.receipt_issued.thread_id | startswith("PENDING:")) | {tid: .receipt_issued.thread_id, idx: .receipt_issued.index})) as $pending
+    | ($lines | map(select(.receipt_issued != null) | select(.receipt_issued.reconciles != null) | {tid: .receipt_issued.thread_id, idx: .receipt_issued.index, reconciles: .receipt_issued.reconciles})) as $reconcile
+    | [ $reconcile[] | . as $r
+        | ($pending | map(select(.tid == $r.reconciles)) | first) as $p
+        | if $p == null then
+            {tid: $r.tid, reconciles: $r.reconciles, reason: "reconciles value is not one of this JSONL own real PENDING records"}
+          elif $p.idx != $r.idx then
+            {tid: $r.tid, reconciles: $r.reconciles, expected_idx: $p.idx, actual_idx: $r.idx, reason: "index does not match the matching PENDING record index"}
+          else empty
+          end
+      ]
+  ' "$JSONL_FILE")"
+  check "reconciliation records with an invalid reconciles target or a mismatched index" "$RECONCILE_MISMATCHES" "[]"
+
+  PENDING_TIDS_SORTED="$(jq -r 'select(.receipt_issued != null) | select(.receipt_issued.thread_id | startswith("PENDING:")) | .receipt_issued.thread_id' "$JSONL_FILE" | sort)"
+  RECONCILES_VALUES_SORTED="$(jq -r 'select(.receipt_issued != null) | select(.receipt_issued.reconciles != null) | .receipt_issued.reconciles' "$JSONL_FILE" | sort)"
+  check "reconciliation values form an exact 1:1 pairing with this JSONL's own real PENDING:... records (no PENDING value reconciled twice, none left unreconciled)" "$RECONCILES_VALUES_SORTED" "$PENDING_TIDS_SORTED"
+
+  # Thread A's own full multi-round receipt-slot sequence: it was dispatched to slots 1 (round 1),
+  # 2 (round 2), and 3 (the hollow round-3 attempt that triggered the restart) before being
+  # abandoned -- removing the slot-2/slot-3 records would still leave the pending/reconciled
+  # counts and thread-id sets above looking correct, so they must be checked directly.
+  THREAD_A_RECEIPT_SLOTS="$(jq -r --arg tid "$LEAKED_ID" 'select(.receipt_issued != null) | select(.receipt_issued.thread_id == $tid) | .receipt_issued.index' "$JSONL_FILE" | sort -n | paste -sd, -)"
+  check "thread A (leaked)'s own receipt_issued records span slots 1, 2, and 3" "$THREAD_A_RECEIPT_SLOTS" "1,2,3"
 fi
 
 exit "$FAIL"
