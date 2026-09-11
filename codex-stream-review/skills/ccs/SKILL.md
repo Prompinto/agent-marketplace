@@ -1561,7 +1561,14 @@ captured from whichever of round 1's dispatch attempts for that group actually c
 (ordinarily its one successful attempt, but see the Guards' resume-safe-retry capture note below
 for the case where an earlier FAILED attempt is the one that carried it) — and carry that
 determination forward through the rest of the loop; it is never re-collected on an ordinary
-resumed round.
+resumed round. **Exception: if a `no_material_reviewed` restart occurred AT round 1 itself (below)
+and BOTH the original hollow attempt and its fresh replacement independently carried their own
+`coverage_source`** (both are genuinely fresh `--uncommitted` dispatches, so both are eligible),
+worst-case-wins merge the two into round 1's single recorded value — `"complete"` only if both are
+`"complete"`, else `"partial"` with `omitted` as the union of both `"partial"` values' `omitted`
+lists deduplicated by the `(path, reason)` pair, else `"unknown"` — never silently pick one over
+the other. If only ONE of the two attempts actually carried coverage, this exception doesn't apply
+and the ordinary "use whichever one did" rule above stands unchanged.
 
 **A round-1 `CLEAN_REPO_DIR` round needs no special-casing here.** Reasoning from the wrapper's
 own source (`run-ccs-review.sh`'s `--uncommitted` branch): even against a freshly-`git init`'d,
