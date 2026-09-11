@@ -310,8 +310,12 @@ def main():
     if not args.schema or not args.result:
         parser.error("schema and result paths are required unless --selftest is given")
 
-    with open(args.result) as f:
-        doc = json.load(f)
+    try:
+        with open(args.result) as f:
+            doc = json.load(f)
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"INVALID: malformed JSON: {exc}", file=sys.stderr)
+        sys.exit(1)
     ok, reason = validate(args.schema, doc)
     if ok:
         print(f"VALID: {reason}")
