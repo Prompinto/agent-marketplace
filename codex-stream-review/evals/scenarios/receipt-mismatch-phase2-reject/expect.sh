@@ -130,6 +130,9 @@ else
       FAIL=1
     else
       check "round-1 current-thread record: codex_review.material_receipt length" "${#MATERIAL_RECEIPT}" "24"
+      MATERIAL_RECEIPT_IS_HEX="no"
+      [[ "$MATERIAL_RECEIPT" =~ ^[0-9a-f]{24}$ ]] && MATERIAL_RECEIPT_IS_HEX="yes"
+      check "round-1 current-thread record: codex_review.material_receipt is a well-formed lowercase-hex token" "$MATERIAL_RECEIPT_IS_HEX" "yes"
     fi
 
     MATERIAL_RECEIPT_INDEX="$(echo "$ROUND1_CURRENT_LINE" | jq -r '.codex_review.material_receipt_index')"
@@ -168,10 +171,16 @@ else
   #
   # This comparison is done as a single jq invocation reading $JSONL_FILE directly (jq opens
   # the file itself -- no bash pipe, process substitution, or `while read` loop is involved),
-  # captured via a plain `VAR="$(jq ...)"` command substitution. Under `set -e`, a failure in
-  # a bare assignment's command substitution DOES halt the script (unlike a `while read`
-  # loop's own input-redirection failure, which can be silently skipped instead) -- this is
-  # what makes the check fail closed rather than fail open under resource exhaustion.
+  # captured via a plain `VAR="$(jq ...)"` command substitution. This is fail-closed under
+  # resource exhaustion for TWO independent reasons, not one: on some bash/failure
+  # combinations a bare assignment's failing command substitution halts the script directly
+  # under `set -e`; on others (confirmed possible under extreme fd exhaustion on some bash
+  # builds) jq itself degrades and the substitution "succeeds" with empty/malformed output --
+  # but that malformed value then fails the check() comparison against the expected "[]"
+  # below, so the assertion still reports FAIL either way. This differs from a `while read`
+  # loop fed via an external redirection source (a here-string, or process substitution),
+  # whose own input-redirection failure can silently skip the loop body and report nothing at
+  # all -- the actual bug this rewrite replaces.
   PENDING_RECORDS="$(jq -c 'select(.receipt_issued != null) | select(.receipt_issued.thread_id | startswith("PENDING:")) | {tid: .receipt_issued.thread_id, idx: .receipt_issued.index}' "$JSONL_FILE")"
   RECONCILE_RECORDS="$(jq -c 'select(.receipt_issued != null) | select(.receipt_issued.reconciles != null) | {tid: .receipt_issued.thread_id, idx: .receipt_issued.index, reconciles: .receipt_issued.reconciles}' "$JSONL_FILE")"
 
