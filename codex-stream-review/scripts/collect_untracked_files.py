@@ -456,6 +456,7 @@ def _parts_to_text(parts):
 
 
 def _selftest():
+    import atexit
     import shutil
     import tempfile
 
@@ -464,7 +465,12 @@ def _selftest():
     # collection logic) so every case below, plus the subprocess-based case
     # 14 (which inherits the current environment by default), keeps working.
     os.environ["GIT_SAFE_BIN"] = shutil.which("git") or ""
-    os.environ["GIT_SAFE_HOME"] = tempfile.mkdtemp()
+    git_safe_home = tempfile.mkdtemp()
+    os.environ["GIT_SAFE_HOME"] = git_safe_home
+    # Runs on every exit path below (both sys.exit(0) and sys.exit(1)),
+    # unlike a plain end-of-function cleanup line that a failing check's
+    # early sys.exit would skip.
+    atexit.register(shutil.rmtree, git_safe_home, ignore_errors=True)
 
     failures = []
 
