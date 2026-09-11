@@ -323,7 +323,7 @@ that is this file's own mandatory rule whenever any group ends there).
 
 ## Compaction-only exception (`--compact`, opt-in — see `references/compaction.md`)
 
-Two narrow, explicitly-scoped exceptions apply ONLY when `--compact` is ON for this session AND
+Three narrow, explicitly-scoped exceptions apply ONLY when `--compact` is ON for this session AND
 the failure in question occurs on a compaction attempt's own candidate thread specifically —
 every rule in this file continues to apply completely unmodified to the round's own REAL group
 (the existing/OLD thread), and to every session where `--compact` is OFF:
@@ -348,3 +348,18 @@ every rule in this file continues to apply completely unmodified to the round's 
    shot: it either succeeds, or the whole compaction attempt is immediately exhausted) — and never
    to an ordinary group's own genuine round-1 attempt, which keeps this file's literal round-1
    scoping exactly as written.
+3. **This file's own `no_material_reviewed` recovery (its "never resume-safe, one bounded fresh
+   restart" rule) does NOT apply when the failure occurs on a compaction attempt's own candidate
+   thread specifically.** A compaction candidate's own dispatch returning
+   `material_reviewed:false` (the wrapper-level route) or a receipt-mismatch (Claude's own Phase 2
+   route) is, like exception 1 above, an internal sub-step of producing that round's one real
+   outcome, not "a group" in this file's own sense — `references/compaction.md`'s own "On
+   failure" section already fully owns this case: discard the candidate, fall through to the
+   fallback `--resume` dispatch on the OLD, still-alive thread, exactly like any other
+   candidate-dispatch failure reason. This does NOT contradict `no_material_reviewed`'s own
+   "never resume a proven-hollow context" premise — the thread being resumed here is the
+   PRE-COMPACTION old thread, which never itself returned `no_material_reviewed`; only the
+   abandoned CANDIDATE did, and it is discarded, never resumed. `no_material_reviewed`'s own
+   "one bounded fresh restart" recovery applies ONLY to a REAL group's own main thread going
+   hollow — never to a compaction candidate's own dispatch, which compaction's own candidate
+   lifecycle already fully handles.

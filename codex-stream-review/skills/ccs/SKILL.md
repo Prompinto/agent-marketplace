@@ -1915,12 +1915,15 @@ omission rule.
 
 - `target.scope`: `"uncommitted"` / `"base"` / `"commit"` for round 1 (whichever fresh scope flag
   was used); `"resume"` for every round 2+ — no scope flag is ever sent on those, so logging the
-  original scope value would misrepresent what actually happened that round. **One narrow
-  exception:** a `no_material_reviewed` restart (`references/retry-guards.md`) is itself a round
-  2+ dispatch that is genuinely fresh, never a resume — its own JSONL line logs the ACTUAL scope
-  flag used (`"uncommitted"`/`"base"`/`"commit"`), not `"resume"`, since that restart abandons the
-  old thread and dispatches fresh, exactly like round 1 would. Every OTHER round 2+ dispatch is
-  still always `"resume"` — this exception is confined to that one restart alone. **A single value
+  original scope value would misrepresent what actually happened that round. **A `no_material_reviewed`
+  restart (`references/retry-guards.md`) is itself a round 2+ dispatch that is genuinely fresh,
+  never a resume** — its own JSONL line logs the ACTUAL scope flag used
+  (`"uncommitted"`/`"base"`/`"commit"`), not `"resume"`, since that restart abandons the old thread
+  and dispatches fresh, exactly like round 1 would. This is one of TWO known exceptions to the
+  general round-2+-is-always-resume rule; the other is `--compact`'s own restart
+  (`references/compaction.md`), which also logs its actual fresh scope rather than `"resume"`, for
+  the same underlying reason — it too is a genuinely fresh dispatch to a new thread, not a resume.
+  Every OTHER round 2+ dispatch is still always `"resume"` — no other exception exists. **A single value
   per round, never per group** — all groups advance in lockstep with the round counter (round 1
   dispatches every group fresh, round 2+ resumes every group), so a per-group `scope` field would
   be redundant state with no current use.
