@@ -454,13 +454,15 @@ second residual, disclosed risk: a check-then-use race remains between these eig
 completing and the wrapper's own LATER, separate re-resolution of the same `$CWD` pathname (once
 for its own `git -C "$CWD"` calls, once for its `cd "$CWD"` launch step) — inherent to any
 "verify a pathname locally, then hand it to a separately-invoked process" pattern, accepted as a
-narrow, low-probability window. This compaction-owned recheck is the ONLY point at which
-`CLEAN_REPO_DIR`'s cleanliness is EVER verified anywhere in this whole mechanism — round 1's own
-very first artifact dispatch, and any session that never triggers compaction at all, remain fully
-exposed to this same pollution risk with NO check of any kind, a real, disclosed, PRE-EXISTING
-gap in the base mechanism itself, not introduced or widened by compaction, and out of scope for
-this feature to close (doing so would mean adding a new check to the base skill's own Phase 0/
-Phase 1 setup, which this file does not own).
+narrow, low-probability window. This compaction-owned recheck, and `references/retry-guards.md`'s
+own `no_material_reviewed` restart recheck (added later, reusing this exact eight-check gate by
+cross-reference for the identical reason), are the ONLY points at which `CLEAN_REPO_DIR`'s
+cleanliness is EVER verified anywhere in this whole mechanism — round 1's own very first artifact
+dispatch, and any session that never triggers compaction AND never hits a `no_material_reviewed`
+restart, remain fully exposed to this same pollution risk with NO check of any kind, a real,
+disclosed, PRE-EXISTING gap in the base mechanism itself, not introduced or widened by either
+feature, and out of scope for either feature to close (doing so would mean adding a new check to
+the base skill's own Phase 0/Phase 1 setup, which neither file owns).
 
 If any of the eight checks is not clean, this is treated exactly like any other compaction
 failure (log the narration, fall through to the normal `--resume` fallback in "On failure" below) —
