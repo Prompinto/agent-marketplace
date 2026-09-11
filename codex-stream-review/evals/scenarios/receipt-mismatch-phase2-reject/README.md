@@ -266,12 +266,20 @@ under any thread id, exactly one leaked + one current thread, an exact 1:1 recon
 against this file's own real `PENDING:...` records, a genuinely persisted receipt on the accepted
 round). They cannot re-verify that the receipt-VALUE comparison itself (round 1's receipt vs its
 schedule's slot-1 token; the restart's receipt vs its own schedule's slot-1 token) actually
-happened — by design, `SKILL.md`'s "Receipt schedule generation" section guarantees a
+happened — as `SKILL.md`'s "Receipt schedule generation" section is CURRENTLY documented, a
 `RECEIPT_SCHEDULE_FILE`'s content is never included in any `FOCUS_FILE`, never excerpted into
-JSONL History text, and never part of any JSONL line, so no durable artifact ever holds the
-schedule value a checker could compare against after the fact. This is a deliberate confidentiality
-property of the schedule mechanism, not an oversight, and it is not something this eval should try
-to work around by weakening that guarantee. The only evidence that the comparison genuinely
-happened is the one-time live-verification narrative captured above in "Live verification actually
-performed" (steps 4 and 7), which recorded the real schedule tokens and the real `if`-test
-comparison output at the time this scenario was built.
+JSONL History text, and never part of any JSONL line, so no durable artifact of today's design ever
+holds the schedule value a checker could compare against after the fact. This is a deliberate
+confidentiality property of the CURRENT schedule mechanism, not an oversight, and it is not
+something this eval should try to work around by weakening that guarantee. It is a disclosed
+limitation of the current design, not an unavoidable law of nature: a commitment-based scheme
+(persisting a SHA-256 hash of the expected token at issuance, and a hash of the received value on a
+rejected attempt) could in principle make the match/mismatch outcome durably, artifact-only
+verifiable without ever storing the raw token — but that would be a production-feature change to
+`SKILL.md`'s own JSONL schema, out of scope for this eval-scenario-only task, and is not implemented
+here. (This session's own persistent memory separately tracks a related, still-open idea in this
+area — preserving a hollow attempt's own mismatched receipt/token values for diagnosis — see
+`ccs_backlog_from_real_usage_feedback.md`'s "Candidate 5".) The only evidence that the comparison
+genuinely happened, absent such a future scheme, is the one-time live-verification narrative
+captured above in "Live verification actually performed" (steps 4 and 7), which recorded the real
+schedule tokens and the real `if`-test comparison output at the time this scenario was built.

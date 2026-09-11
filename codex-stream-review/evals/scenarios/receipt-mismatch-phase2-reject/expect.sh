@@ -139,8 +139,20 @@ else
     check "round-1 current-thread record: codex_review.findings (fabricated round-1 finding must never leak in)" "$JSONL_FINDINGS" "[]"
   fi
 
-  PENDING_COUNT="$(jq -r 'select(.receipt_issued != null) | select(.receipt_issued.thread_id | startswith("PENDING:")) | .receipt_issued.thread_id' "$JSONL_FILE" | wc -l | tr -d ' ')"
+  # Whole-file scan (every line, any round, any thread_id) for a leaked finding -- the
+  # round-1/current-thread check above only inspects ONE record, so a non-round-1 record (or a
+  # round-1 record under a different thread_id) smuggling a non-empty codex_review.findings would
+  # pass that check unnoticed. This assertion is format-agnostic: it doesn't depend on the
+  # fabricated finding's exact text, just that NO line in the whole file ever carries one.
+  WHOLE_FILE_FINDINGS_LEAK_COUNT="$(jq -c 'select((.codex_review.findings // []) | length > 0)' "$JSONL_FILE" | wc -l | tr -d ' ')"
+  check "whole-file scan: count of JSONL lines (any round, any thread_id) with non-empty codex_review.findings" "$WHOLE_FILE_FINDINGS_LEAK_COUNT" "0"
+
+  PENDING_THREAD_IDS="$(jq -r 'select(.receipt_issued != null) | select(.receipt_issued.thread_id | startswith("PENDING:")) | .receipt_issued.thread_id' "$JSONL_FILE")"
+  PENDING_COUNT="$(printf '%s\n' "$PENDING_THREAD_IDS" | grep -c . || true)"
   check "count of receipt_issued records with a PENDING:... thread_id" "$PENDING_COUNT" "2"
+
+  PENDING_DISTINCT_COUNT="$(printf '%s\n' "$PENDING_THREAD_IDS" | sort -u | grep -c . || true)"
+  check "the PENDING:... thread_id values are distinct from each other (no duplicate placeholder reused across schedules)" "$PENDING_DISTINCT_COUNT" "2"
 
   RECONCILED_IDS="$(jq -r 'select(.receipt_issued != null) | select(.receipt_issued.reconciles != null) | .receipt_issued.thread_id' "$JSONL_FILE" | sort)"
   RECONCILED_COUNT="$(printf '%s\n' "$RECONCILED_IDS" | grep -c . || true)"
@@ -169,7 +181,7 @@ else
     fi
     PENDING_IDX="$(echo "$PENDING_MATCH" | jq -r '.idx')"
     check "reconciliation record for thread [$REC_TID]: index matches the PENDING record it claims to reconcile ([$REC_RECONCILES])" "$REC_IDX" "$PENDING_IDX"
-  done <<< "$RECONCILE_RECORDS"
+  done < <(printf '%s\n' "$RECONCILE_RECORDS")
 
   RECONCILES_VALUES_SORTED="$(printf '%s\n' "$RECONCILE_RECORDS" | jq -r '.reconciles' | sort)"
   PENDING_TIDS_SORTED="$(printf '%s\n' "$PENDING_RECORDS" | jq -r '.tid' | sort)"
