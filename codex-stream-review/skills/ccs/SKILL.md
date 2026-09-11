@@ -1895,7 +1895,7 @@ is omitted entirely, and so are `investigation_evidence`, `kept_last_message_pat
   "target": {"repo": "<repo root>", "scope": "uncommitted", "focus": "<the focus text sent this round>"},
   "codex_review": {"ok": true, "verdict": "ISSUES", "findings": [
     {"id": "f1", "file": "...", "line": 42, "severity": "high", "summary": "...", "evidence": "...", "linked_finding_id": null}
-  ]},
+  ], "material_reviewed": true, "material_receipt": "<this round's own receipt token from RECEIPT_SCHEDULE_FILE>", "material_receipt_index": 1},
   "coverage_source": {"status": "complete"},
   "claude_verification": [
     {"finding_id": "f1", "claim_id": "f1", "action": "accept|reject_with_rationale|request_rereview|parked", "rationale": "..."}
