@@ -53,6 +53,18 @@ kill_process_group() {
   kill -KILL -"$pid" 2>/dev/null
 }
 on_signal() {
+  # Round 5 finding (ported from run-ccs-review.sh): this function used to
+  # leave $CODEX_PID reaped-but-set for its whole remaining body (job
+  # cleanup, keep_and_remove_last_message, JSON output) with the real trap
+  # still installed -- a SECOND INT/TERM arriving anywhere in that window
+  # re-enters this same function (live-reproduced: two TERM signals sent to
+  # a handler that keeps a reaped PID around both see the same stale value
+  # on the second entry), and the kill_process_group call below would then
+  # act on that stale, possibly-OS-recycled PID. Disabling INT/TERM for the
+  # rest of this cleanup closes that off entirely -- this function always
+  # exits the whole script before returning, so there is no later point that
+  # still needs INT/TERM handling restored.
+  trap '' INT TERM
   kill_process_group "${CODEX_PID:-}"
   # Reap the killed dispatch before touching $LAST_MESSAGE_FILE: SIGKILL only
   # requests termination, it does not prove the child has actually stopped
@@ -61,6 +73,10 @@ on_signal() {
   # race the writer. Guarded on CODEX_PID being set: a signal landing before
   # dispatch (e.g. during diff collection) has no PID to wait on.
   [ -n "${CODEX_PID:-}" ] && wait "$CODEX_PID" 2>/dev/null
+  # Reset immediately, now that INT/TERM are disabled above -- a stale PID
+  # left here risks the OS reusing it for an unrelated process that a later
+  # kill_process_group call would wrongly TERM/KILL.
+  CODEX_PID=""
   local job_pid
   for job_pid in $(jobs -p 2>/dev/null); do
     kill -KILL -"$job_pid" 2>/dev/null

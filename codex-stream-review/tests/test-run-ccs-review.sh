@@ -402,6 +402,65 @@ else
 fi
 rm -rf "$CAPTURE_DIR"
 
+# --- CSR-001 regression: run-stream-review.sh's own on_signal() (a
+# structurally separate copy of the same handler pattern above, not shared
+# code) used to leave $CODEX_PID reaped-but-set for its whole remaining body
+# (job cleanup, keep_and_remove_last_message, JSON output) with the real
+# INT/TERM trap still installed -- a SECOND signal arriving while the first
+# is still being handled re-enters the same function and can print a SECOND
+# final JSON line, violating skills/stream-review/SKILL.md's own "prints
+# exactly one line of JSON" contract. Live-reproduced during the codex-cli
+# audit with two SIGTERMs ~50ms apart; this fixture uses a wider (but still
+# tight) gap for reliability across slower/loaded machines while still
+# landing inside kill_process_group's own 1s TERM-then-KILL sleep window,
+# where the original handler's trap was still live.
+WRAPPER_STREAM="$SCRIPT_DIR/../scripts/run-stream-review.sh"
+SR_REPO="$(mktemp -d)"
+
+sr_test_double_signal_one_json_line() {
+  local marker outfile wrapper_pid waited json_line_count
+  marker="$(mktemp -u)"
+  outfile="$(mktemp)"
+  export FAKE_CODEX_SCENARIO=hang FAKE_CODEX_SLEEP_SECS=30 FAKE_CODEX_MARKER_FILE="$marker"
+  # Same rationale as pd_test_interrupted above for invoking the wrapper
+  # directly (not via a helper function) as the backgrounded command: $!
+  # must point at the real wrapper process running the signal trap, not an
+  # extra function-call supervisor.
+  printf '%s' x | PATH="$FAKE_BIN_DIR:$PATH" HOME="$FAKE_HOME" "$WRAPPER_STREAM" --cwd "$SR_REPO" \
+    > "$outfile" 2>&1 &
+  wrapper_pid=$!
+
+  waited=0
+  while [ ! -e "$marker" ] && [ "$waited" -lt 50 ]; do sleep 0.1; waited=$((waited + 1)); done
+  if [ ! -e "$marker" ]; then
+    fail "CSR-001 double-signal: fake-codex never started (marker not seen within 5s)"
+    kill -TERM "$wrapper_pid" 2>/dev/null
+    wait "$wrapper_pid" 2>/dev/null
+    rm -f "$marker" "$outfile"
+    unset FAKE_CODEX_SCENARIO FAKE_CODEX_SLEEP_SECS FAKE_CODEX_MARKER_FILE
+    return
+  fi
+
+  waited=0
+  while ! grep -q '^THREAD_ID=' "$outfile" 2>/dev/null && [ "$waited" -lt 50 ]; do sleep 0.1; waited=$((waited + 1)); done
+
+  kill -TERM "$wrapper_pid" 2>/dev/null
+  sleep 0.3
+  kill -TERM "$wrapper_pid" 2>/dev/null
+  wait "$wrapper_pid" 2>/dev/null
+
+  json_line_count="$(grep -c '"reason":"interrupted"' "$outfile")"
+  if [ "$json_line_count" -eq 1 ]; then
+    pass "CSR-001: two SIGTERMs 0.3s apart to run-stream-review.sh produce exactly one interrupted JSON line"
+  else
+    fail "CSR-001: expected exactly 1 interrupted JSON line from run-stream-review.sh, got $json_line_count (full output: $(cat "$outfile"))"
+  fi
+  rm -f "$marker" "$outfile"
+  unset FAKE_CODEX_SCENARIO FAKE_CODEX_SLEEP_SECS FAKE_CODEX_MARKER_FILE
+}
+sr_test_double_signal_one_json_line
+rm -rf "$SR_REPO"
+
 # --- timeout: the wrapper's own --timeout deadline, not a fake-codex exit.
 export FAKE_CODEX_SCENARIO=hang FAKE_CODEX_SLEEP_SECS=5
 OUT="$(pd_run fresh --timeout 1)"
