@@ -59,6 +59,13 @@ check() {
 check "exit_state" "$(jq -r '.exit_state' "$RESULT_FILE")" "CLEAN"
 check "round_count" "$(jq -r '.round_count' "$RESULT_FILE")" "3"
 
+# The final result artifact's own top-level coverage (distinct from round 3's own JSONL
+# coverage_source, checked separately below) must itself be complete -- the schema also permits
+# "partial"/"unknown", so an otherwise-valid CLEAN result with partial final coverage would pass
+# every other check here undetected without this one, matching the established convention in
+# scope-uncommitted/expect.sh.
+check "coverage.status" "$(jq -r '.coverage.status // ""' "$RESULT_FILE")" "complete"
+
 CLAIMS_COUNT="$(jq -r '.claims | length' "$RESULT_FILE")"
 check "claims length" "$CLAIMS_COUNT" "2"
 
@@ -115,6 +122,17 @@ else
   RESUME_DISTINCT_COUNT="$(echo "$RESUME_IDS" | grep -c . || true)"
   check "both mode=resume lines target exactly one distinct thread_id" "$RESUME_DISTINCT_COUNT" "1"
   check "the resumed thread_id is the leaked thread (thread A) -- never the current thread (thread B)" "$RESUME_IDS" "$EXPECTED_RESUME_IDS"
+
+  # The result.json's own threads[].cleanup=="deleted" fields are self-reported, not independent
+  # proof cleanup actually reached the fake Codex binary -- the invocation log's own mode=delete
+  # lines are that independent evidence (fake-codex logs every `codex delete --force -- <id>` call
+  # it actually receives), matching the established convention in scope-uncommitted/expect.sh.
+  DELETE_COUNT="$(grep -c '^mode=delete ' "$INVOCATION_LOG" || true)"
+  check "invocation log delete-mode count" "$DELETE_COUNT" "2"
+
+  DELETE_IDS="$(grep '^mode=delete ' "$INVOCATION_LOG" | sed -E 's/^mode=delete thread_id=([^ ]*).*/\1/' | sort)"
+  EXPECTED_DELETE_IDS="$(printf '%s\n' "$LEAKED_ID" "$CURRENT_ID" | sort)"
+  check "the two mode=delete lines target exactly the leaked and current thread ids" "$DELETE_IDS" "$EXPECTED_DELETE_IDS"
 fi
 
 RESULT_DIR="$(dirname "$RESULT_FILE")"
