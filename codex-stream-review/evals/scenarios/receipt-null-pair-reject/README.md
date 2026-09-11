@@ -61,8 +61,8 @@ because (a) it also needs to carry a fabricated `ISSUES` finding to prove that f
 into the session JSONL — a property the bare `DEFAULT_VERDICT` (`verdict:"CLEAN", findings:[]`)
 cannot exercise — and (b) an explicit construction makes the test's own intent self-evident in the
 script rather than depending on a fixture-internal default that could silently change later. Both
-approaches are schema/behaviorally equivalent for the null-pair fields themselves; see "Mechanical
-setup" below for the exact JSON actually used in the live run.
+approaches are schema/behaviorally equivalent for the null-pair fields themselves; see "Live
+verification actually performed" below for the exact JSON actually used in the live run.
 
 ## Mechanical setup
 
@@ -301,7 +301,7 @@ call, `FAKE_CODEX_INVOCATION_LOG` re-exported on every call.
     ```
 
 12. **Finding-2 malformed-input sanity checks re-run against the tightened, type-strict
-    `expect.sh`** (see "Mechanical fixes" below): with the genuine kept last-message file above
+    `expect.sh`**: with the genuine kept last-message file above
     temporarily mutated to `material_receipt: false` (a JSON boolean, not `null`),
     `check-result.sh` correctly **FAILED** — `"round 1's own kept dispatched content: material_receipt
     (must be the JSON null...): expected [null], got [not_null_or_missing]"`. With
