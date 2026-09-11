@@ -1625,18 +1625,25 @@ round 2+" rule (see that field's own description above). Two distinct cases foll
   successfully retried, regardless of how clean every other group's own findings turned out to be.
   **This holds every round, not only round 1** — see "Convergence logic across groups" below for
   why an individually-clean group does not exit the loop on its own cadence. **AND**
-- **If round 1's scope was `--uncommitted`:** round 1's `coverage_source.status` (the ROUND-1
-  N-group merged value when round 1 dispatched more than one group — see "Coverage is a
-  Round-1-only property" above) — the wrapper's own `coverage.source` object verbatim, captured
-  from whichever of round 1's dispatch attempts for that group actually carried it (ordinarily its
-  `ok:true` response, but see the Guards' resume-safe-retry capture note below for the case where
-  an earlier failed attempt is the one that carried it), or the sentinel
+- **If round 1's scope was `--uncommitted`:** the worst-case-wins merge of EVERY fresh
+  `--uncommitted` dispatch event that actually occurred this session and reported it — round 1's
+  own value (the ROUND-1 N-group merged value when round 1 dispatched more than one group — see
+  "Coverage is a Round-1-only property" above; the wrapper's own `coverage.source` object verbatim,
+  captured from whichever of round 1's dispatch attempts for that group actually carried it,
+  ordinarily its `ok:true` response, but see the Guards' resume-safe-retry capture note below for
+  the case where an earlier failed attempt is the one that carried it, or the sentinel
   `{"status":"unknown","omitted":[]}` only when NONE of round 1's dispatch attempts for that group
-  ever carried `coverage.source` at all — is explicitly `"complete"`, never assumed. `"partial"`
-  (real omitted files) or `"unknown"` fail this condition unless every omitted path has since been
-  explicitly reviewed another way or explicitly accepted as out-of-scope by the user. For round 1
-  scoped `--base`/`--commit`, this condition is automatically satisfied — those scopes never
-  report coverage at all. **AND**
+  ever carried `coverage.source` at all) is always included; a `--compact` restart's own coverage
+  (`references/compaction.md`'s "Coverage epoch" section) is ALSO included whenever a compaction
+  actually succeeded this session; a `no_material_reviewed` restart's own coverage (`references/
+  retry-guards.md`) is ALSO included whenever that restart occurred at round 2+ with
+  `--uncommitted` scope and succeeded (a restart occurring AT round 1 itself is simply another
+  attempt within round 1's own single coverage slot — see "Coverage is a Round-1-only property"
+  above for that disambiguation, never a separate merge input) — must be explicitly `"complete"`,
+  never assumed. `"partial"` (real omitted files) or `"unknown"` on ANY included value fails this
+  condition unless every omitted path has since been explicitly reviewed another way or explicitly
+  accepted as out-of-scope by the user. For round 1 scoped `--base`/`--commit`, this condition is
+  automatically satisfied — those scopes never report coverage at all. **AND**
 - **Claim ledger closure (always on — see `references/claim-ledger.md`, already read per its own
   mandatory-read instruction): every claim_id that has ever appeared this session (per-group, in
   parallel mode) has reached a terminal disposition — `resolved` or
