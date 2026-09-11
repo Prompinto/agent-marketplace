@@ -87,6 +87,14 @@ coming back missing/malformed, so its baseline can't be verified one way or the 
 separately covered here — all three are straightforward compositions of mechanics these five
 scenarios already exercise individually, and can be added later following the exact same pattern.
 
+**Group I (below), added for material verification, adds 5 more `built + verified` live scenarios
+(42 total)** — one per distinct `no_material_reviewed` trigger route and recovery outcome: a
+wrapper-level `material_reviewed:false` rejection, a Phase-2-only receipt-value mismatch, a genuine
+null-pair response from a thread with an active schedule, a fresh restart that genuinely carries
+`--compact`'s own digest-carryforward mechanism forward (not a lighter reinvented version), and a
+second hollow restart terminating the session at `COULD_NOT_VERIFY` rather than a third thread.
+See each scenario's own `README.md` for its exact task text/env vars and live-captured evidence.
+
 ### Group A — one scenario per terminal status (6 named entries; `review-log-integrity-failure`
 was split into 2 distinct scenarios per its two distinct real triggers, for 7 status-derived
 scenarios, plus the `near-limit-whitespace-performance` regression guard below (not tied to any
@@ -203,7 +211,7 @@ structural impossibility.
 | `no-material-reviewed-fresh-restart` | The fresh-restart recovery genuinely reuses compaction's own digest-carryforward + snapshot-integrity mechanism (not a lighter reinvented version), confirmed via a real resolved+open claim pair surviving into the restart's own seed | **built + verified** |
 | `no-material-reviewed-second-hollow` | A second no_material_reviewed on the restart's own new thread terminates at COULD_NOT_VERIFY, never a third thread -- both threads end up leaked, neither becomes current | **built + verified** |
 
-### Secondary tier — live-Codex acceptance (2, built after the 37 scripted scenarios above)
+### Secondary tier — live-Codex acceptance (2, built after the 42 scripted scenarios above)
 
 | Scenario | Targets | Status |
 |---|---|---|
@@ -234,7 +242,7 @@ you hand it, e.g.:
 bash codex-stream-review/evals/check-consistency.sh claim-ledger-live-acceptance run1.result.json run2.result.json run3.result.json
 ```
 
-It is NOT useful for any of the other 37 scripted (fake-codex-driven) scenarios in this harness --
+It is NOT useful for any of the other 42 scripted (fake-codex-driven) scenarios in this harness --
 those each have exactly one structurally forced outcome already, so there is no consistency question
 to ask of them.
 
