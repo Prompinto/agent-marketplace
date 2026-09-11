@@ -112,12 +112,24 @@ distinction matters). This closes the gap a prior fix round left open: that roun
 `run-ccs-review.sh` dispatch (bypassing `/ccs` itself) plus a by-eye comparison; this run drove the
 skill for real and checked the receipt programmatically.
 
+**This is a redo of an earlier live run whose own JSONL evidence turned out to be non-compliant
+with this file's own canonical JSONL shape** (`SKILL.md`'s example around its "Review history log"
+section) — that earlier run's round-outcome line omitted `material_reviewed`/`material_receipt`/
+`material_receipt_index` from `codex_review` despite the real wrapper response carrying them, and
+its restart's own `PENDING:...` receipt record was never reconciled to the restart's real thread id
+the way round 1's hollow-thread record correctly was. Both gaps were in how the driving agent wrote
+the JSONL by hand, never in `run-ccs-review.sh`/`fake-codex`/`SKILL.md` themselves — this redo fixes
+only the JSONL-construction discipline, keeping everything else (fixture shape, receipt-schedule
+construction, `setup.sh`'s live-generation design) unchanged from the version described above.
+
 **Fixture:** a real throwaway git repo (`eval_make_fixture_repo`) with one committed line and one
 uncommitted appended line in `lib.py`, the fake-`codex` fixture prepended onto `PATH` on every Bash
 call, `FAKE_CODEX_INVOCATION_LOG` re-exported on every call per the mechanical caveat.
 
-1. **Phase 0/1 setup** — session id, repo root, a real sizing pass (1 changed file → single-reviewer
-   `GROUP="main"`), and a real snapshot hash of the diff (`SNAPSHOT_DIGEST` a genuine 64-hex-char
+1. **Phase 0/1 setup** — session id `2026-09-11T125428-10175`, repo root
+   `/tmp/ccs-eval-material-reviewed-false-never-resumed.u7OxeT`, a real sizing pass (1 changed file
+   → single-reviewer `GROUP="main"`), and a real snapshot hash of the diff (`SNAPSHOT_DIGEST`
+   `f979c239deaba024486421eb2527249e8acf6a99b1844c8e8b4dce795ed4bd99`, a genuine 64-hex-char
    `shasum -a 256` value). `INSTALL_PATH` was pointed at this repo's own
    `codex-stream-review/scripts/run-ccs-review.sh` rather than the marketplace-cached plugin
    install, because that cached install (v1.0.6) predates the `material_reviewed`/`material_receipt`
@@ -125,51 +137,50 @@ call, `FAKE_CODEX_INVOCATION_LOG` re-exported on every call per the mechanical c
    it would have silently exercised the OLD wrapper, not the code this scenario exists to verify.
 2. **Round 1's own receipt schedule generated live**, right before round 1's dispatch, via
    `SKILL.md`'s exact `mktemp` + 70-iteration `shasum -a 256` loop, then durably recorded as a
-   `receipt_issued` JSONL line (`PENDING:<schedule-file-basename>`, index 1) BEFORE the dispatch was
-   ever constructed, per "Receipt slot issuance"'s own ordering requirement.
+   `receipt_issued` JSONL line (`PENDING:ccs-2026-09-11T125428-10175-main-receipt-schedule.txt.94tLgP`,
+   index 1) BEFORE the dispatch was ever constructed, per "Receipt slot issuance"'s own ordering
+   requirement.
 3. **Round 1 dispatch** (`--receipt-schedule-file <live-generated round-1 schedule>
    --receipt-slot 1`, `FAKE_CODEX_SCENARIO=schema_mismatch`, the `material_reviewed:false`+`ISSUES`
    answer): real response observed —
    ```json
-   {"ok":false,"reason":"schema_mismatch","threadId":"28815656-26ac-49da-bd9e-82f4bcd90ff4","detail":"no_material_reviewed: material_reviewed is false","coverage":{"source":{"reviewed_file_count":1,"omitted":[],"status":"complete"}},"execution":{"elapsed_seconds":1}}
+   {"ok":false,"reason":"schema_mismatch","threadId":"b5678cce-46ae-4b73-9150-cbb6c6ff20eb","detail":"no_material_reviewed: material_reviewed is false","coverage":{"source":{"reviewed_file_count":1,"omitted":[],"status":"complete"}},"execution":{"elapsed_seconds":1}}
    ```
    `detail` matches this scenario's own target exactly: the wrapper's dedicated
    `material_reviewed == false` check fires first, before the combined semantic check. Thread
-   `A` = `28815656-26ac-49da-bd9e-82f4bcd90ff4`. The `PENDING:...` receipt record was then reconciled
-   to this real thread id via a second JSONL line, and `A` was recorded as leaked.
+   `A` = `b5678cce-46ae-4b73-9150-cbb6c6ff20eb`. The `PENDING:...` receipt record was then
+   reconciled to this real thread id via a second JSONL line
+   (`{"receipt_issued":{"thread_id":"b5678cce-46ae-4b73-9150-cbb6c6ff20eb","index":1,"reconciles":"PENDING:ccs-2026-09-11T125428-10175-main-receipt-schedule.txt.94tLgP"}}`),
+   and `A` was recorded as leaked.
 4. **Restart's own real receipt schedule generated live**, as its own separate freshly-`mktemp`'d
-   file, per `references/retry-guards.md`'s recovery — never reusing round 1's schedule. Slot 1's
-   real token was read off this file at that moment: `4c2a8fc1374b9ad15a99aa15`.
-
-   **A genuine self-caught construction bug, disclosed rather than smoothed over:** the first attempt
-   at this step stored the whole line `RESTART_SLOT1_TOKEN=<token>` into a file instead of just the
-   raw token, so the first restart dispatch (real thread
-   `9f79bc72-58e0-4afe-94d8-763ed53b88c2`, since cleaned up and excluded from the final artifact
-   below) carried a `material_receipt` that did NOT match its own schedule's slot 1 — which the
-   subsequent programmatic Phase 2 step 1 check (below) would have correctly rejected as a synthetic
-   `no_material_reviewed`. This was caught immediately by actually running that check for real
-   rather than assuming success, both threads (`A` and the mis-constructed attempt) were cleaned up,
-   and the ENTIRE session was redone from Phase 0 with a fresh session id and careful raw-token
-   extraction (verified as exactly 24 bytes via `wc -c` before use). This is included here as
-   evidence the check performed in step 6 below is real and load-bearing, not decorative — a
-   fabricated or merely-narrated verification would have no reason to also show its own
-   error-correction.
+   file (`ccs-2026-09-11T125428-10175-main-restart-receipt-schedule.txt.FdNrT6`), per
+   `references/retry-guards.md`'s recovery — never reusing round 1's schedule. Slot 1's real token
+   was read off this file at that moment: `7f358ee934b448a0a1b3c4b4` (verified as exactly 24 raw
+   bytes via `wc -c` before use). Its own PENDING `receipt_issued` line
+   (`{"receipt_issued":{"thread_id":"PENDING:ccs-2026-09-11T125428-10175-main-restart-receipt-schedule.txt.FdNrT6","index":1}}`)
+   was durably recorded before this dispatch was constructed, exactly mirroring round 1's own hollow
+   thread's issuance pattern in step 2 above.
 5. **Restart dispatch** (`--receipt-schedule-file <live-generated restart schedule>
    --receipt-slot 1`, `FAKE_CODEX_SCENARIO=normal`, `FAKE_CODEX_FINAL_ANSWER` constructed with `jq`
-   (never hand-interpolated) carrying `material_receipt:"4c2a8fc1374b9ad15a99aa15"` and
+   (never hand-interpolated) carrying `material_receipt:"7f358ee934b448a0a1b3c4b4"` and
    `material_receipt_index:1`): real response observed —
    ```json
-   {"ok":true,"threadId":"87d69b21-ea24-431c-838e-43e2ef2dd377","verdict":{"verdict":"CLEAN","findings":[],"summary":null,"dimensions":{...all not_applicable/checked...},"material_reviewed":true,"material_receipt":"4c2a8fc1374b9ad15a99aa15","material_receipt_index":1},"coverage":{"source":{"reviewed_file_count":1,"omitted":[],"status":"complete"}},"execution":{"elapsed_seconds":0}}
+   {"ok":true,"threadId":"98d80a5b-381f-42a6-af43-e6656133202e","verdict":{"verdict":"CLEAN","findings":[],"summary":null,"dimensions":{...all not_applicable/checked...},"material_reviewed":true,"material_receipt":"7f358ee934b448a0a1b3c4b4","material_receipt_index":1},"coverage":{"source":{"reviewed_file_count":1,"omitted":[],"status":"complete"}},"execution":{"elapsed_seconds":0}}
    ```
-   Genuine new thread `B` = `87d69b21-ea24-431c-838e-43e2ef2dd377`, distinct from `A`, CLEAN.
+   Genuine new thread `B` = `98d80a5b-381f-42a6-af43-e6656133202e`, distinct from `A`, CLEAN. The
+   restart's own PENDING receipt record from step 4 was then reconciled to this real thread id via a
+   second JSONL line
+   (`{"receipt_issued":{"thread_id":"98d80a5b-381f-42a6-af43-e6656133202e","index":1,"reconciles":"PENDING:ccs-2026-09-11T125428-10175-main-restart-receipt-schedule.txt.FdNrT6"}}`)
+   — the reconciliation this scenario's earlier run left missing, now present and following the
+   identical `(thread_id, index)` matching pattern as thread `A`'s own reconciliation in step 3.
 6. **Programmatic Phase 2 step 1 check** (the check a live orchestrating agent performs on this
    response before ever accepting it) — not a by-eye comparison: extracted slot 1's token from the
    restart's own schedule file with `awk`, extracted `verdict.material_receipt`/
    `verdict.material_receipt_index` from the response with `jq`, and compared both with a real shell
    `if` test:
    ```
-   expected slot=1 token=4c2a8fc1374b9ad15a99aa15
-   response   index=1 receipt=4c2a8fc1374b9ad15a99aa15
+   expected slot=1 token=7f358ee934b448a0a1b3c4b4
+   response   index=1 receipt=7f358ee934b448a0a1b3c4b4
    PHASE_2_STEP_1_RECEIPT_CHECK: MATCH -- accept as genuine CLEAN, proceed to convergence
    ```
    This is the concrete evidence that a fully live-orchestrated `/ccs` session — one that actually
@@ -177,35 +188,37 @@ call, `FAKE_CODEX_INVOCATION_LOG` re-exported on every call per the mechanical c
    success — reaches real, Phase-2-compliant `CLEAN` here, not just wrapper-level `ok:true`.
 7. **Round 1's own JSONL line appended and verified** (`tail -n 1 <log> | jq -e '.round == 1'`
    returned `true`) to the real review-history log at
-   `~/.claude/plugins/data/codex-stream-review/ccs-logs/ccs-eval-material-reviewed-false-never-resumed-p9yu9a/2026-09-11T123743-98641.jsonl`,
-   carrying `schema_version: 3`, `thread_id: "87d69b21-ea24-431c-838e-43e2ef2dd377"`,
-   `coverage_source: {"status":"complete"}`, `round_outcome: "converged"`.
+   `~/.claude/plugins/data/codex-stream-review/ccs-logs/ccs-eval-material-reviewed-false-never-resumed-u7oxet/2026-09-11T125428-10175.jsonl`,
+   carrying `schema_version: 3`, `thread_id: "98d80a5b-381f-42a6-af43-e6656133202e"`,
+   `coverage_source: {"status":"complete"}`, `round_outcome: "converged"`, and — carried verbatim
+   into `codex_review` from the restart's own real response in step 5, closing the gap the earlier
+   run left open — `"material_reviewed":true,"material_receipt":"7f358ee934b448a0a1b3c4b4","material_receipt_index":1`.
 8. **`FAKE_CODEX_INVOCATION_LOG`** (`/tmp/ccs-eval-material-reviewed-false-never-resumed-invocation.log`),
    real contents observed after both dispatches plus both cleanups:
    ```
-   mode=fresh thread_id=28815656-26ac-49da-bd9e-82f4bcd90ff4 scenario=schema_mismatch
-   mode=fresh thread_id=87d69b21-ea24-431c-838e-43e2ef2dd377 scenario=normal
-   mode=delete thread_id=87d69b21-ea24-431c-838e-43e2ef2dd377 scenario=normal
-   mode=delete thread_id=28815656-26ac-49da-bd9e-82f4bcd90ff4 scenario=normal
+   mode=fresh thread_id=b5678cce-46ae-4b73-9150-cbb6c6ff20eb scenario=schema_mismatch
+   mode=fresh thread_id=98d80a5b-381f-42a6-af43-e6656133202e scenario=normal
+   mode=delete thread_id=98d80a5b-381f-42a6-af43-e6656133202e scenario=normal
+   mode=delete thread_id=b5678cce-46ae-4b73-9150-cbb6c6ff20eb scenario=normal
    ```
    Exactly 2 `mode=fresh` lines (two distinct thread ids), **zero** `mode=resume` lines — direct,
    mechanical proof `A` was never `--resume`d.
 9. **Cleanup** — `run-ccs-review.sh --cleanup <A>` and `--cleanup <B>` (`FAKE_CODEX_CLEANUP_OK=1`)
    both returned `{"ok":true,"threadId":"...","deleted":true}`.
 10. **Resulting `.result.json`**, the actual file written at
-    `~/.claude/plugins/data/codex-stream-review/ccs-logs/ccs-eval-material-reviewed-false-never-resumed-p9yu9a/2026-09-11T123743-98641.result.json`
+    `~/.claude/plugins/data/codex-stream-review/ccs-logs/ccs-eval-material-reviewed-false-never-resumed-u7oxet/2026-09-11T125428-10175.result.json`
     (session-level fields assembled per `SKILL.md`'s Phase 3, from the real values above;
     schema-validated via `check-result.sh` against this scenario's own real, UNMODIFIED `expect.sh`,
     which reported `schema OK` / `assertions OK` / exit code 0):
     ```json
     {
-      "session_id": "2026-09-11T123743-98641",
-      "target": { "repo": "/tmp/ccs-eval-material-reviewed-false-never-resumed.p9yu9a", "scope": "uncommitted" },
+      "session_id": "2026-09-11T125428-10175",
+      "target": { "repo": "/tmp/ccs-eval-material-reviewed-false-never-resumed.u7OxeT", "scope": "uncommitted" },
       "exit_state": "CLEAN",
       "round_count": 1,
       "threads": [
-        { "group": "main", "thread_id": "28815656-26ac-49da-bd9e-82f4bcd90ff4", "kind": "leaked", "cleanup": "deleted" },
-        { "group": "main", "thread_id": "87d69b21-ea24-431c-838e-43e2ef2dd377", "kind": "current", "cleanup": "deleted" }
+        { "group": "main", "thread_id": "b5678cce-46ae-4b73-9150-cbb6c6ff20eb", "kind": "leaked", "cleanup": "deleted" },
+        { "group": "main", "thread_id": "98d80a5b-381f-42a6-af43-e6656133202e", "kind": "current", "cleanup": "deleted" }
       ],
       "claims": [],
       "coverage": { "status": "complete", "reviewed_file_count": 1, "omitted": [] },
