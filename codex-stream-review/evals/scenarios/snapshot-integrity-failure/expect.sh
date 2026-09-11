@@ -6,8 +6,9 @@
 #
 # Asserts, per this scenario's README:
 #   - exit_state == "SNAPSHOT_INTEGRITY_FAILURE"
-#   - claims == null (re-asserted here even though schema-check.jq already
-#     enforces it, so this file fails loudly and specifically on its own)
+#   - claims == null (re-asserted here even though check-result.sh's own
+#     schema validation step already enforces it, so this file fails loudly
+#     and specifically on its own)
 #   - round_count == 1 (only round 1 ever completed and was durably logged;
 #     round 2 was short-circuited before it could ever append anything)
 #   - at least one thread, every thread cleanup == "deleted" -- confirms the

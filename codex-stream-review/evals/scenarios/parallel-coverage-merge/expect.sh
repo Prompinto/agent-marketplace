@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Scenario-specific assertions for parallel-coverage-merge. Schema structure
 # (target.scope=="uncommitted" requires coverage to be an object) already
-# validated by check-result.sh's schema-check.jq.
+# validated by check-result.sh's own schema validation step.
 #
 #   - exit_state == "PARTIAL_COVERAGE" (worst-case-wins: one group's real
 #     "partial" outcome forces the merged coverage below CLEAN eligibility

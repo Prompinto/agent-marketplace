@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Scenario-specific assertions for parallel-live-acceptance. Schema structure already validated
-# by check-result.sh's schema-check.jq.
+# by check-result.sh's own schema validation step.
 #
 # This is a REAL Codex judgment scenario -- no exact round count or wording is asserted (per this
 # task's own instructions). Asserts only:

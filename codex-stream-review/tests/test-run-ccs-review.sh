@@ -1843,17 +1843,19 @@ rm -rf "$FC_GROUP_STATE"
 
 rm -rf "$FAKE_HOME" "$FAKE_BIN_DIR" "$PD_REPO"
 
-# --- check-result.sh contract fixtures (schema-check.jq + a real scenario's ---
-# --- own expect.sh, exercised together) ---
-# Proves the FULL check-result.sh contract, not just schema-check.jq alone:
-# every case below passes the scenario name "clean-basic" (never omitted),
-# so a mutation that schema-check.jq would miss but clean-basic/expect.sh
-# would catch (or vice versa) is still caught here.
+# --- check-result.sh contract fixtures (its own schema validation step ---
+# --- + a real scenario's own expect.sh, exercised together) ---
+# Proves the FULL check-result.sh contract, not just its own schema
+# validation step alone: every case below passes the scenario name
+# "clean-basic" (never omitted), so a mutation that the schema validation
+# step would miss but clean-basic/expect.sh would catch (or vice versa) is
+# still caught here.
 
 CHECK_RESULT_SH="$SCRIPT_DIR/../evals/check-result.sh"
 
 # A single canned-valid result.json, simultaneously valid per
-# schemas/interactive-result.schema.json (via lib/schema-check.jq) and per
+# schemas/interactive-result.schema.json (via check-result.sh's own schema
+# validation step) and per
 # scenarios/clean-basic/expect.sh's own assertions (exit_state CLEAN,
 # round_count 1, one thread kind:current cleanup:deleted).
 CB_VALID_JSON='{"session_id":"cb-fixture-session","target":{"repo":"/tmp/cb-fixture-repo","scope":"uncommitted"},"exit_state":"CLEAN","round_count":1,"threads":[{"group":"main","thread_id":"cb-fixture-thread","kind":"current","cleanup":"deleted"}],"claims":[],"coverage":{"status":"complete","reviewed_file_count":0,"omitted":[]},"input_errors":null}'
@@ -1886,10 +1888,24 @@ cb_mutation_should_fail "threads[0].cleanup set to a value outside deleted|faile
   '.threads[0].cleanup = "bogus"'
 cb_mutation_should_fail "round_count changed from a number to a string" \
   '.round_count = "1"'
-cb_mutation_should_fail "round_count changed to a schema-valid but scenario-wrong value (2 instead of 1) -- fails clean-basic/expect.sh specifically, not schema-check.jq" \
+cb_mutation_should_fail "round_count changed to a schema-valid but scenario-wrong value (2 instead of 1) -- fails clean-basic/expect.sh specifically, not check-result.sh's own schema validation step" \
   '.round_count = 2'
 
 rm -f "$CB_VALID_FILE"
+
+# CSR-005 regression guard: the exact malformed artifact from the audit's own
+# repro (numeric target.repo, fractional round_count, empty thread_id, an
+# extra top-level key, and a claim item missing required fields) -- the old
+# hand-written lib/schema-check.jq reported "schema OK" for this artifact.
+CSR005_MALFORMED_JSON='{"session_id":"audit-csr005-repro","target":{"repo":12345,"scope":"uncommitted"},"exit_state":"CLEAN","round_count":1.5,"threads":[{"group":"main","thread_id":"","kind":"current","cleanup":"deleted"}],"claims":[{"claim_id":"c1","file":"a.py","line":1,"severity":"high","summary":"x","evidence":"y","disposition":"open"}],"coverage":{"status":"complete","reviewed_file_count":0,"omitted":[]},"input_errors":null,"extra_top_level_key":true}'
+CSR005_MALFORMED_FILE="$(mktemp)"
+printf '%s' "$CSR005_MALFORMED_JSON" > "$CSR005_MALFORMED_FILE"
+if bash "$CHECK_RESULT_SH" "$CSR005_MALFORMED_FILE" >/dev/null 2>&1; then
+  fail "check-result.sh contract: CSR-005 audit repro (numeric target.repo, round_count 1.5, empty thread_id, extra top-level key, malformed claim) should FAIL schema validation, but PASSED"
+else
+  pass "check-result.sh contract: CSR-005 audit repro correctly FAILS schema validation"
+fi
+rm -f "$CSR005_MALFORMED_FILE"
 
 echo ""
 if [ "$FAILURES" -eq 0 ]; then

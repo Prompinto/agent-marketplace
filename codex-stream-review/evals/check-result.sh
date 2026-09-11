@@ -25,13 +25,13 @@ fi
 
 FAILED=0
 
-SCHEMA_VIOLATIONS="$(jq -f "$SCRIPT_DIR/lib/schema-check.jq" "$RESULT_FILE" 2>&1 || true)"
-if [ -n "$SCHEMA_VIOLATIONS" ]; then
-  echo "check-result.sh: schema violations in $RESULT_FILE:" >&2
-  echo "$SCHEMA_VIOLATIONS" | sed 's/^/  - /' >&2
-  FAILED=1
-else
+SCHEMA_FILE="$SCRIPT_DIR/../schemas/interactive-result.schema.json"
+if VALIDATOR_OUTPUT="$(python3 "$SCRIPT_DIR/lib/validate_interactive_result.py" "$SCHEMA_FILE" "$RESULT_FILE" 2>&1)"; then
   echo "check-result.sh: schema OK ($RESULT_FILE)"
+else
+  echo "check-result.sh: schema violations in $RESULT_FILE:" >&2
+  echo "$VALIDATOR_OUTPUT" | sed 's/^/  - /' >&2
+  FAILED=1
 fi
 
 if [ -n "$SCENARIO" ]; then

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Scenario-specific assertions for parallel-one-group-fails. Schema
-# structure already validated by check-result.sh's schema-check.jq.
+# structure already validated by check-result.sh's own schema validation step.
 #
 #   - exit_state == "COULD_NOT_VERIFY" (worst-case-wins: g1's exhausted
 #     retries force this even though g2 individually converged clean)

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Scenario-specific assertions for claim-oscillation-nonconsecutive. Schema
-# structure already validated by check-result.sh's schema-check.jq.
+# structure already validated by check-result.sh's own schema validation step.
 #
 #   - exit_state == "NOT_CONVERGED" (the oscillation guard fired at round 3,
 #     catching a non-consecutive recurrence -- round 1 raise, silent round

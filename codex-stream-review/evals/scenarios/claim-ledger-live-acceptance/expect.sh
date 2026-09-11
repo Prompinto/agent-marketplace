@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Scenario-specific assertions for claim-ledger-live-acceptance. Schema structure already
-# validated by check-result.sh's schema-check.jq.
+# validated by check-result.sh's own schema validation step.
 #
 # This is a REAL Codex judgment scenario -- no exact round count or wording is asserted. Asserts:
 #   - exit_state is a genuine SEMANTIC terminal state (CLEAN or NOT_CONVERGED) -- explicitly FAILS

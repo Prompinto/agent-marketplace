@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Scenario-specific assertions for clean-basic, invoked by check-result.sh as
 # `expect.sh <result.json>`. Schema structure is already validated by
-# check-result.sh itself (lib/schema-check.jq) before this runs -- this file
+# check-result.sh's own schema validation step before this runs -- this file
 # only asserts the things specific to THIS scenario's expected outcome.
 #
 # clean-basic targets exit_state=CLEAN on the simplest possible real /ccs
