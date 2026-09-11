@@ -56,7 +56,10 @@ mk_round() {
         }
       ],
       summary: "one open finding in sub()",
-      dimensions: $dims
+      dimensions: $dims,
+      material_reviewed: true,
+      material_receipt: null,
+      material_receipt_index: null
     }' > "$GROUP_STATE/round-${1}-final-answer.json"
 }
 

@@ -60,8 +60,8 @@ EOF
     [ -f "$d/setup.sh" ] && basename "$d"
   done
   echo
-  echo "See codex-stream-review/evals/README.md for the full ~28-scenario index (most are"
-  echo "specified there but not yet built -- only the ones listed above have a setup.sh today)."
+  echo "See codex-stream-review/evals/README.md for the full scenario index (42 scripted +"
+  echo "2 live-Codex-acceptance scenarios, all built and verified)."
 }
 
 if [ $# -eq 0 ] || [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then

@@ -73,7 +73,10 @@ for N in $(seq 0 19); do
         }
       ],
       summary: "one open finding in sub()",
-      dimensions: $dims
+      dimensions: $dims,
+      material_reviewed: true,
+      material_receipt: null,
+      material_receipt_index: null
     }' > "$GROUP_STATE/round-${N}-final-answer.json"
 done
 

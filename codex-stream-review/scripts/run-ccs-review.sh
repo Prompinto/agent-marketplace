@@ -274,6 +274,23 @@ build_review_prompt() {
   echo "STILL OPEN otherwise. This applies only to claim_ids the Context section actually names -- never"
   echo "invent a disposition for one it did not ask about."
   echo ""
+  echo "You must also report \"material_reviewed\" (a boolean) on EVERY response, fresh or"
+  echo "resumed. Set it to true only if the specific diff/artifact snapshot AND this round's own"
+  echo "Why/Scope/History text -- together, the canonical manifest for THIS round -- were both"
+  echo "genuinely present in your context and examined. This includes the ordinary case of"
+  echo "examining real, complete material and finding zero defects. Set it to false if either is"
+  echo "absent, partial, truncated, stale, or of unknown coverage -- for example, if you are being"
+  echo "asked to review a diff you cannot actually find anywhere in your own context. Never guess"
+  echo "true when you are uncertain whether you actually saw the material in question."
+  echo ""
+  if [ -n "$RECEIPT_SLOT" ]; then
+    echo ""
+    echo "Your context may contain a block labeled REVIEW_RECEIPT_SCHEDULE with numbered tokens."
+    echo "Report material_receipt_index: $RECEIPT_SLOT and the exact token value at position"
+    echo "$RECEIPT_SLOT in that schedule, in the material_receipt field. If you cannot locate that"
+    echo "schedule, or cannot find entry $RECEIPT_SLOT in it, set both material_receipt and"
+    echo "material_receipt_index to null instead of guessing."
+  fi
   echo "Respond with ONLY valid JSON matching this exact shape, no prose, no markdown code fences."
   echo "line, severity, and the top-level summary are ALWAYS present keys -- use null for any of them"
   echo "that don't apply, never omit the key itself. severity must be exactly one of \"low\", \"medium\","
@@ -292,6 +309,10 @@ build_review_prompt() {
   else
     echo "This scope has no diff, so there is nothing further below -- your review target is the"
     echo "\"## Context\" section above."
+  fi
+  if [ -n "$RECEIPT_SCHEDULE_PATH" ]; then
+    echo ""
+    printf '%s' "$RECEIPT_SCHEDULE_CONTENT"
   fi
 }
 
@@ -380,6 +401,9 @@ CODEX_PID=""
 # `mktemp -d` assignment below runs, never an env value inherited from
 # whatever invoked this script.
 SAFE_GIT_HOME=""
+RECEIPT_SLOT=""
+RECEIPT_SCHEDULE_PATH=""
+RECEIPT_SCHEDULE_CONTENT=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -451,6 +475,90 @@ while [ $# -gt 0 ]; do
       # failure instead of only knowing THAT it failed.
       [ $# -ge 2 ] || { printf '{"ok":false,"reason":"bad_args","detail":"--keep-last-message requires a value"}\n'; exit 1; }
       KEEP_LAST_MESSAGE_PATH="$2"; shift 2 ;;
+    --receipt-slot)
+      # Public, opt-in flag (documented in SKILL.md): the non-secret slot NUMBER Claude has
+      # already pre-committed via a durable JSONL receipt_issued append, BEFORE this dispatch was
+      # ever constructed. build_review_prompt() renders this into its own trusted zone as a fixed,
+      # N-parameterized instruction -- never restates a live token value, only the index to look up.
+      [ $# -ge 2 ] || { printf '{"ok":false,"reason":"bad_args","detail":"--receipt-slot requires a value"}\n'; exit 1; }
+      case "$2" in
+        # 1-3 digits, no leading zero (real slots are 1-70 per the design's N=70 schedule; this
+        # bound also keeps the value well clear of bash native-arithmetic overflow, and rejects
+        # a leading-zero value like "01" that would mismatch the schedule's own "1:", "2:" labels).
+        [1-9]|[1-9][0-9]|[1-9][0-9][0-9]) ;;
+        *)
+          DETAIL_JSON="$(printf '%s' "$2" | jq -Rs '"--receipt-slot must be a positive integer, got: " + .')"
+          printf '{"ok":false,"reason":"bad_args","detail":%s}\n' "$DETAIL_JSON"
+          exit 1 ;;
+      esac
+      RECEIPT_SLOT="$2"; shift 2 ;;
+    --receipt-schedule-file)
+      # Public, opt-in flag (documented in SKILL.md): the local path Claude itself created via
+      # `mktemp` (RECEIPT_SCHEDULE_FILE) holding this thread's private REVIEW_RECEIPT_SCHEDULE
+      # mapping. build_review_prompt() `cat`s this file's content directly into the most-trusted,
+      # final position of the prompt, outside every <$BOUNDARY> pair -- so validate its FULL SHAPE
+      # here (not just presence, and not just line 1 -- a header-only prefix followed by arbitrary
+      # content would otherwise still pass and get fully emitted into that trusted zone), the same
+      # "fail closed wherever a real alternative exists" precedent as --resume/--cleanup's own
+      # leading-dash rejection. `-f` (regular file only) runs BEFORE any read -- a directory is
+      # "readable" too, and reading one produces a raw non-JSON diagnostic on stderr ahead of any
+      # bad_args JSON (the same class of stray-output defect --receipt-slot's own overflow guard
+      # exists to prevent); a FIFO could also block this parser indefinitely. A genuinely-generated
+      # schedule file always has EXACTLY 71 lines: line 1 the literal header, lines 2-71 each an
+      # `<N>: <24 lowercase hex chars>` entry -- this is a cheap content-shape check, not
+      # cryptographic proof, but it catches both an arbitrary unrelated file and a header-only
+      # prefix with junk appended after it.
+      [ $# -ge 2 ] || { printf '{"ok":false,"reason":"bad_args","detail":"--receipt-schedule-file requires a value"}\n'; exit 1; }
+      if [ ! -f "$2" ]; then
+        DETAIL_JSON="$(printf '%s' "$2" | jq -Rs '"--receipt-schedule-file is not a regular file: " + .')"
+        printf '{"ok":false,"reason":"bad_args","detail":%s}\n' "$DETAIL_JSON"
+        exit 1
+      fi
+      if [ ! -r "$2" ]; then
+        DETAIL_JSON="$(printf '%s' "$2" | jq -Rs '"--receipt-schedule-file is not readable: " + .')"
+        printf '{"ok":false,"reason":"bad_args","detail":%s}\n' "$DETAIL_JSON"
+        exit 1
+      fi
+      # Read the content ONCE into a variable and validate/embed that variable from here on --
+      # never re-read "$2" again. Each shape check re-opening the path separately (the fix-round-3
+      # shape of this code) is a TOCTOU window: a local mutation between those reads, or between
+      # the last read here and build_review_prompt()'s own later embed (which happens well after
+      # diff/stdin collection has elapsed), could let content that was never actually validated
+      # reach the trusted zone. Plain `$(cat -- "$2")` strips ALL trailing newline bytes (not just
+      # one), which would let extra trailing blank lines silently vanish before the line-count
+      # check ever sees them -- append a non-newline sentinel, capture that too, then strip only
+      # the sentinel, mirroring this same file's own untracked-file capture pattern above (search
+      # "Plain \`\$(cat FILE)\` strips ALL trailing newline bytes").
+      RECEIPT_SCHEDULE_CONTENT="$(cat -- "$2" 2>/dev/null; printf 'x')"
+      RECEIPT_SCHEDULE_CONTENT="${RECEIPT_SCHEDULE_CONTENT%x}"
+      RECEIPT_SCHEDULE_SHAPE_OK=1
+      [ "$(printf '%s' "$RECEIPT_SCHEDULE_CONTENT" | wc -l | tr -d ' ')" = "71" ] || RECEIPT_SCHEDULE_SHAPE_OK=0
+      [ "$(printf '%s' "$RECEIPT_SCHEDULE_CONTENT" | head -n 1)" = "REVIEW_RECEIPT_SCHEDULE" ] || RECEIPT_SCHEDULE_SHAPE_OK=0
+      if [ "$RECEIPT_SCHEDULE_SHAPE_OK" -eq 1 ]; then
+        [ "$(printf '%s' "$RECEIPT_SCHEDULE_CONTENT" | tail -n +2 | grep -cE '^[0-9]+: [0-9a-f]{24}$')" = "70" ] || RECEIPT_SCHEDULE_SHAPE_OK=0
+      fi
+      # The per-line regex above only confirms each line LOOKS like a numbered entry -- it does not
+      # confirm the 70 labels are actually the sequence 1..70 (each exactly once) or that the 70
+      # tokens are pairwise distinct. A schedule with every entry labeled `1:` (making slots 2-70
+      # permanently unissuable), or every entry sharing one token (making a receipt replayable
+      # across slots), would otherwise still pass.
+      if [ "$RECEIPT_SCHEDULE_SHAPE_OK" -eq 1 ]; then
+        RECEIPT_SCHEDULE_ENTRIES="$(printf '%s' "$RECEIPT_SCHEDULE_CONTENT" | tail -n +2)"
+        RECEIPT_SCHEDULE_ACTUAL_LABELS="$(printf '%s\n' "$RECEIPT_SCHEDULE_ENTRIES" | cut -d: -f1)"
+        RECEIPT_SCHEDULE_EXPECTED_LABELS="$(seq 1 70)"
+        [ "$RECEIPT_SCHEDULE_ACTUAL_LABELS" = "$RECEIPT_SCHEDULE_EXPECTED_LABELS" ] || RECEIPT_SCHEDULE_SHAPE_OK=0
+        RECEIPT_SCHEDULE_DISTINCT_TOKENS="$(printf '%s\n' "$RECEIPT_SCHEDULE_ENTRIES" | awk -F': ' '{print $2}' | sort -u | wc -l | tr -d ' ')"
+        [ "$RECEIPT_SCHEDULE_DISTINCT_TOKENS" = "70" ] || RECEIPT_SCHEDULE_SHAPE_OK=0
+      fi
+      if [ "$RECEIPT_SCHEDULE_SHAPE_OK" -ne 1 ]; then
+        DETAIL_JSON="$(printf '%s' "$2" | jq -Rs '"--receipt-schedule-file does not match the expected 71-line REVIEW_RECEIPT_SCHEDULE shape: " + .')"
+        printf '{"ok":false,"reason":"bad_args","detail":%s}\n' "$DETAIL_JSON"
+        exit 1
+      fi
+      # RECEIPT_SCHEDULE_PATH is kept only as build_review_prompt()'s "was this flag given"
+      # presence marker -- the actual content it embeds is $RECEIPT_SCHEDULE_CONTENT, captured
+      # above, never a fresh read of this path.
+      RECEIPT_SCHEDULE_PATH="$2"; shift 2 ;;
     *)
       DETAIL_JSON="$(printf '%s' "$1" | jq -Rs '"unknown argument: " + .')"
       printf '{"ok":false,"reason":"bad_args","detail":%s}\n' "$DETAIL_JSON"
@@ -1024,6 +1132,17 @@ else
   elif [ -n "$SCHEMA" ] && ! printf '%s' "$FINAL_TEXT" | jq -e . >/dev/null 2>&1; then
     JUDGE_OUTPUT="$(printf '{"ok":false,"reason":"invalid_json","threadId":%s,"detail":"final answer is not valid JSON despite --output-schema"}\n' "$THREAD_ID_JSON")"
     RESULT=1
+  # Distinguish material_reviewed:false from every other semantic violation
+  # below with its own machine-parseable detail string (containing the
+  # literal substring "no_material_reviewed"), so a caller can tell this
+  # specific cause apart from an unrelated schema_mismatch. Uses has() rather
+  # than `// true` -- jq's `//` treats `false` itself as falsy, which would
+  # make a real material_reviewed:false silently fall through as if the
+  # field were merely missing. has()+== keeps "missing" and "false" distinct,
+  # so a MISSING field still falls through to the combined check below.
+  elif [ -n "$SCHEMA" ] && printf '%s' "$FINAL_TEXT" | jq -e 'has("material_reviewed") and (.material_reviewed == false)' >/dev/null 2>&1; then
+    JUDGE_OUTPUT="$(printf '{"ok":false,"reason":"schema_mismatch","threadId":%s,"detail":"no_material_reviewed: material_reviewed is false"}\n' "$THREAD_ID_JSON")"
+    RESULT=1
   # Schema-conformant JSON alone doesn't guarantee CLEAN<=>no-findings,
   # ISSUES<=>at-least-one-finding, or nonblank verification/dimension
   # evidence -- review-verdict.schema.json's plain type/enum/required checks
@@ -1036,7 +1155,7 @@ else
   elif [ -n "$SCHEMA" ] && ! printf '%s' "$FINAL_TEXT" | jq -e '
         (.verdict == "CLEAN" or .verdict == "ISSUES") and
         has("summary") and (.summary == null or (.summary | type) == "string") and
-        ((keys_unsorted - ["verdict","findings","summary","dimensions"]) == []) and
+        ((keys_unsorted - ["verdict","findings","summary","dimensions","material_reviewed","material_receipt","material_receipt_index"]) == []) and
         (.findings | type == "array") and
         (.findings | all(
           (has("file") and (.file | type) == "string") and
@@ -1054,7 +1173,13 @@ else
           (has("status") and (.status == "checked" or .status == "not_applicable" or .status == "blocked")) and
           (has("evidence") and (.evidence | type) == "string" and (.evidence | test("\\S"))) and
           ((keys_unsorted - ["status","evidence"]) == [])
-        ))
+        )) and
+        has("material_reviewed") and (.material_reviewed | type) == "boolean" and
+        (if .material_reviewed == false then false else true end) and
+        has("material_receipt") and has("material_receipt_index") and
+        ((.material_receipt | type) == "null" or (.material_receipt | type) == "string") and
+        ((.material_receipt_index | type) == "null" or ((.material_receipt_index | type) == "number" and (.material_receipt_index | floor) == .material_receipt_index and .material_receipt_index >= 1)) and
+        (((.material_receipt | type) == "null") == ((.material_receipt_index | type) == "null"))
       ' >/dev/null 2>&1; then
     JUDGE_OUTPUT="$(printf '{"ok":false,"reason":"schema_mismatch","threadId":%s,"detail":"final answer JSON does not satisfy review-verdict semantic rules"}\n' "$THREAD_ID_JSON")"
     RESULT=1

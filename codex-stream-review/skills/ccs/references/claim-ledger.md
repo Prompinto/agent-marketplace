@@ -250,12 +250,16 @@ redundant second disambiguation mechanism.
 
 ## 10. Schema versioning + legacy-session policy
 
-A version marker on a session's FIRST JSONL line only (e.g. `"schema_version": 2` — bump only when
-a future change alters how existing lines must be interpreted, not for additive-only fields). A
-session started before this feature shipped has no such marker on its first line. `--resume` of
-such a pre-existing session under this (post-Phase-2) version of the skill is refused outright — a
-missing or older `schema_version` on the session's first line is a hard stop requiring a genuinely
-fresh session (new `SESSION_ID`, new threads), never an attempted mixed-mode reduce mixing
+A version marker on the session's first `.round`-bearing JSONL line only (e.g. `"schema_version":
+2` — bump only when a future change alters how existing lines must be interpreted, not for
+additive-only fields) — **not necessarily the physical first line of the file**: a
+`receipt_issued` line (see `SKILL.md`'s "Receipt slot issuance" section) carries no `.round` field
+and may legitimately precede the session's first round-outcome line, so it is never mistaken for
+this line. A session started before this feature shipped has no such marker on its first
+`.round`-bearing line. `--resume` of such a pre-existing session under this (post-Phase-2) version
+of the skill is refused outright — a missing or older `schema_version` on that line is a hard stop
+requiring a genuinely fresh session (new `SESSION_ID`, new threads), never an attempted mixed-mode
+reduce mixing
 old-format and new-format rounds in the same claim-state reconstruction.
 
 ## 11. Fail-closed universally

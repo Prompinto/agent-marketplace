@@ -454,13 +454,15 @@ second residual, disclosed risk: a check-then-use race remains between these eig
 completing and the wrapper's own LATER, separate re-resolution of the same `$CWD` pathname (once
 for its own `git -C "$CWD"` calls, once for its `cd "$CWD"` launch step) — inherent to any
 "verify a pathname locally, then hand it to a separately-invoked process" pattern, accepted as a
-narrow, low-probability window. This compaction-owned recheck is the ONLY point at which
-`CLEAN_REPO_DIR`'s cleanliness is EVER verified anywhere in this whole mechanism — round 1's own
-very first artifact dispatch, and any session that never triggers compaction at all, remain fully
-exposed to this same pollution risk with NO check of any kind, a real, disclosed, PRE-EXISTING
-gap in the base mechanism itself, not introduced or widened by compaction, and out of scope for
-this feature to close (doing so would mean adding a new check to the base skill's own Phase 0/
-Phase 1 setup, which this file does not own).
+narrow, low-probability window. This compaction-owned recheck, and `references/retry-guards.md`'s
+own `no_material_reviewed` restart recheck (added later, reusing this exact eight-check gate by
+cross-reference for the identical reason), are the ONLY points at which `CLEAN_REPO_DIR`'s
+cleanliness is EVER verified anywhere in this whole mechanism — round 1's own very first artifact
+dispatch, and any session that never triggers compaction AND never hits a `no_material_reviewed`
+restart, remain fully exposed to this same pollution risk with NO check of any kind, a real,
+disclosed, PRE-EXISTING gap in the base mechanism itself, not introduced or widened by either
+feature, and out of scope for either feature to close (doing so would mean adding a new check to
+the base skill's own Phase 0/Phase 1 setup, which neither file owns).
 
 If any of the eight checks is not clean, this is treated exactly like any other compaction
 failure (log the narration, fall through to the normal `--resume` fallback in "On failure" below) —
@@ -705,6 +707,15 @@ THAT round's own recorded values, then:
 
 ### Step 4 — dispatch a fresh `run-ccs-review.sh` call
 
+**This fresh dispatch is a schedule-(re)generation trigger** — see `SKILL.md`'s "Receipt schedule
+generation" section, whose trigger list includes a compaction restart's brand-new thread alongside
+round 1 and a `no_material_reviewed` restart. Generate a fresh `RECEIPT_SCHEDULE_FILE` for this new
+thread (never reusing the pre-compaction thread's), then perform the ordinary receipt-slot-issuance
+procedure (`SKILL.md`'s "Receipt slot issuance" section — durably append `receipt_issued` to the
+JSONL log BEFORE this dispatch is ever constructed) and pass BOTH `--receipt-slot "$NEXT_SLOT"`
+AND `--receipt-schedule-file "$RECEIPT_SCHEDULE_FILE"` on this dispatch — it establishes a
+brand-new thread, so both flags apply here exactly like round 1's own fresh dispatch.
+
 Dispatch a **fresh** `run-ccs-review.sh` call (same scope flag as round 1, not `--resume` — or,
 for a non-repo-artifact session per step 2 above, `--uncommitted` against `CLEAN_REPO_DIR` with
 the original artifact text included in focus) with focus text composed of, in order:
@@ -728,34 +739,41 @@ the original artifact text included in focus) with focus text composed of, in or
 ordinary Phase 2 steps exactly like any other round's; no separate follow-up dispatch happens in
 the success case.
 
-**A dedicated field is required for the Why/Scope component — `target.focus` is NOT a stable
-source for this.** `target.focus` records whatever focus text was sent for round 1's own FINAL
-logged dispatch ATTEMPT, not a stable "original task framing" fact — it diverges in two confirmed
-real ways: (1) if round 1's own dispatch initially failed and needed a resume-safe retry, the
-retry's own focus text is just a short "Retrying after a `<reason>` failure..." note plus the
-generic scope constraint, NOT the original Why/Scope; (2) for a non-repo-artifact session,
-`target.focus` ALREADY embeds the full original artifact text, so reading it back AND separately
-re-embedding the artifact (per step 2 above) would duplicate the artifact in the fresh prompt.
-Fixed: a new, dedicated, write-once field — `target.original_scope_framing` — captured exactly
-ONCE, at the moment round 1's OWN focus text is first constructed (`SKILL.md`'s Phase 1 Step 0,
-BEFORE the very first dispatch attempt of any kind, retry or not), holding ONLY the Why +
-task-specific Scope text. For a non-repo-artifact session, this field explicitly EXCLUDES the
-pasted artifact text (which stays available separately, via the unchanged snapshot). This field
-is written once to round 1's own JSONL line and is NEVER overwritten by a later retry — a retry
-only ever changes what is actually dispatched for that attempt (`target.focus`, serving its
-existing, unchanged diagnostic/continuity purpose), never this separately-recorded
-original-framing fact.
+**This step CONSUMES a dedicated Why/Scope field this reference file does not itself own —
+`target.focus` is NOT a stable source for it.** `target.focus` records whatever focus text was
+sent for round 1's own FINAL logged dispatch ATTEMPT, not a stable "original task framing" fact —
+it diverges in two confirmed real ways: (1) if round 1's own dispatch initially failed and needed
+a resume-safe retry, the retry's own focus text is just a short "Retrying after a `<reason>`
+failure..." note plus the generic scope constraint, NOT the original Why/Scope; (2) for a
+non-repo-artifact session, `target.focus` ALREADY embeds the full original artifact text, so
+reading it back AND separately re-embedding the artifact (per step 2 above) would duplicate the
+artifact in the fresh prompt. The dedicated, write-once field this step relies on —
+`target.original_scope_framing` — is captured exactly ONCE, unconditionally for EVERY session
+(`--compact` or not), at the moment round 1's OWN focus text is first constructed (`SKILL.md`'s
+Phase 1 Step 0, BEFORE the very first dispatch attempt of any kind, retry or not — see that
+section for the full construction), holding ONLY the Why + task-specific Scope text. For a
+non-repo-artifact session, this field explicitly EXCLUDES the pasted artifact text (which stays
+available separately, via the unchanged snapshot). This field is written once to round 1's own
+JSONL line and is NEVER overwritten by a later retry — a retry only ever changes what is actually
+dispatched for that attempt (`target.focus`, serving its existing, unchanged
+diagnostic/continuity purpose), never this separately-recorded original-framing fact. **This
+section is not the reason the field exists** — it is captured unconditionally by `SKILL.md` for
+every session precisely because `references/retry-guards.md`'s `no_material_reviewed` restart also
+needs it, and that restart can occur in a session where `--compact` is OFF; this Step 4 dispatch
+is simply this field's other consumer.
 
 **Coverage epoch.** For a `--uncommitted` compaction dispatch specifically, this call can report
-its own `coverage.source` exactly like any fresh `--uncommitted` dispatch can — this is a SECOND
+its own `coverage.source` exactly like any fresh `--uncommitted` dispatch can — this is another
 fresh `--uncommitted` epoch within the same session, not only round 1's. The existing "coverage
 is a round-1-only property" rule (`SKILL.md`'s own "Coverage is a Round-1-only property" section)
-is generalized to "coverage is a property of every fresh `--uncommitted` dispatch this session,
-round 1 or a compaction restart" — the CLEAN convergence gate merges EVERY such dispatch's own
-coverage outcome (worst-of-all: `"complete"` only if every one of them was `"complete"`, else the
-existing `"partial"`/`"unknown"` precedence, `omitted` lists unioned and deduplicated by `(path,
-reason)`), never round 1's alone once a compaction has occurred. `--base`/`--commit` compaction
-dispatches report no coverage, exactly like round 1 in those scopes.
+is generalized to "coverage is a property of every fresh `--uncommitted` dispatch this session —
+round 1, a compaction restart, or a `no_material_reviewed` restart at round 2+ (`references/
+retry-guards.md`)" — the CLEAN convergence gate merges EVERY such dispatch's own coverage outcome
+(worst-of-all: `"complete"` only if every one of them was `"complete"`, else the existing
+`"partial"`/`"unknown"` precedence, `omitted` lists unioned and deduplicated by `(path, reason)`),
+never round 1's alone once a compaction or `no_material_reviewed` restart has occurred.
+`--base`/`--commit` compaction dispatches report no coverage, exactly like round 1 in those
+scopes.
 
 **A successful restart can ALSO lack real coverage.** The untracked-file collector deliberately
 treats a failure to write its own `--coverage-out` sidecar as non-fatal, and the wrapper
@@ -796,7 +814,11 @@ abandoning A to `LEAKED_THREAD_IDS`, before ever giving up (see
 `evals/scenarios/retry-exhausted-round1-fresh-fallback` for a live-exercised example of this exact
 sequence). Compaction reuses this EXACT existing topology rather than inventing a
 compaction-specific variant — consistent with this design's own "reuse existing mechanisms"
-principle elsewhere.
+principle elsewhere. **This includes receipt-slot wiring**: bullets 2 and 3 below are ordinary
+bounded `--resume` retries against a thread that already has an active schedule, so they need only
+`--receipt-slot` via `references/retry-guards.md`'s own procedure — no schedule regeneration.
+Bullet 1's fresh candidate-A retry and thread B's own dispatch are different — see each below —
+since both are genuinely fresh threads, like Step 4's own dispatch above.
 
 Apply `references/retry-guards.md`'s own THREE bullets, in the SAME priority order it already
 uses, to candidate A ONLY — tracked as its own fact, independent of `GROUP_THREADS` (which keeps
@@ -830,6 +852,13 @@ B's own, deliberately simpler treatment is Task 12.
    mechanism" step 4 above** — this is a genuinely fresh `codex exec` call with no prior turn of
    its own to inherit anything from, so whatever focus text it sends is the entirety of what this
    new dispatch ever sees.
+
+   **This retry is ALSO a schedule-(re)generation trigger, same as Step 4's own dispatch above** —
+   the old, now-superseded candidate's schedule (if one was ever generated for it) is abandoned
+   unused, and this retry generates its OWN fresh `RECEIPT_SCHEDULE_FILE`, performs the ordinary
+   receipt-slot-issuance procedure, and passes BOTH `--receipt-slot "$NEXT_SLOT"` and
+   `--receipt-schedule-file "$RECEIPT_SCHEDULE_FILE"` — it is a brand-new thread, exactly like
+   Step 4's own fresh dispatch.
 
    If this retry fails AGAIN, for ANY reason: this candidate is exhausted. **Check whether THIS retry's
    own response captured a threadId before assuming nothing needs tracking** — this retry is
@@ -880,6 +909,12 @@ For `--uncommitted`/`--base` scope, B's dispatch re-collects a fresh candidate (
 `candidate_snapshot_path`, new digest) exactly as A's original dispatch was — never a reuse of
 A's now-deleted candidate. For non-repo-artifact/`--commit` scope, B's dispatch involves no
 candidate file at all, exactly like A's did not.
+
+**Thread B's dispatch is ALSO a schedule-(re)generation trigger** — B is "a genuinely fresh `codex
+exec` call... with NO prior turn to inherit anything from" (per the paragraph above), so it gets
+its OWN fresh `RECEIPT_SCHEDULE_FILE` (never reusing A's, abandoned unused alongside A's other
+state), performs the ordinary receipt-slot-issuance procedure, and its dispatch passes BOTH
+`--receipt-slot "$NEXT_SLOT"` and `--receipt-schedule-file "$RECEIPT_SCHEDULE_FILE"`.
 
 **Thread B's own single dispatch gets NONE of bullets 1-3's retry machinery — it either
 succeeds, or the whole compaction attempt is immediately exhausted**, matching
@@ -1006,13 +1041,16 @@ carry a `threadId` at all):
   additionally non-empty, on whichever round actually carries a DEFERRED backfill from an earlier
   recovery-discovered candidate deletion failure** (see "Restart mechanism" step 3's own
   post-append-window recovery step 2 above).
-- **Round 1's own line, whenever `--compact` was given for this session:**
-  `target.original_scope_framing` is REQUIRED on round 1's own line whenever `--compact` was given for
-  the session (regardless of scope); `target.scope_value` is ADDITIONALLY REQUIRED specifically
-  for `--base`/`--commit` scope (never for `--uncommitted`). `target.resolved_commit_sha` is
-  REQUIRED additionally, specifically for `--commit` scope, WHENEVER resolution succeeded (never
-  required when resolution itself failed verification and round 1 deliberately fell back to the
-  original unpinned literal value instead — see "Restart mechanism" step 3 above).
+- **Round 1's own line, EVERY session, `--compact` or not:** `target.original_scope_framing` is
+  REQUIRED on round 1's own line unconditionally (see `SKILL.md`'s Phase 1 Step 0) — not a
+  `--compact`-specific requirement, so this check applies even though the rest of this section is
+  only ever read when `--compact` is ON.
+- **Round 1's own line, whenever `--compact` was given for this session:** `target.scope_value` is
+  REQUIRED specifically for `--base`/`--commit` scope (never for `--uncommitted`).
+  `target.resolved_commit_sha` is REQUIRED additionally, specifically for `--commit` scope,
+  WHENEVER resolution succeeded (never required when resolution itself failed verification and
+  round 1 deliberately fell back to the original unpinned literal value instead — see "Restart
+  mechanism" step 3 above).
 
 **Presence and type are not enough on their own — every durability-critical field must also
 match the VALUE Claude itself already computed for this transition, not merely its shape.**
@@ -1115,8 +1153,9 @@ per round number):
      retry machinery, which never carries coverage at all. It is explicitly EXCLUDED from the
      shared reducer's convergence-gating computation — the CLEAN gate, continuity recovery, and
      the final artifact's own `coverage` field all consider ONLY successful fresh `--uncommitted`
-     dispatches' coverage (round 1, or a compaction restart that actually succeeded), never a
-     failed attempt's. A LOCAL pre-dispatch failure (digest verification, candidate collection/
+     dispatches' coverage (round 1, a compaction restart that actually succeeded, or a
+     `no_material_reviewed` restart that actually succeeded at round 2+ — `references/
+     retry-guards.md`), never a failed attempt's. A LOCAL pre-dispatch failure (digest verification, candidate collection/
      hash failure, or the byte-size preflight rejection) records no coverage field at all, for
      the same underlying reason plus the additional fact that no real dispatch was ever
      attempted. For `--base`/`--commit` scope, no coverage field is ever recorded. A non-repo-
@@ -1171,7 +1210,7 @@ underlying dispatches it took to get there; it is purely an internal detail of "
 real outcome was reached," logged as one narration line plus the durable `compaction_attempt_*`
 fields above.
 
-**This directly conflicts with two of `references/retry-guards.md`'s own contracts — shipping
+**This directly conflicts with three of `references/retry-guards.md`'s own contracts — shipping
 this feature requires a companion amendment to that file (see Task 19):**
 1. `references/retry-guards.md`'s own MANDATORY terminal-outcome rule for exhausted retries
    (required to end as `⚠️ COULD NOT VERIFY`) does NOT apply to a failure occurring WITHIN a
@@ -1196,6 +1235,14 @@ this feature requires a companion amendment to that file (see Task 19):**
    keep `retry-guards.md`'s literal round-1 scoping exactly as written; this is a scoped
    exception for candidate A only, never B, and never a change to what "round 1" means for an
    ordinary group.
+3. `references/retry-guards.md`'s own `no_material_reviewed` recovery ("never resume-safe, one
+   bounded fresh restart") does NOT apply to a compaction candidate's own dispatch returning
+   `material_reviewed:false` or a receipt-mismatch — this design's own "On failure" handling above
+   already fully owns that failure (discard the candidate, fall through to the fallback `--resume`
+   on the OLD, still-alive thread), exactly like any other candidate-dispatch failure reason. This
+   does not conflict with `no_material_reviewed`'s "never resume a proven-hollow context" premise:
+   the thread resumed here is the PRE-COMPACTION old thread, which never itself returned
+   `no_material_reviewed` — only the abandoned candidate did, and it is discarded, never resumed.
 
 ## Interaction with `--keep-evidence`
 
@@ -1357,10 +1404,12 @@ the round(s) they actually apply to:
   `--base`/`--commit` argument value, omitted for `--uncommitted`.
 - `target.resolved_commit_sha` — round 1's own line only, `--commit` scope, whenever resolution
   succeeded.
-- `target.original_scope_framing` — round 1's own line only, whenever `--compact` was given
-  (regardless of scope): the Why + task-specific Scope text captured once, before round 1's own
-  first dispatch attempt, excluding any pasted artifact text, never overwritten by a later
-  retry's own different focus.
+- `target.original_scope_framing` — round 1's own line, EVERY session (NOT `--compact`-exclusive —
+  see `SKILL.md`'s Phase 1 Step 0, which is where this field is actually captured): the Why +
+  task-specific Scope text captured once, before round 1's own first dispatch attempt, excluding
+  any pasted artifact text, never overwritten by a later retry's own different focus. This step's
+  Step 4 dispatch, and `references/retry-guards.md`'s `no_material_reviewed` restart, are this
+  field's two consumers — neither is its owner.
 
 `finding_id`/`claim_id` numbering continues incrementing globally across the compaction boundary —
 never reset — so the existing claim-ledger reducer keeps working over the whole log unmodified.

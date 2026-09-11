@@ -51,7 +51,10 @@ for N in $(seq 0 4); do
         }
       ],
       summary: "one open finding in sub(), severity not yet triaged",
-      dimensions: $dims
+      dimensions: $dims,
+      material_reviewed: true,
+      material_receipt: null,
+      material_receipt_index: null
     }' > "$GROUP_STATE/round-${N}-final-answer.json"
 done
 

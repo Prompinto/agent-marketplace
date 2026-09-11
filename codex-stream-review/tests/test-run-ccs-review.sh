@@ -233,7 +233,7 @@ pd_assert_threadid_present() {
   fi
 }
 
-PD_VALID_VERDICT='{"verdict":"CLEAN","findings":[],"summary":null,"dimensions":{"correctness":{"status":"not_applicable","evidence":"e"},"security":{"status":"not_applicable","evidence":"e"},"performance":{"status":"not_applicable","evidence":"e"},"reuse":{"status":"not_applicable","evidence":"e"},"contracts":{"status":"not_applicable","evidence":"e"},"resources_concurrency":{"status":"not_applicable","evidence":"e"},"intent":{"status":"not_applicable","evidence":"e"}}}'
+PD_VALID_VERDICT='{"verdict":"CLEAN","findings":[],"summary":null,"dimensions":{"correctness":{"status":"not_applicable","evidence":"e"},"security":{"status":"not_applicable","evidence":"e"},"performance":{"status":"not_applicable","evidence":"e"},"reuse":{"status":"not_applicable","evidence":"e"},"contracts":{"status":"not_applicable","evidence":"e"},"resources_concurrency":{"status":"not_applicable","evidence":"e"},"intent":{"status":"not_applicable","evidence":"e"}},"material_reviewed":true,"material_receipt":null,"material_receipt_index":null}'
 
 # --- sanity: the fake codex itself, on a scenario meant to succeed,
 # actually produces ok:true (fresh and resume) -- every case below relies
@@ -413,6 +413,167 @@ OUT="$(pd_run resume "$TID" --timeout 1)"
 pd_assert_reason "$OUT" "timeout" "timeout (resume)"
 pd_assert_threadid_present "$OUT" "timeout (resume)"
 unset FAKE_CODEX_SCENARIO FAKE_CODEX_SLEEP_SECS
+
+# --- --receipt-slot: argument validation, then a real accepted dispatch.
+OUT="$(pd_run fresh --receipt-slot 0)"
+if printf '%s' "$OUT" | jq -e '.reason == "bad_args"' >/dev/null 2>&1; then
+  pass "--receipt-slot 0 rejected as bad_args"
+else
+  fail "--receipt-slot 0 should be rejected, got: $OUT"
+fi
+
+OUT="$(pd_run fresh --receipt-slot abc)"
+if printf '%s' "$OUT" | jq -e '.reason == "bad_args"' >/dev/null 2>&1; then
+  pass "--receipt-slot abc (non-numeric) rejected as bad_args"
+else
+  fail "--receipt-slot abc should be rejected, got: $OUT"
+fi
+
+# An oversized value must be rejected as clean bad_args JSON with no stray
+# stderr line (e.g. bash's own "integer expression expected") ahead of it --
+# confirms the digit-length bound runs before any native arithmetic.
+OUT="$(pd_run fresh --receipt-slot 9999)"
+if printf '%s' "$OUT" | jq -e '.reason == "bad_args"' >/dev/null 2>&1; then
+  pass "--receipt-slot 9999 (oversized) rejected as clean bad_args JSON, no stray stderr line ahead of it"
+else
+  fail "--receipt-slot 9999 should be rejected as clean bad_args JSON, got: $OUT"
+fi
+
+OUT="$(pd_run fresh --receipt-slot 01)"
+if printf '%s' "$OUT" | jq -e '.reason == "bad_args"' >/dev/null 2>&1; then
+  pass "--receipt-slot 01 (leading zero) rejected as bad_args"
+else
+  fail "--receipt-slot 01 should be rejected, got: $OUT"
+fi
+
+export FAKE_CODEX_SCENARIO=normal
+OUT="$(pd_run fresh --receipt-slot 5)"
+if printf '%s' "$OUT" | tail -1 | jq -e '.ok == true' >/dev/null 2>&1; then
+  pass "--receipt-slot 5 (valid) accepted, dispatch succeeds"
+else
+  fail "--receipt-slot 5 should be accepted, got: $OUT"
+fi
+unset FAKE_CODEX_SCENARIO
+
+# --- --receipt-schedule-file: full-shape content validation, then a real
+# accepted dispatch. build_review_prompt() cats this file's content straight
+# into the prompt's trusted zone, so the parser must reject anything that
+# isn't actually a generated schedule -- missing file, not a regular file, or
+# present but not shaped as exactly a REVIEW_RECEIPT_SCHEDULE header followed
+# by 70 well-formed `<N>: <24 hex chars>` entries -- before it ever gets there.
+gen_valid_schedule_file() {
+  {
+    echo "REVIEW_RECEIPT_SCHEDULE"
+    local i
+    for i in $(seq 1 70); do
+      printf '%d: %024x\n' "$i" "$i"
+    done
+  } > "$1"
+}
+
+OUT="$(pd_run fresh --receipt-schedule-file "/tmp/ccs-test-nonexistent-schedule-$$")"
+if printf '%s' "$OUT" | jq -e '.reason == "bad_args"' >/dev/null 2>&1; then
+  pass "--receipt-schedule-file nonexistent path rejected as bad_args"
+else
+  fail "--receipt-schedule-file nonexistent path should be rejected, got: $OUT"
+fi
+
+WRONG_SCHEDULE_FILE="$(mktemp)"
+printf 'not a real schedule\n' > "$WRONG_SCHEDULE_FILE"
+OUT="$(pd_run fresh --receipt-schedule-file "$WRONG_SCHEDULE_FILE")"
+if printf '%s' "$OUT" | jq -e '.reason == "bad_args"' >/dev/null 2>&1; then
+  pass "--receipt-schedule-file without the REVIEW_RECEIPT_SCHEDULE header rejected as bad_args"
+else
+  fail "--receipt-schedule-file without the header should be rejected, got: $OUT"
+fi
+rm -f "$WRONG_SCHEDULE_FILE"
+
+# A correct header line followed by arbitrary junk (not 70 well-formed
+# entries) must still be rejected -- the check must inspect the WHOLE file,
+# not bail out after line 1.
+BYPASS_SCHEDULE_FILE="$(mktemp)"
+{ echo "REVIEW_RECEIPT_SCHEDULE"; echo "not a real entry"; } > "$BYPASS_SCHEDULE_FILE"
+OUT="$(pd_run fresh --receipt-schedule-file "$BYPASS_SCHEDULE_FILE")"
+if printf '%s' "$OUT" | jq -e '.reason == "bad_args"' >/dev/null 2>&1; then
+  pass "--receipt-schedule-file with a correct header but malformed/wrong-count entries rejected as bad_args"
+else
+  fail "--receipt-schedule-file with a correct header but malformed entries should be rejected, got: $OUT"
+fi
+rm -f "$BYPASS_SCHEDULE_FILE"
+
+# A correct header + 70 correct entries + extra trailing blank line(s) (74
+# physical lines total) must still be rejected -- this is the exact bypass a
+# naive `$(cat FILE)` capture allows, since plain command substitution strips
+# ALL trailing newline bytes and would otherwise normalize this back down to
+# what looks like a clean 71-line file before the count is ever checked.
+TRAILING_BLANKS_SCHEDULE_FILE="$(mktemp)"
+gen_valid_schedule_file "$TRAILING_BLANKS_SCHEDULE_FILE"
+printf '\n\n\n' >> "$TRAILING_BLANKS_SCHEDULE_FILE"
+OUT="$(pd_run fresh --receipt-schedule-file "$TRAILING_BLANKS_SCHEDULE_FILE")"
+if printf '%s' "$OUT" | jq -e '.reason == "bad_args"' >/dev/null 2>&1; then
+  pass "--receipt-schedule-file with valid entries plus extra trailing blank lines rejected as bad_args"
+else
+  fail "--receipt-schedule-file with extra trailing blank lines should be rejected, got: $OUT"
+fi
+rm -f "$TRAILING_BLANKS_SCHEDULE_FILE"
+
+# 70 well-formed `<N>: <24-hex>` lines can still fail to be a real schedule:
+# every label could be the same number (making the other 69 slots
+# permanently unissuable), or every token could be identical (making a
+# receipt replayable across slots). The per-line regex alone can't catch
+# either -- the sequential-labels/distinct-tokens check must.
+SAME_LABEL_SCHEDULE_FILE="$(mktemp)"
+{
+  echo "REVIEW_RECEIPT_SCHEDULE"
+  for i in $(seq 1 70); do printf '1: %024x\n' "$i"; done
+} > "$SAME_LABEL_SCHEDULE_FILE"
+OUT="$(pd_run fresh --receipt-schedule-file "$SAME_LABEL_SCHEDULE_FILE")"
+if printf '%s' "$OUT" | jq -e '.reason == "bad_args"' >/dev/null 2>&1; then
+  pass "--receipt-schedule-file with every entry labeled 1 (non-sequential labels) rejected as bad_args"
+else
+  fail "--receipt-schedule-file with non-sequential labels should be rejected, got: $OUT"
+fi
+rm -f "$SAME_LABEL_SCHEDULE_FILE"
+
+SAME_TOKEN_SCHEDULE_FILE="$(mktemp)"
+{
+  echo "REVIEW_RECEIPT_SCHEDULE"
+  for i in $(seq 1 70); do printf '%d: aaaaaaaaaaaaaaaaaaaaaaaa\n' "$i"; done
+} > "$SAME_TOKEN_SCHEDULE_FILE"
+OUT="$(pd_run fresh --receipt-schedule-file "$SAME_TOKEN_SCHEDULE_FILE")"
+if printf '%s' "$OUT" | jq -e '.reason == "bad_args"' >/dev/null 2>&1; then
+  pass "--receipt-schedule-file with correct labels but one repeated token across all entries rejected as bad_args"
+else
+  fail "--receipt-schedule-file with a repeated token across all entries should be rejected, got: $OUT"
+fi
+rm -f "$SAME_TOKEN_SCHEDULE_FILE"
+
+# A directory is "readable" too -- the regular-file check must reject it
+# BEFORE any read is attempted, so no raw command diagnostic (e.g. from
+# `head`/`wc`/`grep` failing to read a directory) ever reaches stderr ahead
+# of the clean bad_args JSON. Checked directly against stderr, not just OUT
+# (which already merges both streams) -- same verification style as Task 4's
+# own --receipt-slot overflow fixture.
+STDERR_CAPTURE="$(mktemp)"
+DIR_OUT="$(printf '%s' x | PATH="$FAKE_BIN_DIR:$PATH" HOME="$FAKE_HOME" "$WRAPPER" --cwd "$PD_REPO" --uncommitted --receipt-schedule-file /tmp 2>"$STDERR_CAPTURE")"
+if printf '%s' "$DIR_OUT" | jq -e '.reason == "bad_args"' >/dev/null 2>&1 && [ ! -s "$STDERR_CAPTURE" ]; then
+  pass "--receipt-schedule-file pointed at a directory rejected as bad_args, no stray stderr line ahead of it"
+else
+  fail "--receipt-schedule-file pointed at a directory should be rejected cleanly, got stdout: $DIR_OUT / stderr: $(cat "$STDERR_CAPTURE")"
+fi
+rm -f "$STDERR_CAPTURE"
+
+VALID_SCHEDULE_FILE="$(mktemp)"
+gen_valid_schedule_file "$VALID_SCHEDULE_FILE"
+export FAKE_CODEX_SCENARIO=normal
+OUT="$(pd_run fresh --receipt-schedule-file "$VALID_SCHEDULE_FILE")"
+if printf '%s' "$OUT" | tail -1 | jq -e '.ok == true' >/dev/null 2>&1; then
+  pass "--receipt-schedule-file with a genuine 71-line shape accepted, dispatch succeeds"
+else
+  fail "--receipt-schedule-file with a genuine 71-line shape should be accepted, got: $OUT"
+fi
+unset FAKE_CODEX_SCENARIO
+rm -f "$VALID_SCHEDULE_FILE"
 
 # --- no_thread_started: fresh dispatch only (--resume has no thread.started
 # concept) -- fake-codex never emits thread.started, forcing the wrapper's
@@ -612,6 +773,58 @@ if [ "$COV_STATUS" = "complete" ] || [ "$COV_STATUS" = "partial" ]; then
   pass "schema_mismatch (fresh, --uncommitted): coverage.source is still spliced in on a post-dispatch failure (status=$COV_STATUS)"
 else
   fail "schema_mismatch (fresh, --uncommitted): expected a real coverage.source.status, got: $OUT"
+fi
+unset FAKE_CODEX_SCENARIO FAKE_CODEX_FINAL_ANSWER
+
+# --- schema_mismatch: material_reviewed / material_receipt cross-field
+# checks (Task 5 of the material-verification plan) -- material_reviewed:
+# false must be rejected regardless of verdict (the exact gap an earlier
+# design draft left open by only checking the CLEAN combination), and
+# material_receipt/material_receipt_index must be both null or both
+# non-null, never one of each.
+MV_BASE='{"verdict":"CLEAN","findings":[],"summary":null,"dimensions":{"correctness":{"status":"not_applicable","evidence":"e"},"security":{"status":"not_applicable","evidence":"e"},"performance":{"status":"not_applicable","evidence":"e"},"reuse":{"status":"not_applicable","evidence":"e"},"contracts":{"status":"not_applicable","evidence":"e"},"resources_concurrency":{"status":"not_applicable","evidence":"e"},"intent":{"status":"not_applicable","evidence":"e"}}}'
+
+BAD_ANSWER="$(printf '%s' "$MV_BASE" | jq -c '. + {material_reviewed:false, material_receipt:null, material_receipt_index:null}')"
+export FAKE_CODEX_SCENARIO=schema_mismatch FAKE_CODEX_FINAL_ANSWER="$BAD_ANSWER"
+OUT="$(pd_run fresh)"
+pd_assert_reason "$OUT" "schema_mismatch" "material_reviewed:false + CLEAN rejected"
+DETAIL="$(printf '%s' "$OUT" | tail -1 | jq -r '.detail // empty')"
+case "$DETAIL" in
+  *no_material_reviewed*) pass "material_reviewed:false: detail carries distinct no_material_reviewed marker ($DETAIL)" ;;
+  *) fail "material_reviewed:false: expected detail to contain 'no_material_reviewed', got: $DETAIL" ;;
+esac
+
+# An UNRELATED semantic violation (malformed severity, material_reviewed
+# correctly true) must still fall through to the ORIGINAL generic detail
+# text -- proving the new no_material_reviewed branch above doesn't misfire.
+UNRELATED_BAD="$(printf '%s' "$MV_BASE" | jq -c '.verdict = "ISSUES" | .findings = [{"file":"x.py","line":1,"severity":"critical","summary":"s","evidence":"e","verification":"v"}] | . + {material_reviewed:true, material_receipt:null, material_receipt_index:null}')"
+export FAKE_CODEX_SCENARIO=schema_mismatch FAKE_CODEX_FINAL_ANSWER="$UNRELATED_BAD"
+OUT="$(pd_run fresh)"
+pd_assert_reason "$OUT" "schema_mismatch" "malformed severity (material_reviewed:true) rejected"
+DETAIL="$(printf '%s' "$OUT" | tail -1 | jq -r '.detail // empty')"
+if [ "$DETAIL" = "final answer JSON does not satisfy review-verdict semantic rules" ]; then
+  pass "malformed severity: original generic detail text unchanged ($DETAIL)"
+else
+  fail "malformed severity: expected original generic detail text, got: $DETAIL"
+fi
+
+BAD_ANSWER2="$(printf '%s' "$MV_BASE" | jq -c '.verdict = "ISSUES" | .findings = [{"file":"x.py","line":1,"severity":"low","summary":"s","evidence":"e","verification":"v"}] | . + {material_reviewed:false, material_receipt:null, material_receipt_index:null}')"
+export FAKE_CODEX_SCENARIO=schema_mismatch FAKE_CODEX_FINAL_ANSWER="$BAD_ANSWER2"
+OUT="$(pd_run fresh)"
+pd_assert_reason "$OUT" "schema_mismatch" "material_reviewed:false + ISSUES/nonempty-findings ALSO rejected"
+
+BAD_ANSWER3="$(printf '%s' "$MV_BASE" | jq -c '. + {material_reviewed:true, material_receipt:"abc123", material_receipt_index:null}')"
+export FAKE_CODEX_SCENARIO=schema_mismatch FAKE_CODEX_FINAL_ANSWER="$BAD_ANSWER3"
+OUT="$(pd_run fresh)"
+pd_assert_reason "$OUT" "schema_mismatch" "one-null-one-populated receipt pair rejected"
+
+GOOD_ANSWER="$(printf '%s' "$MV_BASE" | jq -c '. + {material_reviewed:true, material_receipt:null, material_receipt_index:null}')"
+export FAKE_CODEX_SCENARIO=normal FAKE_CODEX_FINAL_ANSWER="$GOOD_ANSWER"
+OUT="$(pd_run fresh)"
+if [ "$(printf '%s' "$OUT" | tail -1 | jq -r '.ok')" = "true" ]; then
+  pass "material_reviewed:true + null-null receipt pair accepted"
+else
+  fail "material_reviewed:true + null-null pair should be accepted, got: $OUT"
 fi
 unset FAKE_CODEX_SCENARIO FAKE_CODEX_FINAL_ANSWER
 
@@ -1524,10 +1737,10 @@ rm -f "$FC_INVOCATION_LOG"
 # have advanced to 2.
 FC_GROUP_STATE="$(mktemp -d)"
 cat > "$FC_GROUP_STATE/round-0-final-answer.json" <<'EOF'
-{"verdict":"CLEAN","findings":[],"summary":"round zero scripted verdict","dimensions":{"correctness":{"status":"not_applicable","evidence":"e"},"security":{"status":"not_applicable","evidence":"e"},"performance":{"status":"not_applicable","evidence":"e"},"reuse":{"status":"not_applicable","evidence":"e"},"contracts":{"status":"not_applicable","evidence":"e"},"resources_concurrency":{"status":"not_applicable","evidence":"e"},"intent":{"status":"not_applicable","evidence":"e"}}}
+{"verdict":"CLEAN","findings":[],"summary":"round zero scripted verdict","dimensions":{"correctness":{"status":"not_applicable","evidence":"e"},"security":{"status":"not_applicable","evidence":"e"},"performance":{"status":"not_applicable","evidence":"e"},"reuse":{"status":"not_applicable","evidence":"e"},"contracts":{"status":"not_applicable","evidence":"e"},"resources_concurrency":{"status":"not_applicable","evidence":"e"},"intent":{"status":"not_applicable","evidence":"e"}},"material_reviewed":true,"material_receipt":null,"material_receipt_index":null}
 EOF
 cat > "$FC_GROUP_STATE/round-1-final-answer.json" <<'EOF'
-{"verdict":"CLEAN","findings":[],"summary":"round one scripted verdict","dimensions":{"correctness":{"status":"not_applicable","evidence":"e"},"security":{"status":"not_applicable","evidence":"e"},"performance":{"status":"not_applicable","evidence":"e"},"reuse":{"status":"not_applicable","evidence":"e"},"contracts":{"status":"not_applicable","evidence":"e"},"resources_concurrency":{"status":"not_applicable","evidence":"e"},"intent":{"status":"not_applicable","evidence":"e"}}}
+{"verdict":"CLEAN","findings":[],"summary":"round one scripted verdict","dimensions":{"correctness":{"status":"not_applicable","evidence":"e"},"security":{"status":"not_applicable","evidence":"e"},"performance":{"status":"not_applicable","evidence":"e"},"reuse":{"status":"not_applicable","evidence":"e"},"contracts":{"status":"not_applicable","evidence":"e"},"resources_concurrency":{"status":"not_applicable","evidence":"e"},"intent":{"status":"not_applicable","evidence":"e"}},"material_reviewed":true,"material_receipt":null,"material_receipt_index":null}
 EOF
 export FAKE_CODEX_SCENARIO=normal FAKE_CODEX_GROUP_STATE="$FC_GROUP_STATE"
 OUT_R0="$(pd_run fresh)"
