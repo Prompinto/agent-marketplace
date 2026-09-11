@@ -39,6 +39,12 @@
 #   - round 3's own JSONL record has target.scope == "uncommitted" (never "resume") and its own
 #     coverage_source object, per references/retry-guards.md's "two known exceptions to the
 #     general round-2+ resume rule" section
+#   - round 3's own JSONL record carries genuinely-verified material-verification fields, type-
+#     strict: codex_review.material_reviewed is the JSON boolean true, material_receipt is a
+#     non-null 24-char lowercase-hex JSON string, and material_receipt_index is the JSON number 1
+#     (a whole-branch review found this scenario's own checker asserted material_reviewed but never
+#     material_receipt/material_receipt_index at all -- fixed with the same has()+type strictness
+#     material-reviewed-false-never-resumed/expect.sh already uses for all three fields)
 #   - the receipt_issued reconciliation records each pair a real "reconciles" value against ITS
 #     OWN matching PENDING:... record's index (not merely the right thread-id set), and thread A
 #     (leaked)'s own receipt_issued records span slots 1, 2, and 3 (one per round it was
@@ -157,11 +163,27 @@ else
     ROUND3_THREAD="$(jq -r 'select(.round == 3) | .thread_id // ""' "$JSONL_FILE" | head -n 1)"
     check "round 3 JSONL record thread_id matches the current thread (thread B, the restart)" "$ROUND3_THREAD" "$CURRENT_ID"
 
-    # Type-strict check (mirrors material-reviewed-false-never-resumed/expect.sh's own
-    # has()+type pattern): a JSON string "true" must NOT be conflated with the genuine
-    # JSON boolean this field requires.
+    # Type-strict checks (mirrors material-reviewed-false-never-resumed/expect.sh's own
+    # has()+type pattern): a JSON string "true"/"1", a numeric receipt that happens to
+    # stringify to something hex-looking, or a string index must NOT be conflated with the
+    # genuine JSON boolean/string/number these fields require.
     ROUND3_MATERIAL_REVIEWED="$(jq -r 'select(.round == 3) | if (.codex_review | has("material_reviewed")) and ((.codex_review.material_reviewed | type) == "boolean") and (.codex_review.material_reviewed == true) then "true" else "false" end' "$JSONL_FILE" | head -n 1)"
     check "round 3 JSONL record: codex_review.material_reviewed (must be the JSON boolean true, not a string or other value)" "$ROUND3_MATERIAL_REVIEWED" "true"
+
+    ROUND3_MATERIAL_RECEIPT_TYPE="$(jq -r 'select(.round == 3) | if (.codex_review | has("material_receipt")) then (.codex_review.material_receipt | type) else "missing" end' "$JSONL_FILE" | head -n 1)"
+    if [ "$ROUND3_MATERIAL_RECEIPT_TYPE" != "string" ]; then
+      echo "no-material-reviewed-fresh-restart: FAIL -- round 3 JSONL record: codex_review.material_receipt must be a JSON string, got type [$ROUND3_MATERIAL_RECEIPT_TYPE]" >&2
+      FAIL=1
+    else
+      ROUND3_MATERIAL_RECEIPT="$(jq -r 'select(.round == 3) | .codex_review.material_receipt' "$JSONL_FILE" | head -n 1)"
+      check "round 3 JSONL record: codex_review.material_receipt length" "${#ROUND3_MATERIAL_RECEIPT}" "24"
+      ROUND3_MATERIAL_RECEIPT_IS_HEX="no"
+      [[ "$ROUND3_MATERIAL_RECEIPT" =~ ^[0-9a-f]{24}$ ]] && ROUND3_MATERIAL_RECEIPT_IS_HEX="yes"
+      check "round 3 JSONL record: codex_review.material_receipt is a well-formed lowercase-hex token" "$ROUND3_MATERIAL_RECEIPT_IS_HEX" "yes"
+    fi
+
+    ROUND3_MATERIAL_RECEIPT_INDEX_CHECK="$(jq -r 'select(.round == 3) | if (.codex_review | has("material_receipt_index")) and ((.codex_review.material_receipt_index | type) == "number") and (.codex_review.material_receipt_index == 1) then "ok" else "fail" end' "$JSONL_FILE" | head -n 1)"
+    check "round 3 JSONL record: codex_review.material_receipt_index (must be the JSON number 1, not a string or other value)" "$ROUND3_MATERIAL_RECEIPT_INDEX_CHECK" "ok"
 
     # references/retry-guards.md's "two known exceptions to the general round-2+ resume rule"
     # section: a no_material_reviewed restart at round 2+ logs its OWN actual fresh scope, never
