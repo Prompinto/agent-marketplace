@@ -157,8 +157,11 @@ else
     ROUND3_THREAD="$(jq -r 'select(.round == 3) | .thread_id // ""' "$JSONL_FILE" | head -n 1)"
     check "round 3 JSONL record thread_id matches the current thread (thread B, the restart)" "$ROUND3_THREAD" "$CURRENT_ID"
 
-    ROUND3_MATERIAL_REVIEWED="$(jq -r 'select(.round == 3) | .codex_review.material_reviewed' "$JSONL_FILE" | head -n 1)"
-    check "round 3 JSONL record: codex_review.material_reviewed" "$ROUND3_MATERIAL_REVIEWED" "true"
+    # Type-strict check (mirrors material-reviewed-false-never-resumed/expect.sh's own
+    # has()+type pattern): a JSON string "true" must NOT be conflated with the genuine
+    # JSON boolean this field requires.
+    ROUND3_MATERIAL_REVIEWED="$(jq -r 'select(.round == 3) | if (.codex_review | has("material_reviewed")) and ((.codex_review.material_reviewed | type) == "boolean") and (.codex_review.material_reviewed == true) then "true" else "false" end' "$JSONL_FILE" | head -n 1)"
+    check "round 3 JSONL record: codex_review.material_reviewed (must be the JSON boolean true, not a string or other value)" "$ROUND3_MATERIAL_REVIEWED" "true"
 
     # references/retry-guards.md's "two known exceptions to the general round-2+ resume rule"
     # section: a no_material_reviewed restart at round 2+ logs its OWN actual fresh scope, never

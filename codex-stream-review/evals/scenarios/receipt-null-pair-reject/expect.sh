@@ -157,22 +157,27 @@ else
     echo "receipt-null-pair-reject: FAIL -- no round==1 JSONL record found with thread_id matching the artifact's current thread [$CURRENT_ID]" >&2
     FAIL=1
   else
-    MATERIAL_REVIEWED="$(echo "$ROUND1_CURRENT_LINE" | jq -r '.codex_review.material_reviewed')"
-    check "round-1 current-thread record: codex_review.material_reviewed" "$MATERIAL_REVIEWED" "true"
+    # Type-strict per-field checks (mirrors this file's own kept-last-message has()+type
+    # pattern above): a JSON string "true", a numeric receipt that happens to stringify
+    # to something hex-looking, or a string "1" index must NOT be conflated with the
+    # genuine JSON boolean/string/number these fields require.
+    MATERIAL_REVIEWED="$(echo "$ROUND1_CURRENT_LINE" | jq -r 'if (.codex_review | has("material_reviewed")) and ((.codex_review.material_reviewed | type) == "boolean") and (.codex_review.material_reviewed == true) then "true" else "false" end')"
+    check "round-1 current-thread record: codex_review.material_reviewed (must be the JSON boolean true, not a string or other value)" "$MATERIAL_REVIEWED" "true"
 
-    MATERIAL_RECEIPT="$(echo "$ROUND1_CURRENT_LINE" | jq -r '.codex_review.material_receipt // "null"')"
-    if [ "$MATERIAL_RECEIPT" = "null" ]; then
-      echo "receipt-null-pair-reject: FAIL -- round-1 current-thread record: codex_review.material_receipt is null" >&2
+    MATERIAL_RECEIPT_TYPE="$(echo "$ROUND1_CURRENT_LINE" | jq -r 'if (.codex_review | has("material_receipt")) then (.codex_review.material_receipt | type) else "missing" end')"
+    if [ "$MATERIAL_RECEIPT_TYPE" != "string" ]; then
+      echo "receipt-null-pair-reject: FAIL -- round-1 current-thread record: codex_review.material_receipt must be a JSON string, got type [$MATERIAL_RECEIPT_TYPE]" >&2
       FAIL=1
     else
+      MATERIAL_RECEIPT="$(echo "$ROUND1_CURRENT_LINE" | jq -r '.codex_review.material_receipt')"
       check "round-1 current-thread record: codex_review.material_receipt length" "${#MATERIAL_RECEIPT}" "24"
       MATERIAL_RECEIPT_IS_HEX="no"
       [[ "$MATERIAL_RECEIPT" =~ ^[0-9a-f]{24}$ ]] && MATERIAL_RECEIPT_IS_HEX="yes"
       check "round-1 current-thread record: codex_review.material_receipt is a well-formed lowercase-hex token" "$MATERIAL_RECEIPT_IS_HEX" "yes"
     fi
 
-    MATERIAL_RECEIPT_INDEX="$(echo "$ROUND1_CURRENT_LINE" | jq -r '.codex_review.material_receipt_index')"
-    check "round-1 current-thread record: codex_review.material_receipt_index" "$MATERIAL_RECEIPT_INDEX" "1"
+    MATERIAL_RECEIPT_INDEX_CHECK="$(echo "$ROUND1_CURRENT_LINE" | jq -r 'if (.codex_review | has("material_receipt_index")) and ((.codex_review.material_receipt_index | type) == "number") and (.codex_review.material_receipt_index == 1) then "ok" else "fail" end')"
+    check "round-1 current-thread record: codex_review.material_receipt_index (must be the JSON number 1, not a string or other value)" "$MATERIAL_RECEIPT_INDEX_CHECK" "ok"
 
     JSONL_FINDINGS="$(echo "$ROUND1_CURRENT_LINE" | jq -c '.codex_review.findings')"
     check "round-1 current-thread record: codex_review.findings (fabricated round-1 finding must never leak in)" "$JSONL_FINDINGS" "[]"
