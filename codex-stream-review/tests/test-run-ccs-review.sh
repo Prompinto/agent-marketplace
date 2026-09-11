@@ -788,6 +788,25 @@ BAD_ANSWER="$(printf '%s' "$MV_BASE" | jq -c '. + {material_reviewed:false, mate
 export FAKE_CODEX_SCENARIO=schema_mismatch FAKE_CODEX_FINAL_ANSWER="$BAD_ANSWER"
 OUT="$(pd_run fresh)"
 pd_assert_reason "$OUT" "schema_mismatch" "material_reviewed:false + CLEAN rejected"
+DETAIL="$(printf '%s' "$OUT" | tail -1 | jq -r '.detail // empty')"
+case "$DETAIL" in
+  *no_material_reviewed*) pass "material_reviewed:false: detail carries distinct no_material_reviewed marker ($DETAIL)" ;;
+  *) fail "material_reviewed:false: expected detail to contain 'no_material_reviewed', got: $DETAIL" ;;
+esac
+
+# An UNRELATED semantic violation (malformed severity, material_reviewed
+# correctly true) must still fall through to the ORIGINAL generic detail
+# text -- proving the new no_material_reviewed branch above doesn't misfire.
+UNRELATED_BAD="$(printf '%s' "$MV_BASE" | jq -c '.verdict = "ISSUES" | .findings = [{"file":"x.py","line":1,"severity":"critical","summary":"s","evidence":"e","verification":"v"}] | . + {material_reviewed:true, material_receipt:null, material_receipt_index:null}')"
+export FAKE_CODEX_SCENARIO=schema_mismatch FAKE_CODEX_FINAL_ANSWER="$UNRELATED_BAD"
+OUT="$(pd_run fresh)"
+pd_assert_reason "$OUT" "schema_mismatch" "malformed severity (material_reviewed:true) rejected"
+DETAIL="$(printf '%s' "$OUT" | tail -1 | jq -r '.detail // empty')"
+if [ "$DETAIL" = "final answer JSON does not satisfy review-verdict semantic rules" ]; then
+  pass "malformed severity: original generic detail text unchanged ($DETAIL)"
+else
+  fail "malformed severity: expected original generic detail text, got: $DETAIL"
+fi
 
 BAD_ANSWER2="$(printf '%s' "$MV_BASE" | jq -c '.verdict = "ISSUES" | .findings = [{"file":"x.py","line":1,"severity":"low","summary":"s","evidence":"e","verification":"v"}] | . + {material_reviewed:false, material_receipt:null, material_receipt_index:null}')"
 export FAKE_CODEX_SCENARIO=schema_mismatch FAKE_CODEX_FINAL_ANSWER="$BAD_ANSWER2"

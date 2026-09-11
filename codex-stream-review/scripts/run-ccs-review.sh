@@ -1132,6 +1132,17 @@ else
   elif [ -n "$SCHEMA" ] && ! printf '%s' "$FINAL_TEXT" | jq -e . >/dev/null 2>&1; then
     JUDGE_OUTPUT="$(printf '{"ok":false,"reason":"invalid_json","threadId":%s,"detail":"final answer is not valid JSON despite --output-schema"}\n' "$THREAD_ID_JSON")"
     RESULT=1
+  # Distinguish material_reviewed:false from every other semantic violation
+  # below with its own machine-parseable detail string (containing the
+  # literal substring "no_material_reviewed"), so a caller can tell this
+  # specific cause apart from an unrelated schema_mismatch. Uses has() rather
+  # than `// true` -- jq's `//` treats `false` itself as falsy, which would
+  # make a real material_reviewed:false silently fall through as if the
+  # field were merely missing. has()+== keeps "missing" and "false" distinct,
+  # so a MISSING field still falls through to the combined check below.
+  elif [ -n "$SCHEMA" ] && printf '%s' "$FINAL_TEXT" | jq -e 'has("material_reviewed") and (.material_reviewed == false)' >/dev/null 2>&1; then
+    JUDGE_OUTPUT="$(printf '{"ok":false,"reason":"schema_mismatch","threadId":%s,"detail":"no_material_reviewed: material_reviewed is false"}\n' "$THREAD_ID_JSON")"
+    RESULT=1
   # Schema-conformant JSON alone doesn't guarantee CLEAN<=>no-findings,
   # ISSUES<=>at-least-one-finding, or nonblank verification/dimension
   # evidence -- review-verdict.schema.json's plain type/enum/required checks
