@@ -482,12 +482,14 @@ while [ $# -gt 0 ]; do
       # N-parameterized instruction -- never restates a live token value, only the index to look up.
       [ $# -ge 2 ] || { printf '{"ok":false,"reason":"bad_args","detail":"--receipt-slot requires a value"}\n'; exit 1; }
       case "$2" in
-        # 1-3 digits, no leading zero (real slots are 1-70 per the design's N=70 schedule; this
-        # bound also keeps the value well clear of bash native-arithmetic overflow, and rejects
-        # a leading-zero value like "01" that would mismatch the schedule's own "1:", "2:" labels).
-        [1-9]|[1-9][0-9]|[1-9][0-9][0-9]) ;;
+        # Exactly 1-70 (the only range the design's N=70 schedule ever issues -- the
+        # schedule-file validator below hard-requires exactly 70 sequential labels via
+        # `seq 1 70`, so a slot outside 1-70 can never resolve to a real receipt). This
+        # also rejects a leading-zero value like "01" that would mismatch the schedule's
+        # own "1:", "2:" labels, and stays well clear of bash native-arithmetic overflow.
+        [1-9]|[1-6][0-9]|70) ;;
         *)
-          DETAIL_JSON="$(printf '%s' "$2" | jq -Rs '"--receipt-slot must be a positive integer, got: " + .')"
+          DETAIL_JSON="$(printf '%s' "$2" | jq -Rs '"--receipt-slot must be an integer from 1 to 70, got: " + .')"
           printf '{"ok":false,"reason":"bad_args","detail":%s}\n' "$DETAIL_JSON"
           exit 1 ;;
       esac

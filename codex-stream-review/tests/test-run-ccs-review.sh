@@ -505,12 +505,36 @@ else
   fail "--receipt-slot 01 should be rejected, got: $OUT"
 fi
 
+# Boundary values for the 1-70 range (the only range the N=70 schedule ever
+# issues -- CSR-003: 71 used to be silently accepted alongside every other
+# 1-3 digit value, wasting a dispatch on a slot no schedule can ever fill).
+OUT="$(pd_run fresh --receipt-slot 71)"
+if printf '%s' "$OUT" | jq -e '.reason == "bad_args" and (.detail | test("1 to 70"))' >/dev/null 2>&1; then
+  pass "--receipt-slot 71 (one past the schedule's max) rejected as bad_args with a clear 1-70 detail"
+else
+  fail "--receipt-slot 71 should be rejected as bad_args with a 1-70 detail, got: $OUT"
+fi
+
+OUT="$(pd_run fresh --receipt-slot 100)"
+if printf '%s' "$OUT" | jq -e '.reason == "bad_args"' >/dev/null 2>&1; then
+  pass "--receipt-slot 100 rejected as bad_args"
+else
+  fail "--receipt-slot 100 should be rejected, got: $OUT"
+fi
+
 export FAKE_CODEX_SCENARIO=normal
 OUT="$(pd_run fresh --receipt-slot 5)"
 if printf '%s' "$OUT" | tail -1 | jq -e '.ok == true' >/dev/null 2>&1; then
   pass "--receipt-slot 5 (valid) accepted, dispatch succeeds"
 else
   fail "--receipt-slot 5 should be accepted, got: $OUT"
+fi
+
+OUT="$(pd_run fresh --receipt-slot 70)"
+if printf '%s' "$OUT" | tail -1 | jq -e '.ok == true' >/dev/null 2>&1; then
+  pass "--receipt-slot 70 (the schedule's max) accepted, dispatch succeeds"
+else
+  fail "--receipt-slot 70 should be accepted, got: $OUT"
 fi
 unset FAKE_CODEX_SCENARIO
 
