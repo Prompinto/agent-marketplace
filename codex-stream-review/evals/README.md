@@ -198,6 +198,7 @@ structural impossibility.
 | Scenario | Targets | Status |
 |---|---|---|
 | `material-reviewed-false-never-resumed` | `material_reviewed:false` (any verdict, not just CLEAN) triggers `no_material_reviewed`, never resumed, one fresh restart to a distinct new thread id, restart carries a genuinely matching receipt so it reaches real Phase-2-compliant CLEAN | **built + verified** |
+| `receipt-mismatch-phase2-reject` | A wrapper-schema-valid receipt mismatch is caught by Claude's own stateful Phase 2 check (the wrapper alone cannot detect this), routed to no_material_reviewed BEFORE any finding/claim processing | **built + verified** |
 
 ### Secondary tier — live-Codex acceptance (2, built after the 37 scripted scenarios above)
 
