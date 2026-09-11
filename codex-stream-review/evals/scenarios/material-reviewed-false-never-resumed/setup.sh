@@ -9,14 +9,21 @@
 # valid round-1 result), never a --resume.
 #
 # The restart establishes a brand-new thread, so per SKILL.md's "Receipt schedule generation"
-# section it gets its own fresh RECEIPT_SCHEDULE_FILE -- and this scenario constructs a
-# GENUINELY matching material_receipt/material_receipt_index pair for it (slot 1's own real
-# token from that schedule), so a live orchestrating agent's Phase 2 step 1 receipt check
-# actually ACCEPTS the restart's response as CLEAN, rather than rejecting it as another
-# null-pair no_material_reviewed. Round 1's own hollow dispatch also gets its own schedule
-# (every brand-new-thread dispatch does, per that same section) but the token value there
-# never matters -- it's rejected by the wrapper's material_reviewed:false check before Phase 2
-# receipt validation is ever reached.
+# section it gets its own fresh RECEIPT_SCHEDULE_FILE -- and the LIVE driving agent (not this
+# script) constructs a GENUINELY matching material_receipt/material_receipt_index pair for it
+# (slot 1's own real token from that schedule, read off the file at the moment it's needed), so a
+# live orchestrating agent's Phase 2 step 1 receipt check actually ACCEPTS the restart's response
+# as CLEAN, rather than rejecting it as another null-pair no_material_reviewed. Round 1's own
+# hollow dispatch also gets its own schedule (every brand-new-thread dispatch does, per that same
+# section) but the token value there never matters -- it's rejected by the wrapper's
+# material_reviewed:false check before Phase 2 receipt validation is ever reached.
+#
+# This script deliberately does NOT pre-generate either receipt schedule (an earlier revision
+# did) -- both schedules must be generated live by whatever agent is actually driving the /ccs
+# session, at the exact point SKILL.md's own Phase 1 Step 0 calls for it, so the evidence this
+# scenario produces reflects a real orchestrating agent's own procedure rather than a
+# pre-baked-by-the-test-harness illustration of one. See README.md's "Live verification actually
+# performed" section for a genuinely-live run's real captured evidence.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../../lib/common.sh"
@@ -27,46 +34,31 @@ ln -s "$SCRIPT_DIR/../../../tests/fixtures/fake-codex" "$BIN_DIR/codex"
 INVOCATION_LOG="/tmp/ccs-eval-material-reviewed-false-never-resumed-invocation.log"
 : > "$INVOCATION_LOG"
 
-# Two SEPARATE receipt schedules -- one per brand-new thread this scenario dispatches (round 1's
-# hollow attempt, and the restart) -- generated with SKILL.md's own exact procedure ("Receipt
-# schedule generation", the mktemp/shasum -a 256/70-line loop). Slot 1's real token from the
-# RESTART's schedule is embedded, verbatim, into the restart's own FAKE_CODEX_FINAL_ANSWER below --
-# this is what makes the restart's response a genuinely Phase-2-valid receipt, not a null/null pair.
-gen_receipt_schedule() {
-  local out="$1"
-  local block="REVIEW_RECEIPT_SCHEDULE"
-  local i token
-  for i in $(seq 1 70); do
-    token="$(head -c 32 /dev/urandom | shasum -a 256 | head -c 24)"
-    block="$block
-$i: $token"
-  done
-  printf '%s\n' "$block" > "$out"
-}
-
-SCHEDULE_FILE_ROUND1="$(mktemp /tmp/ccs-eval-material-reviewed-false-never-resumed-schedule-round1.XXXXXX)"
-gen_receipt_schedule "$SCHEDULE_FILE_ROUND1"
-
-SCHEDULE_FILE_RESTART="$(mktemp /tmp/ccs-eval-material-reviewed-false-never-resumed-schedule-restart.XXXXXX)"
-gen_receipt_schedule "$SCHEDULE_FILE_RESTART"
-RESTART_SLOT1_TOKEN="$(sed -n '2p' "$SCHEDULE_FILE_RESTART" | cut -d' ' -f2)"
-
 echo "REPO_DIR=$REPO_DIR"
 echo "BIN_DIR=$BIN_DIR"
 echo "INVOCATION_LOG=$INVOCATION_LOG"
-echo "SCHEDULE_FILE_ROUND1=$SCHEDULE_FILE_ROUND1"
-echo "SCHEDULE_FILE_RESTART=$SCHEDULE_FILE_RESTART"
-echo "RESTART_SLOT1_TOKEN=$RESTART_SLOT1_TOKEN"
 cat <<EOF
 
-Next step (run by hand or have a Claude Code agent do it): invoke codex-stream-review:ccs against
-REPO_DIR, with BIN_DIR prepended to PATH on EVERY Bash call made during this run, and
-FAKE_CODEX_INVOCATION_LOG set to the printed INVOCATION_LOG path on every dispatch/cleanup call.
-Task text: "review the uncommitted change in this fixture repo".
+Next step: invoke codex-stream-review:ccs (the real Skill tool, or -- if that does not run inline
+in your own tool-call loop -- a faithful manual walkthrough of SKILL.md's own Phase 0-3 procedure
+in the real order) against REPO_DIR, with BIN_DIR prepended to PATH on EVERY Bash call made during
+this run, and FAKE_CODEX_INVOCATION_LOG set to the printed INVOCATION_LOG path on every
+dispatch/cleanup call. Task text: "review the uncommitted change in this fixture repo".
+
+This setup.sh deliberately does NOT pre-generate either receipt schedule. Both of this scenario's
+brand-new-thread dispatches (round 1's hollow attempt, and the restart) get their own independent
+RECEIPT_SCHEDULE_FILE, but each one must be generated LIVE by the actual driving agent, using
+SKILL.md's own exact procedure ("Receipt schedule generation": mktemp + a 70-iteration
+shasum -a 256-derived token loop), at the exact point in the real run where Phase 1 Step 0 calls
+for it -- immediately before the dispatch that establishes that thread, never earlier and never by
+this script. A schedule pre-baked by setup.sh (an earlier revision of this scenario did exactly
+that) is illustrative-instructions authorship, not evidence that a live orchestrating agent's own
+real Phase 1 Step 0 procedure produced it -- see this scenario's README for why that distinction
+is the entire point of this scenario's own evidence chain.
 
 Round 1's own fresh dispatch establishes a brand-new thread, so per SKILL.md's receipt schedule
-rules it passes --receipt-schedule-file $SCHEDULE_FILE_ROUND1 --receipt-slot 1. Before that ONE
-call only, set:
+rules it passes --receipt-schedule-file <the schedule YOU just generated live> --receipt-slot 1.
+For that ONE call only, set:
   export FAKE_CODEX_SCENARIO=schema_mismatch
   export FAKE_CODEX_FINAL_ANSWER='{"verdict":"ISSUES","findings":[{"file":"lib.py","line":2,"severity":"low","summary":"s","evidence":"e","verification":"v"}],"summary":null,"dimensions":{"correctness":{"status":"checked","evidence":"e"},"security":{"status":"not_applicable","evidence":"e"},"performance":{"status":"not_applicable","evidence":"e"},"reuse":{"status":"not_applicable","evidence":"e"},"contracts":{"status":"not_applicable","evidence":"e"},"resources_concurrency":{"status":"not_applicable","evidence":"e"},"intent":{"status":"not_applicable","evidence":"e"}},"material_reviewed":false,"material_receipt":null,"material_receipt_index":null}'
 
@@ -79,13 +71,18 @@ disambiguation). The specific receipt values on THIS rejected response never mat
 receipt validation is never reached for an ok:false response.
 
 The restart also establishes a brand-new thread (never reusing round 1's abandoned schedule), so
-it passes --receipt-schedule-file $SCHEDULE_FILE_RESTART --receipt-slot 1. For this dispatch,
-unset FAKE_CODEX_FINAL_ANSWER's ISSUES override and set FAKE_CODEX_SCENARIO=normal with a
+per retry-guards.md's own recovery procedure, generate a SECOND, independent receipt schedule live
+at that point -- your own fresh mktemp + 70-iteration loop, never a reuse of round 1's file -- then
+read slot 1's own real token off THAT file (e.g. \`sed -n '2p' "\$RESTART_SCHEDULE_FILE" | awk -F': ' '{print \$2}'\`;
+verify the extracted value is exactly 24 raw characters before using it -- a stray extra token like
+an inlined "VAR=" prefix silently breaks the match). Pass --receipt-schedule-file
+<the restart's own live-generated schedule> --receipt-slot 1 on the restart's dispatch. For this
+dispatch, unset FAKE_CODEX_FINAL_ANSWER's ISSUES override and set FAKE_CODEX_SCENARIO=normal with a
 FAKE_CODEX_FINAL_ANSWER carrying material_reviewed:true, material_receipt_index:1, and
-material_receipt set to slot 1's own real token from the RESTART schedule printed above
-($RESTART_SLOT1_TOKEN), e.g.:
-  export FAKE_CODEX_SCENARIO=normal
-  export FAKE_CODEX_FINAL_ANSWER='{"verdict":"CLEAN","findings":[],"summary":null,"dimensions":{"correctness":{"status":"checked","evidence":"e"},"security":{"status":"not_applicable","evidence":"e"},"performance":{"status":"not_applicable","evidence":"e"},"reuse":{"status":"not_applicable","evidence":"e"},"contracts":{"status":"not_applicable","evidence":"e"},"resources_concurrency":{"status":"not_applicable","evidence":"e"},"intent":{"status":"not_applicable","evidence":"e"}},"material_reviewed":true,"material_receipt":"$RESTART_SLOT1_TOKEN","material_receipt_index":1}'
+material_receipt set to slot 1's own real token you just read off the restart's own schedule --
+construct this JSON with a tool that cannot mangle the token (e.g.
+\`jq -nc --arg tok "\$RESTART_SLOT1_TOKEN" '{...,"material_receipt":\$tok,...}'\`), never hand-interpolated
+into a literal string.
 
 Because this material_receipt value genuinely matches slot 1 of the schedule actually passed on
 this dispatch, a live orchestrating agent applying SKILL.md's Phase 2 step 1 receipt check to the
