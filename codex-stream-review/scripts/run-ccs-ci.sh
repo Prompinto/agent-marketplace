@@ -81,6 +81,16 @@ fi
 # whereas a bare `claude` invocation at the actual call site would still do an ambient-PATH
 # lookup at that later point.
 CLAUDE_BIN="$(command -v claude)" || usage_error "claude CLI not found on PATH"
+# `command -v` can return a bare name (an exported shell FUNCTION named
+# `claude` reports as just "claude", unlike `type`) or a relative path (a
+# relative PATH entry) -- neither is safe to invoke after this script's own
+# later `cd "$REPO_ROOT"` into the untrusted checkout, since a relative/bare
+# result would then resolve against the WRONG (target-repo) directory,
+# defeating the whole point of resolving it here. Require an absolute path.
+case "$CLAUDE_BIN" in
+  /*) ;;
+  *) usage_error "claude CLI resolved to a non-absolute path: $CLAUDE_BIN" ;;
+esac
 
 REPO_ROOT=""
 BASE_REF=""
@@ -166,8 +176,16 @@ write_result_atomic() {
   fi
   # Belt-and-suspenders in case of an unexpected race between the pre-check
   # above and this mv (e.g. something else recreating $RESULT_PATH as a
-  # directory in between).
+  # directory in between). This window is not fully closeable with plain
+  # mv/test -- it is narrow, but real -- so this is detection, not prevention.
   if [ ! -f "$RESULT_PATH" ]; then
+    # If $RESULT_PATH is (now) a directory, `mv -f` moved our temp file INSIDE
+    # it rather than failing -- best-effort clean up that stray file (known by
+    # the temp file's own basename) so a detected failure doesn't also leave
+    # debris behind.
+    if [ -d "$RESULT_PATH" ]; then
+      rm -f "$RESULT_PATH/$(basename "$tmp_path")" 2>/dev/null
+    fi
     printf 'run-ccs-ci.sh: result path is not a regular file after write: %s\n' "$RESULT_PATH" >&2
     exit 1
   fi
