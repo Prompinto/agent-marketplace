@@ -1589,14 +1589,22 @@ regardless of how many groups' threads are being resumed concurrently). A single
 described above.
 
 **A `no_material_reviewed` restart's own round is the ONE exception to "only round 1 is ever a
-fresh round."** When a `no_material_reviewed` restart (`references/retry-guards.md`) fires with
-`--uncommitted` scope, its own round ALSO reports its own `coverage_source` — a SECOND,
-independent coverage-establishing event for the session, not merged with or overriding round 1's
-own already-recorded value. Both exist side by side in the log, each describing a separate point
-where fresh material was actually collected and disclosed; this restart's round is genuinely
-re-collecting the diff fresh, not resuming, so it is exempt from the "only round 1" rule above by
-the same reasoning that exempts it from `target.scope`'s "resume for every round 2+" rule (see
-that field's own description above).
+fresh round" — but which kind of exception depends on WHEN the restart fires.** When a
+`no_material_reviewed` restart (`references/retry-guards.md`) fires with `--uncommitted` scope, its
+own round is genuinely re-collecting the diff fresh, not resuming, so it is exempt from the "only
+round 1" rule above by the same reasoning that exempts it from `target.scope`'s "resume for every
+round 2+" rule (see that field's own description above). Two distinct cases follow from this:
+- **If the restart occurs AT round 1 itself** — the group's very first-ever dispatch attempt
+  failed with `no_material_reviewed` before any successful round-1 result ever existed — this is
+  simply another attempt within round 1's own EXISTING "record whichever attempt carried it" rule
+  (above): no separate slot is needed, exactly like any other round-1 resume-safe-retry-then-
+  succeed case where an earlier failed attempt is superseded by a later one.
+- **If the restart occurs at round 2+** — an existing thread that had already produced valid
+  earlier-round results before going hollow — round 1's own already-recorded coverage and this
+  restart's own round-N coverage genuinely coexist as two separate values for two separate round
+  numbers: a SECOND, independent coverage-establishing event for the session, not merged with or
+  overriding round 1's own already-recorded value. Both exist side by side in the log, each
+  describing a separate point where fresh material was actually collected and disclosed.
 
 ### Convergence = 100% CLEAN (ALL must hold)
 - Codex has no substantiated open findings in its latest review, **AND**
@@ -1784,19 +1792,22 @@ meaning.
   procedure before doing anything else with it.** Never treated as a clean sign-off, and never
   given the ordinary bounded-resume-retry treatment every other threadId-bearing failure gets.
 - **Partial or unknown source coverage ≠ CLEAN, and is not the same failure as NOT
-  CONVERGED/COULD NOT VERIFY.** If round 1's `coverage_source.status` (the N-group merged value
-  for a parallel round — see "Coverage is a Round-1-only property" above) is unresolved `"partial"`
-  or `"unknown"` while everything else would otherwise say converged, stop and report
-  **⚠️ PARTIAL COVERAGE** instead of CLEAN — list every omitted path and reason (or state
-  plainly the wrapper never reported coverage at all, for `"unknown"`). **Whenever a
-  `no_material_reviewed` restart (`references/retry-guards.md`) occurred this session with
-  `--uncommitted` scope, its OWN `coverage_source.status` must ALSO be `"complete"` for CLEAN
-  eligibility** — `"partial"`/`"unknown"` on the restart's own coverage fails this condition too,
-  exactly like round 1's own value already does, in addition to (never instead of) round 1's own
-  requirement. If the R=20 cap is hit
-  while a genuine disagreement AND unresolved coverage both remain open, report NOT CONVERGED
-  and list the coverage gap alongside the disagreements — the disagreement is the more severe
-  condition in that case.
+  CONVERGED/COULD NOT VERIFY.** Coverage is the worst-case-wins merge of EVERY fresh
+  `--uncommitted` dispatch event that actually occurred this session and reported it: round 1's
+  own value (the N-group merged value for a parallel round — see "Coverage is a Round-1-only
+  property" above) is always included; a `--compact` restart's own coverage (`references/
+  compaction.md`'s "Coverage epoch" section) is ALSO included whenever a compaction actually
+  succeeded this session; a `no_material_reviewed` restart's own coverage (`references/
+  retry-guards.md`) is ALSO included whenever that restart occurred at round 2+ with
+  `--uncommitted` scope and succeeded (a restart occurring AT round 1 itself is simply another
+  attempt within round 1's own single coverage slot — see "Coverage is a Round-1-only property"
+  above for that disambiguation, never a separate merge input). If ANY included value's own
+  `status` is unresolved `"partial"` or `"unknown"` while everything else would otherwise say
+  converged, stop and report **⚠️ PARTIAL COVERAGE** instead of CLEAN — list every omitted path
+  and reason from every included value (or state plainly a given event never reported coverage at
+  all, for `"unknown"`). If the R=20 cap is hit while a genuine disagreement AND unresolved
+  coverage both remain open, report NOT CONVERGED and list the coverage gap alongside the
+  disagreements — the disagreement is the more severe condition in that case.
 
 ---
 
@@ -2181,17 +2192,19 @@ trustworthy one).
      simply `codex_review.findings[]` itself with no `group` tag, so the same expression correctly
      falls through to the bare `.id`, unifying both cases in one expression.
    - `coverage`: `null` for `target.scope` `"base"`/`"commit"` — the wrapper structurally never
-     reports `coverage.source` for either. For `target.scope` `"uncommitted"`, the merged round-1
-     `coverage_source` object this session already tracked as a literal fact throughout the run
-     (see "Coverage is a Round-1-only property" above) — never re-derived from the JSONL here.
-     **Whenever a `no_material_reviewed` restart's own `coverage_source` also exists for this
-     session** (`--uncommitted` scope, per "Coverage is a Round-1-only property" above's own
-     exception), report the worst-case-wins merge of round 1's value and the restart's own value —
-     the SAME precedence the Round-1 N-group merge already uses (`"complete"` only if BOTH are
-     `"complete"`, else `"partial"` with `omitted` as the union of both `"partial"` values'
-     `omitted` lists, deduplicated by the `(path, reason)` pair, if either is `"partial"`, else
-     `"unknown"`) — never silently report only round 1's value when a second coverage-bearing
-     event also occurred this session.
+     reports `coverage.source` for either. For `target.scope` `"uncommitted"`: the worst-case-wins
+     merge of every fresh `--uncommitted` dispatch event that actually occurred and reported
+     coverage this session — round 1's own already-tracked value, a `--compact` restart's own
+     value if one succeeded (`references/compaction.md`), and a `no_material_reviewed` restart's
+     own value if one occurred at round 2+ and succeeded (`references/retry-guards.md`) — same
+     precedence as the Round-1 N-group merge (`"complete"` only if ALL included values are
+     `"complete"`, else `"partial"` with `omitted` as the union of every `"partial"` value's own
+     `omitted` list, deduplicated by the `(path, reason)` pair, else `"unknown"`).
+     `reviewed_file_count` is the LATEST (most recently occurring) included event's own value,
+     never a sum — avoids double-counting files reviewed at two different points in time, and
+     matches the field's own "what did the currently-accepted review actually cover" semantic,
+     consistent with how `status`/`omitted` already describe the CURRENT state of knowledge
+     rather than a historical total. Never re-derived from the JSONL here.
    - `input_errors`: always `null` — no `exit_state` populates this field. It exists only for
      result-contract compatibility with older consumers: the one outcome that used to populate it
      (`"INPUT_TOO_LARGE"`, a self-imposed pre-dispatch prompt byte-size guard) has been removed

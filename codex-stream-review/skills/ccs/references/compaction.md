@@ -761,15 +761,17 @@ needs it, and that restart can occur in a session where `--compact` is OFF; this
 is simply this field's other consumer.
 
 **Coverage epoch.** For a `--uncommitted` compaction dispatch specifically, this call can report
-its own `coverage.source` exactly like any fresh `--uncommitted` dispatch can — this is a SECOND
+its own `coverage.source` exactly like any fresh `--uncommitted` dispatch can — this is another
 fresh `--uncommitted` epoch within the same session, not only round 1's. The existing "coverage
 is a round-1-only property" rule (`SKILL.md`'s own "Coverage is a Round-1-only property" section)
-is generalized to "coverage is a property of every fresh `--uncommitted` dispatch this session,
-round 1 or a compaction restart" — the CLEAN convergence gate merges EVERY such dispatch's own
-coverage outcome (worst-of-all: `"complete"` only if every one of them was `"complete"`, else the
-existing `"partial"`/`"unknown"` precedence, `omitted` lists unioned and deduplicated by `(path,
-reason)`), never round 1's alone once a compaction has occurred. `--base`/`--commit` compaction
-dispatches report no coverage, exactly like round 1 in those scopes.
+is generalized to "coverage is a property of every fresh `--uncommitted` dispatch this session —
+round 1, a compaction restart, or a `no_material_reviewed` restart at round 2+ (`references/
+retry-guards.md`)" — the CLEAN convergence gate merges EVERY such dispatch's own coverage outcome
+(worst-of-all: `"complete"` only if every one of them was `"complete"`, else the existing
+`"partial"`/`"unknown"` precedence, `omitted` lists unioned and deduplicated by `(path, reason)`),
+never round 1's alone once a compaction or `no_material_reviewed` restart has occurred.
+`--base`/`--commit` compaction dispatches report no coverage, exactly like round 1 in those
+scopes.
 
 **A successful restart can ALSO lack real coverage.** The untracked-file collector deliberately
 treats a failure to write its own `--coverage-out` sidecar as non-fatal, and the wrapper
@@ -1149,8 +1151,9 @@ per round number):
      retry machinery, which never carries coverage at all. It is explicitly EXCLUDED from the
      shared reducer's convergence-gating computation — the CLEAN gate, continuity recovery, and
      the final artifact's own `coverage` field all consider ONLY successful fresh `--uncommitted`
-     dispatches' coverage (round 1, or a compaction restart that actually succeeded), never a
-     failed attempt's. A LOCAL pre-dispatch failure (digest verification, candidate collection/
+     dispatches' coverage (round 1, a compaction restart that actually succeeded, or a
+     `no_material_reviewed` restart that actually succeeded at round 2+ — `references/
+     retry-guards.md`), never a failed attempt's. A LOCAL pre-dispatch failure (digest verification, candidate collection/
      hash failure, or the byte-size preflight rejection) records no coverage field at all, for
      the same underlying reason plus the additional fact that no real dispatch was ever
      attempted. For `--base`/`--commit` scope, no coverage field is ever recorded. A non-repo-

@@ -224,6 +224,15 @@ Claude's own Phase 2 receipt-mismatch/invalid-null-pair check — see `SKILL.md`
 1) is **never** resume-safe: the thread has just proven its own context is hollow, so resuming it
 would only reproduce the identical failure.
 
+**Detecting the wrapper-level route.** A `schema_mismatch` failure is this section's
+`no_material_reviewed` route specifically when its own `detail` field contains the literal
+substring `"no_material_reviewed"` (`codex-stream-review/scripts/run-ccs-review.sh`'s dedicated
+`material_reviewed == false` check, which runs before — and independently of — the combined
+semantic-validation check covering every other cross-field rule). Any OTHER `schema_mismatch`
+`detail` text is an ordinary, unrelated semantic violation (malformed severity, a missing
+dimension, a receipt/index null-pair mismatch, etc.) — handled by this file's normal resume-safe
+`schema_mismatch` treatment instead, never routed through this section.
+
 **Recovery — single-reviewer sessions only (`GROUP="main"`).** This recovery is available ONLY
 when this session is running single-reviewer (`GROUP="main"`) — `target.original_scope_framing`
 (needed to reconstruct this restart's own dispatch) is a single top-level JSONL field with no
