@@ -80,6 +80,19 @@ restart's `FAKE_CODEX_FINAL_ANSWER` carries a genuinely matching `material_recei
 `--receipt-schedule-file`/`--receipt-slot 1`, per the unconditional "every brand-new-thread
 dispatch gets one" rule in `SKILL.md`'s "Receipt schedule generation" section.
 
+Round 1's dispatch ALSO passes `--keep-last-message "$ROUND1_LAST_MESSAGE_FILE"` (the fixed path
+`setup.sh` prints, `/tmp/ccs-eval-receipt-null-pair-reject-round1-last-message.txt`) — `run-ccs-review.sh`'s
+own `--keep-last-message <path>` flag is unconditionally available in its argument parser
+(`scripts/run-ccs-review.sh`'s `--keep-last-message)` case), a best-effort copy of the round's raw
+dispatched final-answer text made regardless of success/failure, and is entirely independent of the
+skill's own session-level `--keep-evidence` gating — `SKILL.md`'s "only when `--keep-evidence` was
+given" language describes a policy the skill's own automatic Phase 0 Step 0 decision imposes on
+itself for a live `/ccs` session, not a restriction `run-ccs-review.sh` enforces. Since this
+scenario's dispatches are driven manually (per "Manual walkthrough" below), this run does NOT turn
+`--keep-evidence` on — doing so would additionally change cleanup-on-failure retention behavior
+this scenario has no need for. The captured file lets `expect.sh` mechanically confirm round 1's
+real content was the null-pair route (not Task 12's or Task 13's) — see "Known limitation" below.
+
 ## How to run
 
 Invoke `codex-stream-review:ccs` against `REPO_DIR` (task text: "review the uncommitted change in
@@ -97,11 +110,14 @@ bash codex-stream-review/evals/check-result.sh <result.json> receipt-null-pair-r
 ## Manual walkthrough
 
 1. **Round 1**: fresh `--uncommitted` dispatch, `--receipt-schedule-file <round-1 schedule>
-   --receipt-slot 1`, `FAKE_CODEX_SCENARIO=normal` with `material_reviewed:true`,
-   `material_receipt:null`, `material_receipt_index:null`, plus one fabricated `ISSUES` finding —
-   real `threadId` (`A`) captured; the wrapper returns `ok:true` (schema-valid: a paired null-null
-   receipt with `material_reviewed:true` is a legitimate shape, so `schema_mismatch`, Task 5, has
-   nothing to reject).
+   --receipt-slot 1 --keep-last-message "$ROUND1_LAST_MESSAGE_FILE"`, `FAKE_CODEX_SCENARIO=normal`
+   with `material_reviewed:true`, `material_receipt:null`, `material_receipt_index:null`, plus one
+   fabricated `ISSUES` finding — real `threadId` (`A`) captured; the wrapper returns `ok:true`
+   (schema-valid: a paired null-null receipt with `material_reviewed:true` is a legitimate shape,
+   so `schema_mismatch`, Task 5, has nothing to reject). `--keep-last-message` durably copies this
+   dispatch's own raw final-answer content to `$ROUND1_LAST_MESSAGE_FILE` before the wrapper
+   deletes its private copy — this is what lets `expect.sh` later prove which route genuinely
+   fired.
 2. A live orchestrating agent applying `SKILL.md`'s Phase 2 step 1 check to this response
    recognizes this thread genuinely has an active schedule (it just generated and passed one), yet
    the response reports both `material_receipt`/`material_receipt_index` as null. Per Phase 2 step
@@ -278,25 +294,38 @@ call, `FAKE_CODEX_INVOCATION_LOG` re-exported on every call.
   fresh receipt schedule — a live orchestrating agent must remember to construct a genuinely
   matching receipt for the restart's own schedule, generated live at the point `SKILL.md`'s own
   Phase 1 Step 0 / `references/retry-guards.md` call for it (never pre-baked by `setup.sh`).
+- Round 1's own kept last-message file (`$ROUND1_LAST_MESSAGE_FILE`) carries
+  `material_reviewed:true`, `material_receipt:null`, `material_receipt_index:null` — round 1's real
+  dispatched content, proving this route (not Task 12's `material_reviewed:false` or Task 13's
+  non-null wrong-value mismatch) genuinely fired.
 
 ## Known limitation
 
-`expect.sh`'s JSONL checks are artifact-only and can re-verify every STRUCTURAL/mechanical
-consequence of a correct Phase 2 step 1 receipt check (round 1's genuine null-pair response never
-separately persisted under any thread id, exactly one leaked + one current thread, an exact 1:1
-reconciliation pairing against this file's own real `PENDING:...` records, a genuinely persisted
-non-null receipt on the accepted round). They CANNOT re-verify that round 1's own thread genuinely
-HAD an active schedule at the moment the live orchestrating agent recognized the null-null pair as
-a rejection rather than a legitimate no-schedule-active report — because `SKILL.md`'s "Receipt
-schedule generation" section deliberately guarantees `RECEIPT_SCHEDULE_FILE` content is never
-included in any `FOCUS_FILE`, never excerpted into JSONL History text, and never part of any JSONL
-line — a confidentiality property, not an oversight, so no durable artifact ever holds the
-schedule value (or even proof a schedule was active) a checker could inspect after the fact. This
-is the identical limitation `receipt-mismatch-phase2-reject`'s own README discloses for the
-value-mismatch case, applied here to the null-pair case: the only evidence that the check
-genuinely happened, absent a future commitment-based scheme (see that scenario's own "Known
+A prior review round raised a real gap: without inspecting round 1's own dispatched content, the
+JSONL/invocation-log artifacts alone (one leaked + one current thread, both cleaned up, a matching
+restart receipt) are structurally IDENTICAL across all three `no_material_reviewed` trigger routes
+— Task 12's wrapper-level `material_reviewed:false` rejection, Task 13's Phase-2 value mismatch,
+and this scenario's own genuine null-pair — so nothing durable could mechanically prove which of
+the three actually fired. This is now closed: round 1's dispatch passes `run-ccs-review.sh`'s own
+standalone `--keep-last-message` flag (see "Mechanical setup" above), and `expect.sh` asserts that
+captured file's content is exactly this scenario's own null-pair shape. Combined with the
+structural checks (exactly one leaked + one current thread, the fabricated finding never
+persisted, exact receipt reconciliation), `expect.sh` now mechanically proves both WHAT structural
+outcome resulted AND WHICH route produced it.
+
+What remains a genuine, deliberate limitation (identical to what `receipt-mismatch-phase2-reject`'s
+own README discloses for its value-mismatch case): `expect.sh` still cannot re-verify that round
+1's own thread genuinely HAD an active schedule at the moment the live orchestrating agent
+recognized the null-null pair as a rejection rather than a legitimate no-schedule-active report.
+`--keep-last-message` only captures the MODEL'S OWN reported answer — never the orchestrating
+agent's own internal schedule-tracking state — and `SKILL.md`'s "Receipt schedule generation"
+section deliberately guarantees `RECEIPT_SCHEDULE_FILE` content is never included in any
+`FOCUS_FILE`, never excerpted into JSONL History text, and never part of any JSONL line — a
+confidentiality property, not an oversight, so no durable artifact ever holds the schedule value
+(or even proof a schedule was active) a checker could inspect after the fact. This narrower
+property's only evidence, absent a future commitment-based scheme (see that scenario's own "Known
 limitation" section for the fuller discussion, and this session's own persistent memory tracking a
-related open idea — `ccs_backlog_from_real_usage_feedback.md`'s "Candidate 5"), is the one-time
+related open idea — `ccs_backlog_from_real_usage_feedback.md`'s "Candidate 5"), remains the one-time
 live-verification narrative captured above in "Live verification actually performed" (steps 4 and
 7), which recorded the real schedule tokens and the real check output at the time this scenario
 was built.

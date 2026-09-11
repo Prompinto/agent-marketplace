@@ -34,9 +34,16 @@
 #   - the JSONL has exactly 2 receipt_issued records with a PENDING:... thread_id, and exactly 2
 #     receipt_issued records that reconcile a PENDING value to a real thread id, and those two real
 #     thread ids are exactly {leaked, current} -- no more, no fewer, no mismatch
+#   - round 1's own kept last-message file (captured by run-ccs-review.sh's standalone
+#     --keep-last-message flag, see setup.sh) carries material_reviewed==true,
+#     material_receipt==null, material_receipt_index==null -- mechanical proof round 1's real
+#     dispatched content WAS this scenario's own null-pair route, not Task 12's
+#     material_reviewed:false route or Task 13's non-null wrong-value mismatch (a missing file
+#     FAILS this scenario, same philosophy as the invocation log check above)
 set -euo pipefail
 RESULT_FILE="${1:?usage: expect.sh <result.json>}"
 INVOCATION_LOG="/tmp/ccs-eval-receipt-null-pair-reject-invocation.log"
+ROUND1_LAST_MESSAGE_FILE="/tmp/ccs-eval-receipt-null-pair-reject-round1-last-message.txt"
 
 FAIL=0
 check() {
@@ -92,6 +99,28 @@ else
   SECOND_FRESH_ID="$(echo "$FRESH_IDS_ORDERED" | sed -n '2p')"
   check "leaked thread_id matches the FIRST fresh dispatch (the abandoned hollow thread)" "$LEAKED_ID" "$FIRST_FRESH_ID"
   check "current thread_id matches the SECOND fresh dispatch (the restart's own thread)" "$CURRENT_ID" "$SECOND_FRESH_ID"
+fi
+
+# Round 1's own dispatched final-answer content, captured verbatim by
+# run-ccs-review.sh's standalone --keep-last-message flag (see setup.sh).
+# Mechanically distinguishes THIS scenario's own null-pair trigger from
+# Task 12's wrapper-level material_reviewed:false rejection and Task 13's
+# non-null wrong-value mismatch -- without this, all three routes produce
+# structurally identical downstream artifacts (one leaked + one current
+# thread, both cleaned up, a matching restart receipt), so nothing else here
+# can prove WHICH of the three genuinely fired.
+if [ ! -f "$ROUND1_LAST_MESSAGE_FILE" ]; then
+  echo "receipt-null-pair-reject: FAIL -- round 1's kept last-message file not found at $ROUND1_LAST_MESSAGE_FILE (this scenario exists to prove round 1's real dispatched content was the null-pair route, not Task 12's or Task 13's -- a missing file means that cannot be checked, so it must fail, not silently pass)" >&2
+  FAIL=1
+else
+  ROUND1_DISPATCHED_REVIEWED="$(jq -r '.material_reviewed' "$ROUND1_LAST_MESSAGE_FILE" 2>/dev/null || echo "PARSE_ERROR")"
+  check "round 1's own kept dispatched content: material_reviewed (must be true -- this is the null-pair route, not Task 12's material_reviewed:false route)" "$ROUND1_DISPATCHED_REVIEWED" "true"
+
+  ROUND1_DISPATCHED_RECEIPT="$(jq -r '.material_receipt // "null"' "$ROUND1_LAST_MESSAGE_FILE" 2>/dev/null || echo "PARSE_ERROR")"
+  check "round 1's own kept dispatched content: material_receipt (must be null -- proves this is the null-pair route, not Task 13's non-null wrong-value mismatch)" "$ROUND1_DISPATCHED_RECEIPT" "null"
+
+  ROUND1_DISPATCHED_RECEIPT_INDEX="$(jq -r '.material_receipt_index // "null"' "$ROUND1_LAST_MESSAGE_FILE" 2>/dev/null || echo "PARSE_ERROR")"
+  check "round 1's own kept dispatched content: material_receipt_index (must be null -- paired with the null receipt above)" "$ROUND1_DISPATCHED_RECEIPT_INDEX" "null"
 fi
 
 RESULT_DIR="$(dirname "$RESULT_FILE")"

@@ -33,10 +33,23 @@ BIN_DIR="$(mktemp -d)"
 ln -s "$SCRIPT_DIR/../../../tests/fixtures/fake-codex" "$BIN_DIR/codex"
 INVOCATION_LOG="/tmp/ccs-eval-receipt-null-pair-reject-invocation.log"
 : > "$INVOCATION_LOG"
+# Captures round 1's own dispatched final-answer content verbatim, via
+# run-ccs-review.sh's standalone --keep-last-message flag (unconditionally
+# available in its argument parser, independent of the skill's own
+# session-level --keep-evidence gating -- see README.md's "Mechanical setup"
+# section). Lets expect.sh mechanically prove round 1's real response WAS the
+# null-pair route (material_reviewed:true, material_receipt:null,
+# material_receipt_index:null), distinct from Task 12's wrapper-level
+# material_reviewed:false rejection and Task 13's non-null wrong-value
+# mismatch -- rather than relying solely on the one-time live-verification
+# narrative for that distinction.
+ROUND1_LAST_MESSAGE_FILE="/tmp/ccs-eval-receipt-null-pair-reject-round1-last-message.txt"
+rm -f "$ROUND1_LAST_MESSAGE_FILE"
 
 echo "REPO_DIR=$REPO_DIR"
 echo "BIN_DIR=$BIN_DIR"
 echo "INVOCATION_LOG=$INVOCATION_LOG"
+echo "ROUND1_LAST_MESSAGE_FILE=$ROUND1_LAST_MESSAGE_FILE"
 cat <<EOF
 
 Next step: invoke codex-stream-review:ccs (the real Skill tool, or -- if that does not run inline
@@ -48,7 +61,12 @@ dispatch/cleanup call. Task text: "review the uncommitted change in this fixture
 Round 1's own fresh dispatch establishes a brand-new thread, so per SKILL.md's receipt schedule
 rules it passes --receipt-schedule-file <the schedule YOU just generated live, via SKILL.md's own
 mktemp + 70-iteration shasum -a 256 loop> --receipt-slot 1 -- this thread genuinely HAS an active
-schedule. For that ONE call, set:
+schedule. ALSO pass --keep-last-message "\$ROUND1_LAST_MESSAGE_FILE" on this ONE call (a standalone
+run-ccs-review.sh wrapper flag, unconditionally available in its own argument parser regardless of
+session-level --keep-evidence -- do NOT turn --keep-evidence on for this run, it is not needed and
+would change unrelated cleanup-on-failure behavior). This durably copies round 1's own real
+dispatched final-answer content before the wrapper deletes its private copy, so expect.sh can later
+confirm this route (not Task 12's or Task 13's) genuinely fired. For that ONE call, set:
   export FAKE_CODEX_SCENARIO=normal
   export FAKE_CODEX_FINAL_ANSWER='<a schema-valid JSON verdict, constructed with jq -- never
     hand-interpolated -- carrying material_reviewed:true (this scenario is specifically testing
