@@ -205,6 +205,24 @@ else
     # same name later followed by content engineered to match -- scan()'s count of exactly one
     # occurrence per heading rules that out, on top of markers_present/markers_ordered.
     #
+    # Both section extractions stop at ANY subsequent "OPEN CLAIM..." line (covering both the
+    # genuine "OPEN CLAIMS:" heading and any "OPEN CLAIM <id>:" per-claim heading, decoy or real)
+    # -- not just the one specific heading each section "officially" ends at -- so a decoy
+    # per-claim heading inserted between CLOSED CLAIMS: and f1's real reason correctly truncates
+    # the closed-claims section before it, rather than being silently absorbed into it.
+    #
+    # Note on scope: these 4 literal heading strings (COMPACT_DIGEST/CLOSED CLAIMS:/OPEN CLAIMS:/
+    # OPEN CLAIM <id>:) reflect the ACTUAL rendering this scenario's own real captured artifact
+    # produced, not a literal grammar spelled out verbatim in references/compaction.md itself (that
+    # file only fixes the per-claim "OPEN CLAIM <claim_id>:" block's own template; the surrounding
+    # section headings are this implementation's own observed rendering choice, not a separately
+    # quoted contract). A differently-worded but equally-compliant digest renderer could in
+    # principle fail these specific checks while still correctly implementing the underlying
+    # digest-construction procedure -- accepted as a reasonable, disclosed scope choice for a
+    # scenario whose whole point is validating THIS session's own concretely-observed rendering,
+    # matching every other captured-shape assertion in this file (e.g. the exact JSONL field
+    # layout), not an abstract test of every hypothetical conforming implementation.
+    #
     # Deliberately not pursued further (judged disproportionate for a bash+jq eval checker):
     # defending against zero-width/invisible-Unicode tricks between a heading and its content, or
     # parsing the full digest grammar generally. Binding each claim's content to its own section
@@ -227,10 +245,14 @@ else
             then ($m1.offset < $m2.offset and $m2.offset < $m3.offset and $m3.offset < $m4.offset)
             else false end
           ),
-          closed_claims_section_binds_f1: (
-            if ($m2 != null and $m3 != null and ($m2.offset + $m2.length) <= $m3.offset)
-            then ($foc[($m2.offset + $m2.length):$m3.offset] | contains($f1reason))
-            else false end
+          closed_claims_section: (
+            if ($m2 != null)
+            then (
+              $foc[($m2.offset + $m2.length):] as $tail
+              | ([$tail | match("(?m)^(OPEN CLAIM|Why:)")] | .[0]) as $next
+              | (if $next != null then $tail[0:$next.offset] else $tail end)
+            )
+            else null end
           ),
           open_claim_f2_section: (
             if ($m4 != null)
@@ -243,10 +265,11 @@ else
           )
         }
         | . + {
+            closed_claims_section_binds_f1: (if .closed_claims_section != null then (.closed_claims_section | contains($f1reason)) else false end),
             open_claim_f2_section_binds_summary: (if .open_claim_f2_section != null then (.open_claim_f2_section | contains($f2summary)) else false end),
             open_claim_f2_section_binds_evidence: (if .open_claim_f2_section != null then (.open_claim_f2_section | contains($f2evidence)) else false end)
           }
-        | del(.open_claim_f2_section)
+        | del(.closed_claims_section, .open_claim_f2_section)
     ' "$JSONL_FILE" | head -n 1)"
 
     check "round 3 target.focus: COMPACT_DIGEST/CLOSED CLAIMS:/OPEN CLAIMS:/OPEN CLAIM f2: each appear exactly once, anchored at their own line start" \
