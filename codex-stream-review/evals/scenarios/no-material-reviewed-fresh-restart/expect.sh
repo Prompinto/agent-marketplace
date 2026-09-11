@@ -22,15 +22,20 @@
 #     separately persisted, only the eventual restart's own successful round is
 #   - round 1's JSONL record's thread_id equals the leaked thread; round 3's JSONL record's
 #     thread_id equals the current thread (the restart IS round 3's real dispatch)
-#   - round 3's own target.focus field genuinely carries the compaction-style digest forward:
-#     f1's own one-line closed-claim reason text (byte-exact against round 2's own
-#     claim_closures[0].marker_reason) AND f2's own full verbatim summary/evidence text (byte-exact
-#     against round 1's own codex_review.findings[] entry for f2) -- never a blank/reset digest.
-#     This is the one property this scenario exists to prove: the restart's own seed is not merely
-#     "a new thread happens to get created," it genuinely contains the carried-forward claim state.
-#   - round 3's own target.focus also contains the actual literal structural markers
-#     references/compaction.md's digest-construction procedure produces (COMPACT_DIGEST,
-#     CLOSED CLAIMS:, OPEN CLAIM f2:) -- not merely the same substrings inside unrelated prose
+#   - round 3's own target.focus field genuinely carries the compaction-style digest forward, and
+#     the carried content is bound to its OWN structural position, not merely present anywhere in
+#     the document: the actual literal structural markers references/compaction.md's
+#     digest-construction procedure produces (COMPACT_DIGEST, CLOSED CLAIMS:, OPEN CLAIMS:,
+#     OPEN CLAIM f2:) each appear exactly once, anchored at their own line start, in the correct
+#     relative order; f1's own one-line closed-claim reason text (byte-exact against round 2's own
+#     claim_closures[0].marker_reason) is found specifically WITHIN the CLOSED CLAIMS: section; and
+#     f2's own full verbatim summary/evidence text (byte-exact against round 1's own
+#     codex_review.findings[] entry for f2) is found specifically WITHIN its own OPEN CLAIM f2:
+#     block -- never a blank/reset digest, and never content merely coexisting with unrelated
+#     structural markers elsewhere in the same prose. This is the one property this scenario exists
+#     to prove: the restart's own seed is not merely "a new thread happens to get created" with
+#     the right headings somewhere in it, it genuinely contains the carried-forward claim state at
+#     the position the real digest template places it.
 #   - round 3's own JSONL record has target.scope == "uncommitted" (never "resume") and its own
 #     coverage_source object, per references/retry-guards.md's "two known exceptions to the
 #     general round-2+ resume rule" section
@@ -166,9 +171,6 @@ else
     if [ -z "$F1_MARKER_REASON" ]; then
       echo "no-material-reviewed-fresh-restart: FAIL -- round 2 JSONL record has no claim_closures entry for f1 to compare the digest against" >&2
       FAIL=1
-    else
-      F1_IN_ROUND3_FOCUS="$(jq -r --arg needle "$F1_MARKER_REASON" 'select(.round == 3) | .target.focus | contains($needle)' "$JSONL_FILE" | head -n 1)"
-      check "round 3 target.focus contains f1's own one-line closed-claim reason verbatim (byte-exact against round 2's own marker_reason)" "$F1_IN_ROUND3_FOCUS" "true"
     fi
 
     F2_SUMMARY="$(jq -r 'select(.round == 1) | .codex_review.findings[]? | select(.id == "f2") | .summary // ""' "$JSONL_FILE" | head -n 1)"
@@ -176,46 +178,94 @@ else
     if [ -z "$F2_SUMMARY" ] || [ -z "$F2_EVIDENCE" ]; then
       echo "no-material-reviewed-fresh-restart: FAIL -- round 1 JSONL record has no findings[] entry for f2 to compare the digest against" >&2
       FAIL=1
-    else
-      F2_SUMMARY_IN_ROUND3_FOCUS="$(jq -r --arg needle "$F2_SUMMARY" 'select(.round == 3) | .target.focus | contains($needle)' "$JSONL_FILE" | head -n 1)"
-      check "round 3 target.focus contains f2's own summary text verbatim (byte-exact against round 1's own finding, unabridged)" "$F2_SUMMARY_IN_ROUND3_FOCUS" "true"
-      F2_EVIDENCE_IN_ROUND3_FOCUS="$(jq -r --arg needle "$F2_EVIDENCE" 'select(.round == 3) | .target.focus | contains($needle)' "$JSONL_FILE" | head -n 1)"
-      check "round 3 target.focus contains f2's own evidence text verbatim (byte-exact against round 1's own finding, unabridged)" "$F2_EVIDENCE_IN_ROUND3_FOCUS" "true"
     fi
 
-    # Structural-marker check: the content-substring checks above can be satisfied by unrelated
-    # prose that merely happens to contain the same substrings -- they never require the actual
-    # digest-construction markers references/compaction.md's "Digest construction and verification"
-    # procedure produces (COMPACT_DIGEST heading, the CLOSED CLAIMS: section, and the per-claim
-    # "OPEN CLAIM <claim_id>:" template), each anchored at the start of its own line, in the
-    # correct relative order. Without the line-start anchor and order check, an adversarial focus
-    # that merely NAMES all three headings somewhere in unstructured prose would still pass.
-    # jq/oniguruma's "^" only becomes a per-line anchor inside an inline (?m) modifier group here
-    # (confirmed against the real captured artifact -- neither the bare "^" nor the "m" test()
-    # flag anchors per-line in this jq build). Each pattern is ALSO end-anchored with "$" (also
-    # only a per-line anchor inside the same (?m) group) -- a start anchor alone would let a
-    # heading-prefixed non-canonical line (e.g. "COMPACT_DIGEST_not_a_heading") pass; the real
-    # captured digest has each marker as its own complete, standalone line.
-    ROUND3_FOCUS_HAS_DIGEST_MARKER="$(jq -r 'select(.round == 3) | .target.focus | test("(?m)^COMPACT_DIGEST$")' "$JSONL_FILE" | head -n 1)"
-    check "round 3 target.focus contains the literal COMPACT_DIGEST marker anchored at a line start" "$ROUND3_FOCUS_HAS_DIGEST_MARKER" "true"
+    # Structural + content-binding check, as ONE design: a plain substring check (an earlier
+    # version of this test) can be satisfied by unrelated prose that merely happens to repeat the
+    # same text anywhere in the document; a marker-existence/order check ALONE (a later version)
+    # closes that but still leaves the content and the structure decoupled -- an adversarial focus
+    # can have all headings standalone, anchored, and correctly ordered, AND separately mention
+    # f1's/f2's exact text elsewhere in unrelated prose, with neither property ever verified to be
+    # true of the SAME text. Fixed by extracting each claim's own SECTION (the literal span between
+    # its own heading and the next one) and requiring its content to be found INSIDE that span, not
+    # merely inside the whole string -- so content is checked at the structural position the real
+    # digest template actually places it, per references/compaction.md's "Digest construction and
+    # verification" section (CLOSED CLAIMS: is immediately followed by each closed claim's one-line
+    # reason; OPEN CLAIM <claim_id>: is immediately followed by that claim's file/line/severity/
+    # summary/evidence fields, confirmed against the real captured artifact for this scenario).
+    #
+    # jq/oniguruma's "^"/"$" only become per-line anchors inside an inline (?m) modifier group here
+    # (confirmed against the real captured artifact). match(...)/scan(...) yield an EMPTY STREAM
+    # (not null, and not a caught error) when there is no match, so `[... | match(...)] | .[0]`
+    # (never a bare `match(...) as $x`) is used everywhere below to get a well-defined null on a
+    # miss instead of silently short-circuiting the whole jq pipeline to zero output.
+    #
+    # markers_unique also guards a duplicate-heading smuggling trick a subsequent adversarial pass
+    # could otherwise try: a real heading followed by decoy content, then a second heading of the
+    # same name later followed by content engineered to match -- scan()'s count of exactly one
+    # occurrence per heading rules that out, on top of markers_present/markers_ordered.
+    #
+    # Deliberately not pursued further (judged disproportionate for a bash+jq eval checker):
+    # defending against zero-width/invisible-Unicode tricks between a heading and its content, or
+    # parsing the full digest grammar generally. Binding each claim's content to its own section
+    # span is treated as the meaningful stopping point.
+    ROUND3_STRUCTURE_CHECK="$(jq -c --arg f1reason "$F1_MARKER_REASON" --arg f2summary "$F2_SUMMARY" --arg f2evidence "$F2_EVIDENCE" '
+      select(.round == 3) | .target.focus as $foc
+      | ([$foc | scan("(?m)^COMPACT_DIGEST$")] | length) as $n1
+      | ([$foc | scan("(?m)^CLOSED CLAIMS:$")] | length) as $n2
+      | ([$foc | scan("(?m)^OPEN CLAIMS:$")] | length) as $n3
+      | ([$foc | scan("(?m)^OPEN CLAIM f2:$")] | length) as $n4
+      | ([$foc | match("(?m)^COMPACT_DIGEST$")] | .[0]) as $m1
+      | ([$foc | match("(?m)^CLOSED CLAIMS:$")] | .[0]) as $m2
+      | ([$foc | match("(?m)^OPEN CLAIMS:$")] | .[0]) as $m3
+      | ([$foc | match("(?m)^OPEN CLAIM f2:$")] | .[0]) as $m4
+      | {
+          markers_unique: ($n1 == 1 and $n2 == 1 and $n3 == 1 and $n4 == 1),
+          markers_present: ($m1 != null and $m2 != null and $m3 != null and $m4 != null),
+          markers_ordered: (
+            if ($m1 != null and $m2 != null and $m3 != null and $m4 != null)
+            then ($m1.offset < $m2.offset and $m2.offset < $m3.offset and $m3.offset < $m4.offset)
+            else false end
+          ),
+          closed_claims_section_binds_f1: (
+            if ($m2 != null and $m3 != null and ($m2.offset + $m2.length) <= $m3.offset)
+            then ($foc[($m2.offset + $m2.length):$m3.offset] | contains($f1reason))
+            else false end
+          ),
+          open_claim_f2_section: (
+            if ($m4 != null)
+            then (
+              $foc[($m4.offset + $m4.length):] as $tail
+              | ([$tail | match("(?m)^(OPEN CLAIM |Why:)")] | .[0]) as $next
+              | (if $next != null then $tail[0:$next.offset] else $tail end)
+            )
+            else null end
+          )
+        }
+        | . + {
+            open_claim_f2_section_binds_summary: (if .open_claim_f2_section != null then (.open_claim_f2_section | contains($f2summary)) else false end),
+            open_claim_f2_section_binds_evidence: (if .open_claim_f2_section != null then (.open_claim_f2_section | contains($f2evidence)) else false end)
+          }
+        | del(.open_claim_f2_section)
+    ' "$JSONL_FILE" | head -n 1)"
 
-    ROUND3_FOCUS_HAS_CLOSED_HEADING="$(jq -r 'select(.round == 3) | .target.focus | test("(?m)^CLOSED CLAIMS:$")' "$JSONL_FILE" | head -n 1)"
-    check "round 3 target.focus contains the literal CLOSED CLAIMS: section heading anchored at a line start" "$ROUND3_FOCUS_HAS_CLOSED_HEADING" "true"
+    check "round 3 target.focus: COMPACT_DIGEST/CLOSED CLAIMS:/OPEN CLAIMS:/OPEN CLAIM f2: each appear exactly once, anchored at their own line start" \
+      "$(jq -r '.markers_unique' <<<"$ROUND3_STRUCTURE_CHECK")" "true"
 
-    ROUND3_FOCUS_HAS_OPEN_CLAIM_MARKER="$(jq -r 'select(.round == 3) | .target.focus | test("(?m)^OPEN CLAIM f2:$")' "$JSONL_FILE" | head -n 1)"
-    check "round 3 target.focus contains the literal OPEN CLAIM f2: per-claim heading anchored at a line start" "$ROUND3_FOCUS_HAS_OPEN_CLAIM_MARKER" "true"
+    check "round 3 target.focus: all 4 structural markers are present" \
+      "$(jq -r '.markers_present' <<<"$ROUND3_STRUCTURE_CHECK")" "true"
 
-    # The order check must derive its offsets from the SAME line-start-anchored match the 3
-    # checks above validate -- using unanchored indices() here would let an out-of-order (or
-    # missing) set of anchored markers still "pass" ordering via an earlier, coincidental,
-    # non-anchored mention of the same substrings elsewhere in the prose. match(...).offset with
-    # the identical "(?m)^..." pattern ties the order check to the exact same anchored match.
-    ROUND3_FOCUS_MARKER_ORDER="$(jq -r 'select(.round == 3) | .target.focus as $f
-      | (try ($f | match("(?m)^COMPACT_DIGEST$").offset) catch null) as $p1
-      | (try ($f | match("(?m)^CLOSED CLAIMS:$").offset) catch null) as $p2
-      | (try ($f | match("(?m)^OPEN CLAIM f2:$").offset) catch null) as $p3
-      | if ($p1 != null and $p2 != null and $p3 != null and $p1 < $p2 and $p2 < $p3) then "true" else "false" end' "$JSONL_FILE" | head -n 1)"
-    check "round 3 target.focus markers appear in the correct relative order (COMPACT_DIGEST before CLOSED CLAIMS: before OPEN CLAIM f2:)" "$ROUND3_FOCUS_MARKER_ORDER" "true"
+    check "round 3 target.focus: markers appear in the correct relative order (COMPACT_DIGEST < CLOSED CLAIMS: < OPEN CLAIMS: < OPEN CLAIM f2:)" \
+      "$(jq -r '.markers_ordered' <<<"$ROUND3_STRUCTURE_CHECK")" "true"
+
+    check "round 3 target.focus: f1's own closed-claim reason appears WITHIN the CLOSED CLAIMS: section itself (byte-exact against round 2's own marker_reason), not merely somewhere in the document" \
+      "$(jq -r '.closed_claims_section_binds_f1' <<<"$ROUND3_STRUCTURE_CHECK")" "true"
+
+    check "round 3 target.focus: f2's own summary appears WITHIN its own OPEN CLAIM f2: block (byte-exact against round 1's own finding), not merely somewhere in the document" \
+      "$(jq -r '.open_claim_f2_section_binds_summary' <<<"$ROUND3_STRUCTURE_CHECK")" "true"
+
+    check "round 3 target.focus: f2's own evidence appears WITHIN its own OPEN CLAIM f2: block (byte-exact against round 1's own finding), not merely somewhere in the document" \
+      "$(jq -r '.open_claim_f2_section_binds_evidence' <<<"$ROUND3_STRUCTURE_CHECK")" "true"
   fi
 
   # receipt_issued bookkeeping: exactly 2 PENDING placeholders (thread A's round-1 establishment,

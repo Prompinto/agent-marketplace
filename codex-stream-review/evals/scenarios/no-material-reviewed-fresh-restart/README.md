@@ -300,8 +300,13 @@ is the real one, not a simplified stand-in.
 - The session's own durable JSONL log has exactly 3 round-bearing records (round 3's own hollow
   attempt is never separately persisted); round 1's record's `thread_id` is the leaked thread;
   round 3's record's `thread_id` is the current thread.
-- Round 3's own `target.focus`, read back from that durable JSONL record, genuinely contains BOTH
-  `f1`'s own one-line closed-claim reason (byte-exact against round 2's own
-  `claim_closures[0].marker_reason`) AND `f2`'s own full verbatim `summary`/`evidence` text
-  (byte-exact against round 1's own `codex_review.findings[]` entry) — never a blank or reset
-  digest. This is the one property this scenario exists to prove.
+- Round 3's own `target.focus`, read back from that durable JSONL record, genuinely carries the
+  digest forward with content bound to its OWN structural section, not merely present somewhere in
+  the document: `COMPACT_DIGEST`/`CLOSED CLAIMS:`/`OPEN CLAIMS:`/`OPEN CLAIM f2:` each appear
+  exactly once, anchored at their own line start, in the correct relative order; `f1`'s own
+  one-line closed-claim reason (byte-exact against round 2's own `claim_closures[0].marker_reason`)
+  is found specifically WITHIN the `CLOSED CLAIMS:` section; and `f2`'s own full verbatim
+  `summary`/`evidence` text (byte-exact against round 1's own `codex_review.findings[]` entry) is
+  found specifically WITHIN its own `OPEN CLAIM f2:` block — never a blank or reset digest, and
+  never content merely coexisting with the right headings elsewhere in unrelated prose. This is the
+  one property this scenario exists to prove.
