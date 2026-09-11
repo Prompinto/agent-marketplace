@@ -1788,7 +1788,12 @@ meaning.
   for a parallel round — see "Coverage is a Round-1-only property" above) is unresolved `"partial"`
   or `"unknown"` while everything else would otherwise say converged, stop and report
   **⚠️ PARTIAL COVERAGE** instead of CLEAN — list every omitted path and reason (or state
-  plainly the wrapper never reported coverage at all, for `"unknown"`). If the R=20 cap is hit
+  plainly the wrapper never reported coverage at all, for `"unknown"`). **Whenever a
+  `no_material_reviewed` restart (`references/retry-guards.md`) occurred this session with
+  `--uncommitted` scope, its OWN `coverage_source.status` must ALSO be `"complete"` for CLEAN
+  eligibility** — `"partial"`/`"unknown"` on the restart's own coverage fails this condition too,
+  exactly like round 1's own value already does, in addition to (never instead of) round 1's own
+  requirement. If the R=20 cap is hit
   while a genuine disagreement AND unresolved coverage both remain open, report NOT CONVERGED
   and list the coverage gap alongside the disagreements — the disagreement is the more severe
   condition in that case.
@@ -2179,6 +2184,14 @@ trustworthy one).
      reports `coverage.source` for either. For `target.scope` `"uncommitted"`, the merged round-1
      `coverage_source` object this session already tracked as a literal fact throughout the run
      (see "Coverage is a Round-1-only property" above) — never re-derived from the JSONL here.
+     **Whenever a `no_material_reviewed` restart's own `coverage_source` also exists for this
+     session** (`--uncommitted` scope, per "Coverage is a Round-1-only property" above's own
+     exception), report the worst-case-wins merge of round 1's value and the restart's own value —
+     the SAME precedence the Round-1 N-group merge already uses (`"complete"` only if BOTH are
+     `"complete"`, else `"partial"` with `omitted` as the union of both `"partial"` values'
+     `omitted` lists, deduplicated by the `(path, reason)` pair, if either is `"partial"`, else
+     `"unknown"`) — never silently report only round 1's value when a second coverage-bearing
+     event also occurred this session.
    - `input_errors`: always `null` — no `exit_state` populates this field. It exists only for
      result-contract compatibility with older consumers: the one outcome that used to populate it
      (`"INPUT_TOO_LARGE"`, a self-imposed pre-dispatch prompt byte-size guard) has been removed

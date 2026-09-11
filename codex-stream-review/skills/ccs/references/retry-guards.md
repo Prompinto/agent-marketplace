@@ -240,9 +240,14 @@ any round would, just substituting a fresh dispatch for what would otherwise be 
 - The SAME snapshot revalidation every round 2+ already runs, unmodified (re-verify the LOCAL
   `SNAPSHOT_FILE` against the remembered `SNAPSHOT_DIGEST`; hard-stop `🛑 SNAPSHOT INTEGRITY
   FAILURE` on mismatch, exactly like any other round — see `references/snapshot-integrity.md`).
-  **This restart does NOT tolerate working-tree drift the way `--compact`'s own restart does** —
-  a deliberate, disclosed deviation from reusing that tradeoff: if the underlying material has
-  changed since round 1, this restart hard-stops rather than silently reviewing a shifted target.
+  **This check is local-file-integrity only, not drift detection** — per
+  `references/snapshot-integrity.md`'s own "Not a defense against a deliberately changed source"
+  section, it never re-observes the real working tree/ref/pasted text, only Claude's own
+  already-collected `$SNAPSHOT_FILE`; a repo diff that legitimately changes mid-review is
+  invisible to it as long as that file stays intact on disk. So this restart tolerates working-tree
+  drift exactly like `--compact`'s own restart already does — the one real difference from
+  `--compact`'s restart is that this restart never promotes a new "official" session snapshot onto
+  `SNAPSHOT_FILE`; it simply re-reviews whatever the working tree currently looks like.
 - The claim ledger digest is carried forward into the fresh thread's own seed, built from the
   durable JSONL log's own reducer state (`references/compaction.md`'s "Digest construction and
   verification" section — a general, `--compact`-agnostic procedure with no JSONL-field footprint
