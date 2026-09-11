@@ -257,3 +257,21 @@ call, `FAKE_CODEX_INVOCATION_LOG` re-exported on every call.
   fresh receipt schedule — a live orchestrating agent must remember to construct a genuinely
   matching receipt for the restart's own schedule, generated live at the point `SKILL.md`'s own
   Phase 1 Step 0 / `references/retry-guards.md` call for it (never pre-baked by `setup.sh`).
+
+## Known limitation
+
+`expect.sh`'s JSONL checks are artifact-only and can re-verify every STRUCTURAL/mechanical
+consequence of a correct Phase 2 step 1 receipt comparison (round 1 never separately persisted
+under any thread id, exactly one leaked + one current thread, an exact 1:1 reconciliation pairing
+against this file's own real `PENDING:...` records, a genuinely persisted receipt on the accepted
+round). They cannot re-verify that the receipt-VALUE comparison itself (round 1's receipt vs its
+schedule's slot-1 token; the restart's receipt vs its own schedule's slot-1 token) actually
+happened — by design, `SKILL.md`'s "Receipt schedule generation" section guarantees a
+`RECEIPT_SCHEDULE_FILE`'s content is never included in any `FOCUS_FILE`, never excerpted into
+JSONL History text, and never part of any JSONL line, so no durable artifact ever holds the
+schedule value a checker could compare against after the fact. This is a deliberate confidentiality
+property of the schedule mechanism, not an oversight, and it is not something this eval should try
+to work around by weakening that guarantee. The only evidence that the comparison genuinely
+happened is the one-time live-verification narrative captured above in "Live verification actually
+performed" (steps 4 and 7), which recorded the real schedule tokens and the real `if`-test
+comparison output at the time this scenario was built.

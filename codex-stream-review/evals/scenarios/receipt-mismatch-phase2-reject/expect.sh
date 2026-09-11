@@ -96,10 +96,26 @@ RESULT_DIR="$(dirname "$RESULT_FILE")"
 SESSION_ID="$(jq -r '.session_id' "$RESULT_FILE")"
 JSONL_FILE="$RESULT_DIR/$SESSION_ID.jsonl"
 
+# Known, deliberate limitation: the checks below can only re-verify STRUCTURAL/mechanical
+# consequences of a correct Phase 2 step 1 receipt comparison (round 1 never separately
+# persisted, exactly one leaked + one current thread, exact reconciliation pairing, a
+# genuinely persisted receipt on the accepted round). They CANNOT re-verify that the
+# comparison itself (round 1's receipt vs its schedule's slot-1 token; the restart's receipt
+# vs its own schedule's slot-1 token) actually happened, because SKILL.md's "Receipt schedule
+# generation" section deliberately guarantees RECEIPT_SCHEDULE_FILE content is never included
+# in any FOCUS_FILE, never excerpted into JSONL History text, and never part of any JSONL line
+# -- a confidentiality property, not an oversight, so no durable artifact ever holds the
+# schedule value a checker could compare against after the fact. That evidence exists only in
+# the one-time live-verification narrative in this scenario's own README.md ("Live
+# verification actually performed" section, steps 4 and 7). See README.md's "Known limitation"
+# note for the full disclosure.
 if [ ! -f "$JSONL_FILE" ]; then
   echo "receipt-mismatch-phase2-reject: FAIL -- expected sibling JSONL log at $JSONL_FILE, not found (this scenario exists to prove material_reviewed/material_receipt and receipt reconciliation were genuinely recorded -- a missing log means that cannot be checked, so it must fail, not silently pass)" >&2
   FAIL=1
 else
+  ROUND1_TOTAL_COUNT="$(jq -c 'select(.round == 1)' "$JSONL_FILE" | wc -l | tr -d ' ')"
+  check "total count of round==1 records anywhere in the JSONL (a hollow round-1 response must never be separately persisted, under the leaked thread id or any other)" "$ROUND1_TOTAL_COUNT" "1"
+
   ROUND1_CURRENT_LINE="$(jq -c --arg tid "$CURRENT_ID" 'select(.round == 1) | select(.thread_id == $tid)' "$JSONL_FILE" | head -n 1)"
   if [ -z "$ROUND1_CURRENT_LINE" ]; then
     echo "receipt-mismatch-phase2-reject: FAIL -- no round==1 JSONL record found with thread_id matching the artifact's current thread [$CURRENT_ID]" >&2
@@ -132,6 +148,32 @@ else
 
   EXPECTED_RECONCILED_IDS="$(printf '%s\n' "$LEAKED_ID" "$CURRENT_ID" | sort)"
   check "receipt_issued reconciliations cover exactly the artifact's leaked+current thread ids" "$RECONCILED_IDS" "$EXPECTED_RECONCILED_IDS"
+
+  # A genuine reconciliation's "reconciles" value must be one of THIS file's own real
+  # PENDING:... thread_ids (not just any string), and its index must match that specific
+  # PENDING record's own index -- not merely the right thread-id SET (guards against garbage
+  # reconciles/index values paired with an otherwise-correct thread-id set).
+  PENDING_RECORDS="$(jq -c 'select(.receipt_issued != null) | select(.receipt_issued.thread_id | startswith("PENDING:")) | {tid: .receipt_issued.thread_id, idx: .receipt_issued.index}' "$JSONL_FILE")"
+  RECONCILE_RECORDS="$(jq -c 'select(.receipt_issued != null) | select(.receipt_issued.reconciles != null) | {tid: .receipt_issued.thread_id, idx: .receipt_issued.index, reconciles: .receipt_issued.reconciles}' "$JSONL_FILE")"
+
+  while IFS= read -r REC; do
+    [ -z "$REC" ] && continue
+    REC_TID="$(echo "$REC" | jq -r '.tid')"
+    REC_IDX="$(echo "$REC" | jq -r '.idx')"
+    REC_RECONCILES="$(echo "$REC" | jq -r '.reconciles')"
+    PENDING_MATCH="$(printf '%s\n' "$PENDING_RECORDS" | jq -c --arg tid "$REC_RECONCILES" 'select(.tid == $tid)' | head -n 1)"
+    if [ -z "$PENDING_MATCH" ]; then
+      echo "receipt-mismatch-phase2-reject: FAIL -- reconciliation record for thread [$REC_TID] reconciles [$REC_RECONCILES], which is not one of this JSONL's own real PENDING:... records" >&2
+      FAIL=1
+      continue
+    fi
+    PENDING_IDX="$(echo "$PENDING_MATCH" | jq -r '.idx')"
+    check "reconciliation record for thread [$REC_TID]: index matches the PENDING record it claims to reconcile ([$REC_RECONCILES])" "$REC_IDX" "$PENDING_IDX"
+  done <<< "$RECONCILE_RECORDS"
+
+  RECONCILES_VALUES_SORTED="$(printf '%s\n' "$RECONCILE_RECORDS" | jq -r '.reconciles' | sort)"
+  PENDING_TIDS_SORTED="$(printf '%s\n' "$PENDING_RECORDS" | jq -r '.tid' | sort)"
+  check "reconciliation values form an exact 1:1 pairing with this JSONL's own real PENDING:... records (no PENDING value reconciled twice, none left unreconciled)" "$RECONCILES_VALUES_SORTED" "$PENDING_TIDS_SORTED"
 fi
 
 exit "$FAIL"
