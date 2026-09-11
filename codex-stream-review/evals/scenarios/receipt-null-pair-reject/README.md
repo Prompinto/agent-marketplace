@@ -386,7 +386,7 @@ value the live schedule demanded (no separately-committed expected value exists 
 against), since `SKILL.md`'s confidentiality guarantee excludes the schedule's own raw candidate
 tokens from any LIVE-SESSION artifact (`FOCUS_FILE`, JSONL History text, any JSONL line) that a
 future automated checker could inspect after the fact. This scenario's own build-time narrative
-below is a separate, one-time, hand-written disclosure — not a live-session artifact `expect.sh`
+above is a separate, one-time, hand-written disclosure — not a live-session artifact `expect.sh`
 itself could ever re-derive or check against — so it does not weaken or contradict that guarantee;
 it simply means a human reader has one-time evidence a future automated run cannot reconstruct.
 Absent
