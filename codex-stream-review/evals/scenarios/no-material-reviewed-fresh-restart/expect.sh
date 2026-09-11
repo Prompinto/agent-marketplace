@@ -147,6 +147,9 @@ else
     ROUND3_COVERAGE_SOURCE_TYPE="$(jq -r 'select(.round == 3) | .coverage_source | type' "$JSONL_FILE" | head -n 1)"
     check "round 3 JSONL record: coverage_source is present as its own object (a genuine second coverage-establishing event, not a resume)" "$ROUND3_COVERAGE_SOURCE_TYPE" "object"
 
+    ROUND3_COVERAGE_SOURCE_STATUS="$(jq -r 'select(.round == 3) | .coverage_source.status // ""' "$JSONL_FILE" | head -n 1)"
+    check "round 3 JSONL record: coverage_source.status is complete (SKILL.md requires every successful fresh --uncommitted coverage event to be explicitly complete for convergence)" "$ROUND3_COVERAGE_SOURCE_STATUS" "complete"
+
     # The digest-carryforward check itself: round 3's own target.focus must be a non-empty string
     # (present, well-typed -- a missing/empty focus can never contain the digest at all) that
     # contains BOTH the closed claim's one-line reason (byte-exact against round 2's own
@@ -184,24 +187,38 @@ else
     # prose that merely happens to contain the same substrings -- they never require the actual
     # digest-construction markers references/compaction.md's "Digest construction and verification"
     # procedure produces (COMPACT_DIGEST heading, the CLOSED CLAIMS: section, and the per-claim
-    # "OPEN CLAIM <claim_id>:" template). These are the literal, fixed strings that procedure
-    # emits -- not derivable from any other field in this JSONL -- so checking for them directly is
-    # the only way to distinguish a genuine digest from prose that only echoes the claim text.
-    ROUND3_FOCUS_HAS_DIGEST_MARKER="$(jq -r 'select(.round == 3) | .target.focus | contains("COMPACT_DIGEST")' "$JSONL_FILE" | head -n 1)"
-    check "round 3 target.focus contains the literal COMPACT_DIGEST marker" "$ROUND3_FOCUS_HAS_DIGEST_MARKER" "true"
+    # "OPEN CLAIM <claim_id>:" template), each anchored at the start of its own line, in the
+    # correct relative order. Without the line-start anchor and order check, an adversarial focus
+    # that merely NAMES all three headings somewhere in unstructured prose would still pass.
+    # jq/oniguruma's "^" only becomes a per-line anchor inside an inline (?m) modifier group here
+    # (confirmed against the real captured artifact -- neither the bare "^" nor the "m" test()
+    # flag anchors per-line in this jq build).
+    ROUND3_FOCUS_HAS_DIGEST_MARKER="$(jq -r 'select(.round == 3) | .target.focus | test("(?m)^COMPACT_DIGEST")' "$JSONL_FILE" | head -n 1)"
+    check "round 3 target.focus contains the literal COMPACT_DIGEST marker anchored at a line start" "$ROUND3_FOCUS_HAS_DIGEST_MARKER" "true"
 
-    ROUND3_FOCUS_HAS_CLOSED_HEADING="$(jq -r 'select(.round == 3) | .target.focus | contains("CLOSED CLAIMS:")' "$JSONL_FILE" | head -n 1)"
-    check "round 3 target.focus contains the literal CLOSED CLAIMS: section heading" "$ROUND3_FOCUS_HAS_CLOSED_HEADING" "true"
+    ROUND3_FOCUS_HAS_CLOSED_HEADING="$(jq -r 'select(.round == 3) | .target.focus | test("(?m)^CLOSED CLAIMS:")' "$JSONL_FILE" | head -n 1)"
+    check "round 3 target.focus contains the literal CLOSED CLAIMS: section heading anchored at a line start" "$ROUND3_FOCUS_HAS_CLOSED_HEADING" "true"
 
-    ROUND3_FOCUS_HAS_OPEN_CLAIM_MARKER="$(jq -r 'select(.round == 3) | .target.focus | contains("OPEN CLAIM f2:")' "$JSONL_FILE" | head -n 1)"
-    check "round 3 target.focus contains the literal OPEN CLAIM f2: per-claim heading" "$ROUND3_FOCUS_HAS_OPEN_CLAIM_MARKER" "true"
+    ROUND3_FOCUS_HAS_OPEN_CLAIM_MARKER="$(jq -r 'select(.round == 3) | .target.focus | test("(?m)^OPEN CLAIM f2:")' "$JSONL_FILE" | head -n 1)"
+    check "round 3 target.focus contains the literal OPEN CLAIM f2: per-claim heading anchored at a line start" "$ROUND3_FOCUS_HAS_OPEN_CLAIM_MARKER" "true"
+
+    ROUND3_FOCUS_MARKER_ORDER="$(jq -r 'select(.round == 3) | .target.focus
+      | (indices("COMPACT_DIGEST") | first) as $p1
+      | (indices("CLOSED CLAIMS:") | first) as $p2
+      | (indices("OPEN CLAIM f2:") | first) as $p3
+      | if ($p1 != null and $p2 != null and $p3 != null and $p1 < $p2 and $p2 < $p3) then "true" else "false" end' "$JSONL_FILE" | head -n 1)"
+    check "round 3 target.focus markers appear in the correct relative order (COMPACT_DIGEST before CLOSED CLAIMS: before OPEN CLAIM f2:)" "$ROUND3_FOCUS_MARKER_ORDER" "true"
   fi
 
   # receipt_issued bookkeeping: exactly 2 PENDING placeholders (thread A's round-1 establishment,
   # thread B's restart establishment) and exactly 2 reconciliations, forming a 1:1 pairing with
   # {leaked, current} -- same convention as receipt-mismatch-phase2-reject/expect.sh.
-  PENDING_COUNT="$(jq -r 'select(.receipt_issued != null) | select(.receipt_issued.thread_id | startswith("PENDING:")) | .receipt_issued.thread_id' "$JSONL_FILE" | grep -c . || true)"
+  PENDING_THREAD_IDS="$(jq -r 'select(.receipt_issued != null) | select(.receipt_issued.thread_id | startswith("PENDING:")) | .receipt_issued.thread_id' "$JSONL_FILE")"
+  PENDING_COUNT="$(printf '%s\n' "$PENDING_THREAD_IDS" | grep -c . || true)"
   check "count of receipt_issued records with a PENDING:... thread_id" "$PENDING_COUNT" "2"
+
+  PENDING_DISTINCT_COUNT="$(printf '%s\n' "$PENDING_THREAD_IDS" | sort -u | grep -c . || true)"
+  check "the PENDING:... thread_id values are distinct from each other (no duplicate placeholder reused across schedules)" "$PENDING_DISTINCT_COUNT" "2"
 
   RECONCILED_IDS="$(jq -r 'select(.receipt_issued != null) | select(.receipt_issued.reconciles != null) | .receipt_issued.thread_id' "$JSONL_FILE" | sort)"
   RECONCILED_COUNT="$(printf '%s\n' "$RECONCILED_IDS" | grep -c . || true)"
