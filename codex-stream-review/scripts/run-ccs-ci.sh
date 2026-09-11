@@ -75,6 +75,13 @@ if [ ! -f "$SCHEMA_FILE" ]; then
   usage_error "schema file not found: $SCHEMA_FILE"
 fi
 
+# Resolved once, here, before anything else runs -- same reasoning as GIT_BIN in
+# scripts/lib/git-safe.sh: an absolute path invoked later is immune to a hostile PATH
+# introduced afterward (e.g. by something reachable from the PR's own untrusted checkout),
+# whereas a bare `claude` invocation at the actual call site would still do an ambient-PATH
+# lookup at that later point.
+CLAUDE_BIN="$(command -v claude)" || usage_error "claude CLI not found on PATH"
+
 REPO_ROOT=""
 BASE_REF=""
 WORKFLOW_RUN_ID=""
@@ -342,7 +349,7 @@ mktemp_registered CLAUDE_STDERR_FILE
 # codex-stream-review:ccs skill in the first place.
 (
   cd "$REPO_ROOT" || exit 127
-  claude -p --output-format json --dangerously-skip-permissions \
+  "$CLAUDE_BIN" -p --output-format json --dangerously-skip-permissions \
     --setting-sources user \
     --json-schema "$SCHEMA_TEXT" \
     -- "$PROMPT_TEXT"
