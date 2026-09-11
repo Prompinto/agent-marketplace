@@ -252,8 +252,10 @@ coverage, when this restart occurs at round 1 itself; it is held until round 1's
 eventually written, exactly like that merge rule describes. Then abandon that thread: add it to
 `LEAKED_THREAD_IDS`, and if `GROUP_THREADS` already holds an entry for this group (`SKILL.md`'s own
 `GROUP_THREADS` rule establishes it from ANY round-1 response carrying a `threadId`, success or
-failure alike — and this hollow response's own detection route, whether the wrapper's own
-`schema_mismatch` check or Phase 2's own synthetic version, both carry one per the reason table),
+failure alike — and this hollow response's own detection route always carries one: the wrapper's
+own `schema_mismatch` check is a `ok:false` failure covered by the reason table, while Phase 2's
+own synthetic version is an `ok:true` response whose `threadId` comes from that success envelope
+itself, never the reason table),
 **remove that group's entry from `GROUP_THREADS` at the same moment** — this thread must never sit
 in both sets at once. `SKILL.md`'s own Phase 3 `threads` computation derives a `"current"` entry
 from every `GROUP_THREADS` entry and a `"leaked"` entry from every `LEAKED_THREAD_IDS` entry; a
