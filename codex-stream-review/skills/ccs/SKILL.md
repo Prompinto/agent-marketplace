@@ -615,10 +615,10 @@ up using `--capture-evidence` at all):**
      ```bash
      REPO_ROOT_FILE="<literal REPO_ROOT_FILE path resolved in Phase 0 step 3 above>"
      REPO_ROOT="$(cat "$REPO_ROOT_FILE")"; REPO_ROOT="${REPO_ROOT%x}"
-     for _v in $(git rev-parse --local-env-vars 2>/dev/null || printf '%s\n' GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CONFIG GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT GIT_OBJECT_DIRECTORY GIT_DIR GIT_WORK_TREE GIT_IMPLICIT_WORK_TREE GIT_GRAFT_FILE GIT_INDEX_FILE GIT_NO_REPLACE_OBJECTS GIT_REPLACE_REF_BASE GIT_PREFIX GIT_SHALLOW_FILE GIT_COMMON_DIR) GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_TEMPLATE_DIR; do
+     GIT_BIN="$(command -v git)"
+     for _v in $("$GIT_BIN" rev-parse --local-env-vars 2>/dev/null || printf '%s\n' GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CONFIG GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT GIT_OBJECT_DIRECTORY GIT_DIR GIT_WORK_TREE GIT_IMPLICIT_WORK_TREE GIT_GRAFT_FILE GIT_INDEX_FILE GIT_NO_REPLACE_OBJECTS GIT_REPLACE_REF_BASE GIT_PREFIX GIT_SHALLOW_FILE GIT_COMMON_DIR) GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_TEMPLATE_DIR; do
        unset "$_v"
      done
-     GIT_BIN="$(command -v git)"
      SANITIZE_HOME=$(mktemp -d)
      env -i "PATH=/usr/bin:/bin" "HOME=$SANITIZE_HOME" "GIT_CONFIG_NOSYSTEM=1" \
        "$GIT_BIN" -C "$REPO_ROOT" -c core.fsmonitor= status --short --untracked-files=all
@@ -713,10 +713,10 @@ own):
 ```bash
 REPO_ROOT_FILE="<literal REPO_ROOT_FILE path resolved once in Phase 0>"
 REPO_ROOT="$(cat "$REPO_ROOT_FILE")"; REPO_ROOT="${REPO_ROOT%x}"
-for _v in $(git rev-parse --local-env-vars 2>/dev/null || printf '%s\n' GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CONFIG GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT GIT_OBJECT_DIRECTORY GIT_DIR GIT_WORK_TREE GIT_IMPLICIT_WORK_TREE GIT_GRAFT_FILE GIT_INDEX_FILE GIT_NO_REPLACE_OBJECTS GIT_REPLACE_REF_BASE GIT_PREFIX GIT_SHALLOW_FILE GIT_COMMON_DIR) GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_TEMPLATE_DIR; do
+GIT_BIN="$(command -v git)"
+for _v in $("$GIT_BIN" rev-parse --local-env-vars 2>/dev/null || printf '%s\n' GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CONFIG GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT GIT_OBJECT_DIRECTORY GIT_DIR GIT_WORK_TREE GIT_IMPLICIT_WORK_TREE GIT_GRAFT_FILE GIT_INDEX_FILE GIT_NO_REPLACE_OBJECTS GIT_REPLACE_REF_BASE GIT_PREFIX GIT_SHALLOW_FILE GIT_COMMON_DIR) GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_TEMPLATE_DIR; do
   unset "$_v"
 done
-GIT_BIN="$(command -v git)"
 SANITIZE_HOME=$(mktemp -d)
 if env -i "PATH=/usr/bin:/bin" "HOME=$SANITIZE_HOME" "GIT_CONFIG_NOSYSTEM=1" \
   "$GIT_BIN" -C "$REPO_ROOT" -c core.fsmonitor= rev-parse --verify -q HEAD >/dev/null 2>&1; then
@@ -803,10 +803,10 @@ each scope with the matching command:
 ```bash
 REPO_ROOT_FILE="<literal REPO_ROOT_FILE path resolved once in Phase 0>"
 REPO_ROOT="$(cat "$REPO_ROOT_FILE")"; REPO_ROOT="${REPO_ROOT%x}"
-for _v in $(git rev-parse --local-env-vars 2>/dev/null || printf '%s\n' GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CONFIG GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT GIT_OBJECT_DIRECTORY GIT_DIR GIT_WORK_TREE GIT_IMPLICIT_WORK_TREE GIT_GRAFT_FILE GIT_INDEX_FILE GIT_NO_REPLACE_OBJECTS GIT_REPLACE_REF_BASE GIT_PREFIX GIT_SHALLOW_FILE GIT_COMMON_DIR) GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_TEMPLATE_DIR; do
+GIT_BIN="$(command -v git)"
+for _v in $("$GIT_BIN" rev-parse --local-env-vars 2>/dev/null || printf '%s\n' GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CONFIG GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT GIT_OBJECT_DIRECTORY GIT_DIR GIT_WORK_TREE GIT_IMPLICIT_WORK_TREE GIT_GRAFT_FILE GIT_INDEX_FILE GIT_NO_REPLACE_OBJECTS GIT_REPLACE_REF_BASE GIT_PREFIX GIT_SHALLOW_FILE GIT_COMMON_DIR) GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_TEMPLATE_DIR; do
   unset "$_v"
 done
-GIT_BIN="$(command -v git)"
 SANITIZE_HOME=$(mktemp -d)
 
 # --base <ref>:
@@ -844,10 +844,10 @@ allowed to produce a "successfully" hashed empty/partial file that would silentl
 revalidation:
 ```bash
 REPO_ROOT_FILE="<literal from Phase 0>"; REPO_ROOT="$(cat "$REPO_ROOT_FILE")"; REPO_ROOT="${REPO_ROOT%x}"
-for _v in $(git rev-parse --local-env-vars 2>/dev/null || printf '%s\n' GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CONFIG GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT GIT_OBJECT_DIRECTORY GIT_DIR GIT_WORK_TREE GIT_IMPLICIT_WORK_TREE GIT_GRAFT_FILE GIT_INDEX_FILE GIT_NO_REPLACE_OBJECTS GIT_REPLACE_REF_BASE GIT_PREFIX GIT_SHALLOW_FILE GIT_COMMON_DIR) GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_TEMPLATE_DIR; do
+GIT_BIN="$(command -v git)"
+for _v in $("$GIT_BIN" rev-parse --local-env-vars 2>/dev/null || printf '%s\n' GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CONFIG GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT GIT_OBJECT_DIRECTORY GIT_DIR GIT_WORK_TREE GIT_IMPLICIT_WORK_TREE GIT_GRAFT_FILE GIT_INDEX_FILE GIT_NO_REPLACE_OBJECTS GIT_REPLACE_REF_BASE GIT_PREFIX GIT_SHALLOW_FILE GIT_COMMON_DIR) GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_TEMPLATE_DIR; do
   unset "$_v"
 done
-GIT_BIN="$(command -v git)"
 SANITIZE_HOME=$(mktemp -d)
 SNAPSHOT_FILE=$(mktemp "/tmp/ccs-${SESSION_ID}-snapshot.bin.XXXXXX")
 SNAPSHOT_OK=1
@@ -1232,8 +1232,12 @@ REPO_ROOT="$(cat "$REPO_ROOT_FILE")"; REPO_ROOT="${REPO_ROOT%x}"
 # runs during its own investigation inside it, inherits whatever environment this dispatching
 # shell passes down. A leaked GIT_DIR/GIT_WORK_TREE here would not corrupt the wrapper's own
 # collection, but it could redirect Codex's own investigation-time git commands to the wrong
-# repository:
-for _v in $(git rev-parse --local-env-vars 2>/dev/null || printf '%s\n' GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CONFIG GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT GIT_OBJECT_DIRECTORY GIT_DIR GIT_WORK_TREE GIT_IMPLICIT_WORK_TREE GIT_GRAFT_FILE GIT_INDEX_FILE GIT_NO_REPLACE_OBJECTS GIT_REPLACE_REF_BASE GIT_PREFIX GIT_SHALLOW_FILE GIT_COMMON_DIR) GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_TEMPLATE_DIR; do
+# repository. GIT_BIN is resolved via `command -v git` before this enumeration call itself runs
+# (never a bare `git`) -- otherwise a hostile PATH could substitute a decoy `git` here that returns
+# a deliberately wrong/incomplete "local env vars" list, causing this exact step to silently skip
+# unsetting a hostile GIT_DIR-like variable that then leaks into Codex's own dispatched subprocess:
+GIT_BIN="$(command -v git)"
+for _v in $("$GIT_BIN" rev-parse --local-env-vars 2>/dev/null || printf '%s\n' GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CONFIG GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT GIT_OBJECT_DIRECTORY GIT_DIR GIT_WORK_TREE GIT_IMPLICIT_WORK_TREE GIT_GRAFT_FILE GIT_INDEX_FILE GIT_NO_REPLACE_OBJECTS GIT_REPLACE_REF_BASE GIT_PREFIX GIT_SHALLOW_FILE GIT_COMMON_DIR) GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_TEMPLATE_DIR; do
   unset "$_v"
 done
 
