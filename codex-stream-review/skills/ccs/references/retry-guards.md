@@ -263,79 +263,121 @@ thread abandoned via this route is never a session's own `"current"` thread, so 
 in `GROUP_THREADS` to be double-counted as one. Then issue exactly ONE fresh restart — same scope
 flag as round 1 against `$REPO_ROOT` (`--uncommitted`/`--base`/`--commit`), OR, for a
 non-repo-artifact session (`references/non-repo-artifact.md`), `--uncommitted` against
-`CLEAN_REPO_DIR` with the original artifact text included in focus per the dedicated bullet below —
+`CLEAN_REPO_DIR` with the original artifact text included in focus per item 2 below —
 never `--resume`, to a brand-new thread. **This restart does
 NOT re-snapshot or promote a new candidate onto `SNAPSHOT_FILE`** — deliberately simpler than
-`--compact`'s own restart, by design:
-it dispatches this round's own ordinary Step 1 sequence (`SKILL.md`'s Phase 1 Step 1) exactly like
-any round would, just substituting a fresh dispatch for what would otherwise be a `--resume` call:
-- The SAME snapshot revalidation every round 2+ already runs, unmodified (re-verify the LOCAL
-  `SNAPSHOT_FILE` against the remembered `SNAPSHOT_DIGEST`; hard-stop `🛑 SNAPSHOT INTEGRITY
-  FAILURE` on mismatch, exactly like any other round — see `references/snapshot-integrity.md`).
-  **This check is local-file-integrity only, not drift detection** — per
-  `references/snapshot-integrity.md`'s own "Not a defense against a deliberately changed source"
-  section, it never re-observes the real working tree/ref/pasted text, only Claude's own
-  already-collected `$SNAPSHOT_FILE`; a repo diff that legitimately changes mid-review is
-  invisible to it as long as that file stays intact on disk. So this restart tolerates working-tree
-  drift exactly like `--compact`'s own restart already does — the one real difference from
-  `--compact`'s restart is that this restart never promotes a new "official" session snapshot onto
-  `SNAPSHOT_FILE`; it simply re-reviews whatever the working tree currently looks like. **For a
-  non-repo-artifact session specifically, this step's own revalidation must follow the same
-  capture-then-hash order `references/compaction.md`'s own Step 2 uses for the identical reason
-  (see that section's "Bind the dispatched bytes to the SAME verified copy" paragraph) — read
-  `SNAPSHOT_FILE`'s content into a captured copy exactly ONCE, here, then hash THAT captured copy
-  and confirm it equals `SNAPSHOT_DIGEST`, rather than the hash-the-file-directly check
-  `references/snapshot-integrity.md`'s own generic revalidation procedure runs. Only once it
-  matches is that SAME captured copy's content the source the dedicated bullet below pulls the
-  original artifact text from — never a separate re-read of `SNAPSHOT_FILE` for that purpose, and
-  never a hash-only check with no captured copy left to reuse.**
-- The claim ledger digest is carried forward into the fresh thread's own seed, built from the
-  durable JSONL log's own reducer state (`references/compaction.md`'s "Digest construction and
-  verification" section — a general, `--compact`-agnostic procedure with no JSONL-field footprint
-  of its own, reused here as-is) — never from the abandoned thread's own internal state.
-- **Non-repo-artifact session only (`references/non-repo-artifact.md`): the original artifact
-  text, read from the SAME captured `SNAPSHOT_FILE` copy the snapshot-revalidation bullet above
-  just captured and re-hashed against `SNAPSHOT_DIGEST` — never a separate re-read.**
-  `CLEAN_REPO_DIR` stays intentionally empty for this session type, so a fresh `--uncommitted`
-  dispatch against it collects an empty diff; without the artifact text embedded in this restart's
-  own focus, the new thread would have nothing to review at all and would immediately reproduce
-  the identical `no_material_reviewed` failure it was meant to recover from. `SNAPSHOT_FILE`
-  already holds the exact pasted artifact bytes for this session type (round 1 captured them
-  there, per `references/snapshot-integrity.md`), and this restart never re-snapshots (see above),
-  so the original round-1 copy is exactly what gets embedded here, unmodified. Positioned
-  immediately after the claim ledger digest above and before the original Why + Scope framing
-  below, mirroring `references/compaction.md`'s own Step 4 focus-text order (digest, then artifact
-  text, then original Why/Scope) for the analogous `--compact` restart. Not applicable to a
-  repo-diff session, where this restart's own `--uncommitted`/`--base`/`--commit` scope flag
-  against the real `$REPO_ROOT` already supplies the material to review.
+`--compact`'s own restart, by design. This restart's own dispatch is gated by the pre-dispatch
+check below, then composed of a fully self-contained, ordered list of focus-text components —
+mirroring `references/compaction.md`'s own Step 4 list for the analogous `--compact` restart (see
+"Dispatch a fresh `run-ccs-review.sh` call" in that file), never a loose reference to "this round's
+own ordinary Step 1 sequence... like any round would": this restart, exactly like `--compact`'s
+own, is establishing a brand-new thread's very first-ever turn, never an ordinary continuation of
+an existing thread's history, so every component that first turn needs is spelled out explicitly
+below rather than assumed to arrive via generic reference to whatever an ordinary round's Step 1
+happens to include for its own round number.
 
-  **Before this restart's `--uncommitted` dispatch against `CLEAN_REPO_DIR` may proceed, it must
-  first run and pass the SAME eight-check `CLEAN_REPO_DIR` cleanliness gate
-  `references/compaction.md`'s own Step 2 defines** (see that section's numbered checklist
-  immediately following "Cleanliness means ALL EIGHT of the following checks pass" — never
-  re-rendered here). `CLEAN_REPO_DIR` is a session-long directory, created once at Phase 0 and
-  reused for every round; by the time this restart fires, potentially many rounds into a long
-  session, something could have polluted it since round 1 — the identical mid-session
-  fresh-dispatch-against-`CLEAN_REPO_DIR` concern compaction's own Step 2 recheck exists to close,
-  and this restart is a second such path. **A failed check here is a LOCAL, pre-dispatch
-  failure — no `threadId` is ever captured for it, since dispatch never happens — so it has no
-  `--resume`-to-an-old-thread fallback the way a failed compaction recheck does** (compaction's
-  own old thread stays alive to fall back to; this restart's old thread was already abandoned into
-  `LEAKED_THREAD_IDS` above, before this restart was ever attempted). Treat a failed check exactly
-  like this section's own "If the ONE fresh restart fails for ANY reason" paragraph below:
-  immediate, unconditional exhaustion — stop and report `⚠️ COULD NOT VERIFY`, with nothing added
-  to `LEAKED_THREAD_IDS` for this failed check itself (no new thread was ever created to leak).
-  Not applicable to a repo-diff session, where this restart's own scope flag targets `$REPO_ROOT`,
-  never `CLEAN_REPO_DIR`.
-- The same original Why + task-specific Scope framing, read from `target.original_scope_framing`
-  (`SKILL.md`'s Phase 1 Step 0 — captured unconditionally, every session, since this restart is
-  one of its two consumers) — never from `target.focus`.
-- A `DISPOSITION` request for any still-open claim, constructed by the existing rule
-  (`references/claim-ledger.md` section 4), evaluated against the abandoned thread's own most
-  recently completed round.
-- The fresh restart's own new thread gets its own fresh receipt schedule
-  (`RECEIPT_SCHEDULE_FILE`, per `SKILL.md`'s own schedule-generation procedure) — never reusing
-  the abandoned thread's schedule.
+**Pre-dispatch check — snapshot revalidation, ALWAYS runs, unconditionally, regardless of what
+round number this restart's own dispatch ends up being logged as, including when this restart
+fires at round 1 itself (the group's very first-ever dispatch attempt went hollow).** This is a
+deliberate, reasoned carve-out from `SKILL.md`'s general "Round 1 never runs this check" rule
+(`references/snapshot-integrity.md`'s "Revalidation" section: "Round 1 never runs this check —
+there is nothing yet to revalidate against — the snapshot IS round 1's own baseline"). That general
+rule describes a session's own genuinely-first-ever dispatch, before `SNAPSHOT_FILE`/
+`SNAPSHOT_DIGEST` have ever been allocated. This restart is never that case: by the time ANY
+`no_material_reviewed` failure can occur, `SNAPSHOT_FILE`/`SNAPSHOT_DIGEST` have ALREADY been
+allocated — at Phase 0 step 4/5 for a non-repo-artifact session, or right after Phase 1's sizing
+step for a repo-diff session, both of which happen BEFORE round 1's own dispatch is ever issued
+(see `references/snapshot-integrity.md`'s "Allocation" section) — so there is always something to
+revalidate against here, even when this restart's own dispatch is itself the one logged as round 1.
+Something already got dispatched and failed before this restart ever fires, even when that
+something is itself round 1's own attempt — so this restart is never the session's genuinely-first
+dispatch the general rule is actually about. The SAME snapshot revalidation every round 2+ already
+runs, unmodified (re-verify the LOCAL `SNAPSHOT_FILE` against the remembered `SNAPSHOT_DIGEST`;
+hard-stop `🛑 SNAPSHOT INTEGRITY FAILURE` on mismatch, exactly like any other round — see
+`references/snapshot-integrity.md`). **This check is local-file-integrity only, not drift
+detection** — per `references/snapshot-integrity.md`'s own "Not a defense against a deliberately
+changed source" section, it never re-observes the real working tree/ref/pasted text, only Claude's
+own already-collected `$SNAPSHOT_FILE`; a repo diff that legitimately changes mid-review is
+invisible to it as long as that file stays intact on disk. So this restart tolerates working-tree
+drift exactly like `--compact`'s own restart already does — the one real difference from
+`--compact`'s restart is that this restart never promotes a new "official" session snapshot onto
+`SNAPSHOT_FILE`; it simply re-reviews whatever the working tree currently looks like. **For a
+non-repo-artifact session specifically, this step's own revalidation must follow the same
+capture-then-hash order `references/compaction.md`'s own Step 2 uses for the identical reason
+(see that section's "Bind the dispatched bytes to the SAME verified copy" paragraph) — read
+`SNAPSHOT_FILE`'s content into a captured copy exactly ONCE, here, then hash THAT captured copy
+and confirm it equals `SNAPSHOT_DIGEST`, rather than the hash-the-file-directly check
+`references/snapshot-integrity.md`'s own generic revalidation procedure runs. Only once it
+matches is that SAME captured copy's content the source that item 2 below pulls the original
+artifact text from — never a separate re-read of `SNAPSHOT_FILE` for that purpose, and never a
+hash-only check with no captured copy left to reuse.**
+
+**The restart's own focus text, composed of the following components, in this order** (matching
+`references/compaction.md`'s own Step 4 numbered list, component-for-component, for the identical
+reason: a brand-new thread's first turn):
+1. The claim ledger digest, carried forward into the fresh thread's own seed, built from the
+   durable JSONL log's own reducer state (`references/compaction.md`'s "Digest construction and
+   verification" section — a general, `--compact`-agnostic procedure with no JSONL-field footprint
+   of its own, reused here as-is) — never from the abandoned thread's own internal state.
+2. **Non-repo-artifact session only (`references/non-repo-artifact.md`): the original artifact
+   text, read from the SAME captured `SNAPSHOT_FILE` copy the pre-dispatch check above just
+   captured and re-hashed against `SNAPSHOT_DIGEST` — never a separate re-read.** `CLEAN_REPO_DIR`
+   stays intentionally empty for this session type, so a fresh `--uncommitted` dispatch against it
+   collects an empty diff; without the artifact text embedded in this restart's own focus, the new
+   thread would have nothing to review at all and would immediately reproduce the identical
+   `no_material_reviewed` failure it was meant to recover from. `SNAPSHOT_FILE` already holds the
+   exact pasted artifact bytes for this session type (round 1 captured them there, per
+   `references/snapshot-integrity.md`), and this restart never re-snapshots (see above), so the
+   original round-1 copy is exactly what gets embedded here, unmodified. Not applicable to a
+   repo-diff session, where this restart's own `--uncommitted`/`--base`/`--commit` scope flag
+   against the real `$REPO_ROOT` already supplies the material to review.
+
+   **Before this restart's `--uncommitted` dispatch against `CLEAN_REPO_DIR` may proceed, it must
+   first run and pass the SAME eight-check `CLEAN_REPO_DIR` cleanliness gate
+   `references/compaction.md`'s own Step 2 defines** (see that section's numbered checklist
+   immediately following "Cleanliness means ALL EIGHT of the following checks pass" — never
+   re-rendered here). `CLEAN_REPO_DIR` is a session-long directory, created once at Phase 0 and
+   reused for every round; by the time this restart fires, potentially many rounds into a long
+   session, something could have polluted it since round 1 — the identical mid-session
+   fresh-dispatch-against-`CLEAN_REPO_DIR` concern compaction's own Step 2 recheck exists to close,
+   and this restart is a second such path. **A failed check here is a LOCAL, pre-dispatch
+   failure — no `threadId` is ever captured for it, since dispatch never happens — so it has no
+   `--resume`-to-an-old-thread fallback the way a failed compaction recheck does** (compaction's
+   own old thread stays alive to fall back to; this restart's old thread was already abandoned into
+   `LEAKED_THREAD_IDS` above, before this restart was ever attempted). Treat a failed check exactly
+   like this section's own "If the ONE fresh restart fails for ANY reason" paragraph below:
+   immediate, unconditional exhaustion — stop and report `⚠️ COULD NOT VERIFY`, with nothing added
+   to `LEAKED_THREAD_IDS` for this failed check itself (no new thread was ever created to leak).
+   Not applicable to a repo-diff session, where this restart's own scope flag targets `$REPO_ROOT`,
+   never `CLEAN_REPO_DIR`.
+3. The same original Why + task-specific Scope framing, read from `target.original_scope_framing`
+   (`SKILL.md`'s Phase 1 Step 0 — captured unconditionally, every session, since this restart is
+   one of its two consumers) — never from `target.focus`.
+4. The standard `⚠️ SCOPE CONSTRAINT` block (do not open `node_modules/`/`.pnpm/`/vendor
+   directories; limit reads to source dirs and the diff itself) — the SAME block every round's
+   `--focus` already requires (`SKILL.md`'s Phase 1 Step 0, both the Round-1 and Round-2+ bullets).
+5. **The SAME fixed collaboration-frame sentence every round-1 focus already includes** (Claude and
+   Codex are equal peers, findings must be evidence-based, the goal is 100% clean mutual agreement —
+   `SKILL.md`'s Phase 1 Step 0's Round-1 bullet). **Required here explicitly, never assumed to
+   arrive "for free" via a generic reference to an ordinary round's own focus construction:**
+   `SKILL.md`'s own Round 2+ focus-text bullet re-mentions the `⚠️ SCOPE CONSTRAINT` block (item 4
+   above) but never the collaboration frame — an ordinary round 2+ is a continuation of a thread
+   that already received that framing back at its own round 1. This restart's brand-new thread
+   never received it under any round number, so it needs its own copy here, for the same reason it
+   always needs item 3 (original framing, never History) and a fresh receipt schedule (item 6 and
+   the paragraph below it) rather than whatever an existing thread's history already carries — it is
+   a BRAND-NEW thread's first-ever turn, never a genuine "ordinary round N" turn for an existing
+   thread, regardless of what round number this restart's own dispatch ends up being logged as.
+   `--compact`'s own restart includes this identical sentence as its own Step 4 item 5, for the
+   identical reason.
+6. A `DISPOSITION` request for any still-open claim, constructed by the existing rule
+   (`references/claim-ledger.md` section 4), evaluated against the abandoned thread's own most
+   recently completed round.
+
+The fresh restart's own new thread also gets its own fresh receipt schedule (`RECEIPT_SCHEDULE_FILE`,
+per `SKILL.md`'s own schedule-generation procedure) — never reusing the abandoned thread's
+schedule; this is a dispatch parameter passed alongside the focus text above, not itself a
+component of the focus text.
 
 **This round's own JSONL line logs what actually happened, not a blanket "every round 2+ is a
 resume" assumption.** `target.scope` is the ACTUAL scope flag this restart used (matching round
@@ -371,8 +413,8 @@ candidate-cleanup step needed on this failure path. Then stop and report `⚠️
 never attempt a third thread — matching this file's own existing round-1-fresh-fallback-then-
 give-up precedent. Never a bounded-resume-retry of the new restart's own thread, never a fallback
 resume of the abandoned old thread. **This same immediate-exhaustion outcome also covers a
-non-repo-artifact restart's own pre-dispatch `CLEAN_REPO_DIR` cleanliness-gate failure** (see the
-non-repo-artifact bullet above) — a LOCAL failure that never reaches a wrapper response at all, so
+non-repo-artifact restart's own pre-dispatch `CLEAN_REPO_DIR` cleanliness-gate failure** (see
+item 2 above) — a LOCAL failure that never reaches a wrapper response at all, so
 no `threadId` is ever captured and nothing is added to `LEAKED_THREAD_IDS` for it, but the
 reported outcome is identical: stop, report `⚠️ COULD NOT VERIFY`, never attempt a third thread.
 
