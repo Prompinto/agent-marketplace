@@ -96,10 +96,14 @@ emit_final_output() {
 # object (never an empty `{}` placeholder, and never absent/null) --
 # omitted entirely otherwise, collapsing "no such event" and "an emitted
 # but empty {} usage" to the identical "usage unavailable" outcome. Never
-# reports a "model" value -- this wrapper never sets --model, only
-# -c model_reasoning_effort=xhigh on a fresh dispatch (inherited, unset, on
-# --resume), and SKILL.md's own final report is what surfaces that text,
-# not this JSON field.
+# reports a "model" or "reasoning effort" value -- this wrapper never sets
+# --model or -c model_reasoning_effort on either a fresh dispatch or
+# --resume, deferring entirely to whatever the invoking Codex CLI
+# environment/config already has in effect. That means, unlike an earlier
+# revision, this wrapper has no way to know or claim what reasoning effort
+# was actually used for a given dispatch -- SKILL.md's own final report
+# must not assert a specific effort level either, and this JSON field
+# stays silent on it rather than guessing.
 build_execution_json() {
   [ -n "${DISPATCH_PID:-}" ] || return 0
   local elapsed
@@ -1000,7 +1004,7 @@ trap 'DEFERRED_SIGNAL=1' INT TERM
       ${SCHEMA:+--output-schema "$SCHEMA"} < "$PROMPT_FILE"
   else
     codex exec --json --sandbox read-only -o "$LAST_MESSAGE_FILE" \
-      -c model_reasoning_effort=xhigh ${SCHEMA:+--output-schema "$SCHEMA"} \
+      ${SCHEMA:+--output-schema "$SCHEMA"} \
       < "$PROMPT_FILE"
   fi
 ) > "$EVENTLOG" 2>&1 &

@@ -222,10 +222,13 @@ mktemp_registered EVENTLOG
 # final answer text this same process already produced).
 mktemp_registered LAST_MESSAGE_FILE
 
-# Round dispatch (Step 4, finalized flags -- do not add --sandbox or
-# model_reasoning_effort to resume: `codex exec resume --help` has no
-# --sandbox flag at all; the resumed turn inherits its thread's original
-# turn_context). No positional PROMPT argument on either form: per
+# Round dispatch (Step 4, finalized flags -- do not add --sandbox to
+# resume: `codex exec resume --help` has no --sandbox flag at all; the
+# resumed turn inherits its thread's original turn_context). Neither form
+# sets -c model_reasoning_effort -- this wrapper defers entirely to
+# whatever the invoking Codex CLI environment/config already has in
+# effect, on both a fresh dispatch and a resume. No positional PROMPT
+# argument on either form: per
 # `codex exec --help`, omitting it (or passing `-`) makes the CLI read its
 # instructions from stdin -- redirected here from $FOCUS_RECEIVED_FILE,
 # never passed as an argv value.
@@ -236,7 +239,7 @@ mktemp_registered LAST_MESSAGE_FILE
       ${SCHEMA:+--output-schema "$SCHEMA"} < "$FOCUS_RECEIVED_FILE"
   else
     codex exec --json --sandbox read-only -o "$LAST_MESSAGE_FILE" \
-      -c model_reasoning_effort=xhigh ${SCHEMA:+--output-schema "$SCHEMA"} \
+      ${SCHEMA:+--output-schema "$SCHEMA"} \
       < "$FOCUS_RECEIVED_FILE"
   fi
 ) > "$EVENTLOG" 2>&1 &
