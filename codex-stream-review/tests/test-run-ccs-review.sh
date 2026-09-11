@@ -125,6 +125,54 @@ DECOY_REPO="$(mktemp -d)"
 register_scratch "$DECOY_REPO"
 must git -C "$DECOY_REPO" init -q
 
+# (0) GIT_BIN must actually be an absolute path -- `command -v git` can
+# return a bare name (an exported shell FUNCTION named `git`, unlike `type`)
+# or a relative path (a relative PATH entry), and `env -i` inside git_safe()
+# below does not retroactively fix either, since it only isolates the
+# environment $GIT_BIN runs IN, not what $GIT_BIN itself points to. Each
+# case must run in its own fresh subprocess -- git-safe.sh's own guard
+# `exit`s on failure, which would otherwise kill this whole test script if
+# sourced directly in the current shell.
+FUNC_GIT_OUT="$(bash -c '
+git() { :; }
+export -f git
+source "'"$LIB_GIT_SAFE"'"
+echo "UNREACHABLE: git-safe.sh should have exited before this line"
+' 2>&1)"
+FUNC_GIT_STATUS=$?
+if [ "$FUNC_GIT_STATUS" -eq 1 ] \
+  && printf '%s' "$FUNC_GIT_OUT" | grep -q '"reason":"bad_args"' \
+  && printf '%s' "$FUNC_GIT_OUT" | grep -q 'non-absolute path' \
+  && ! printf '%s' "$FUNC_GIT_OUT" | grep -q "UNREACHABLE"; then
+  pass "git-safe.sh rejects GIT_BIN resolving to a shell-function bare name"
+else
+  fail "git-safe.sh should reject a function-shadowed \`git\` with bad_args/exit 1, got status=$FUNC_GIT_STATUS output=$FUNC_GIT_OUT"
+fi
+
+RELDIR="$(mktemp -d)"
+register_scratch "$RELDIR"
+mkdir -p "$RELDIR/relbin"
+cat > "$RELDIR/relbin/git" <<'EOF' || { echo "SETUP FAILED: writing relative decoy git script" >&2; exit 1; }
+#!/bin/sh
+echo "should never run" >&2
+exit 1
+EOF
+must chmod +x "$RELDIR/relbin/git"
+RELPATH_GIT_OUT="$(cd "$RELDIR" && PATH="relbin:$PATH" bash -c '
+source "'"$LIB_GIT_SAFE"'"
+echo "UNREACHABLE: git-safe.sh should have exited before this line"
+' 2>&1)"
+RELPATH_GIT_STATUS=$?
+if [ "$RELPATH_GIT_STATUS" -eq 1 ] \
+  && printf '%s' "$RELPATH_GIT_OUT" | grep -q '"reason":"bad_args"' \
+  && printf '%s' "$RELPATH_GIT_OUT" | grep -q 'non-absolute path' \
+  && ! printf '%s' "$RELPATH_GIT_OUT" | grep -q "UNREACHABLE"; then
+  pass "git-safe.sh rejects GIT_BIN resolving to a relative PATH entry"
+else
+  fail "git-safe.sh should reject a relative-PATH \`git\` with bad_args/exit 1, got status=$RELPATH_GIT_STATUS output=$RELPATH_GIT_OUT"
+fi
+rm -rf "$RELDIR"
+
 CWD="$TMP_REPO"
 SAFE_GIT_HOME="$(mktemp -d)"
 register_scratch "$SAFE_GIT_HOME"

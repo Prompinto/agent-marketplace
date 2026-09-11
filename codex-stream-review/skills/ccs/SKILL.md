@@ -621,6 +621,10 @@ up using `--capture-evidence` at all):**
      REPO_ROOT_FILE="<literal REPO_ROOT_FILE path resolved in Phase 0 step 3 above>"
      REPO_ROOT="$(cat "$REPO_ROOT_FILE")"; REPO_ROOT="${REPO_ROOT%x}"
      GIT_BIN="$(command -v git)"
+     case "$GIT_BIN" in
+       /*) ;;
+       *) echo "git resolved to a non-absolute path ($GIT_BIN) -- stop here, do not sanitize or dispatch with it" >&2; exit 1 ;;
+     esac
      for _v in $("$GIT_BIN" rev-parse --local-env-vars 2>/dev/null || printf '%s\n' GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CONFIG GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT GIT_OBJECT_DIRECTORY GIT_DIR GIT_WORK_TREE GIT_IMPLICIT_WORK_TREE GIT_GRAFT_FILE GIT_INDEX_FILE GIT_NO_REPLACE_OBJECTS GIT_REPLACE_REF_BASE GIT_PREFIX GIT_SHALLOW_FILE GIT_COMMON_DIR) GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_TEMPLATE_DIR; do
        unset "$_v"
      done
@@ -720,6 +724,10 @@ own):
 REPO_ROOT_FILE="<literal REPO_ROOT_FILE path resolved once in Phase 0>"
 REPO_ROOT="$(cat "$REPO_ROOT_FILE")"; REPO_ROOT="${REPO_ROOT%x}"
 GIT_BIN="$(command -v git)"
+case "$GIT_BIN" in
+  /*) ;;
+  *) echo "git resolved to a non-absolute path ($GIT_BIN) -- stop here, do not sanitize or dispatch with it" >&2; exit 1 ;;
+esac
 for _v in $("$GIT_BIN" rev-parse --local-env-vars 2>/dev/null || printf '%s\n' GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CONFIG GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT GIT_OBJECT_DIRECTORY GIT_DIR GIT_WORK_TREE GIT_IMPLICIT_WORK_TREE GIT_GRAFT_FILE GIT_INDEX_FILE GIT_NO_REPLACE_OBJECTS GIT_REPLACE_REF_BASE GIT_PREFIX GIT_SHALLOW_FILE GIT_COMMON_DIR) GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_TEMPLATE_DIR; do
   unset "$_v"
 done
@@ -811,6 +819,10 @@ each scope with the matching command:
 REPO_ROOT_FILE="<literal REPO_ROOT_FILE path resolved once in Phase 0>"
 REPO_ROOT="$(cat "$REPO_ROOT_FILE")"; REPO_ROOT="${REPO_ROOT%x}"
 GIT_BIN="$(command -v git)"
+case "$GIT_BIN" in
+  /*) ;;
+  *) echo "git resolved to a non-absolute path ($GIT_BIN) -- stop here, do not sanitize or dispatch with it" >&2; exit 1 ;;
+esac
 for _v in $("$GIT_BIN" rev-parse --local-env-vars 2>/dev/null || printf '%s\n' GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CONFIG GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT GIT_OBJECT_DIRECTORY GIT_DIR GIT_WORK_TREE GIT_IMPLICIT_WORK_TREE GIT_GRAFT_FILE GIT_INDEX_FILE GIT_NO_REPLACE_OBJECTS GIT_REPLACE_REF_BASE GIT_PREFIX GIT_SHALLOW_FILE GIT_COMMON_DIR) GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_TEMPLATE_DIR; do
   unset "$_v"
 done
@@ -852,6 +864,10 @@ revalidation:
 ```bash
 REPO_ROOT_FILE="<literal from Phase 0>"; REPO_ROOT="$(cat "$REPO_ROOT_FILE")"; REPO_ROOT="${REPO_ROOT%x}"
 GIT_BIN="$(command -v git)"
+case "$GIT_BIN" in
+  /*) ;;
+  *) echo "git resolved to a non-absolute path ($GIT_BIN) -- stop here, do not sanitize or dispatch with it" >&2; exit 1 ;;
+esac
 for _v in $("$GIT_BIN" rev-parse --local-env-vars 2>/dev/null || printf '%s\n' GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CONFIG GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT GIT_OBJECT_DIRECTORY GIT_DIR GIT_WORK_TREE GIT_IMPLICIT_WORK_TREE GIT_GRAFT_FILE GIT_INDEX_FILE GIT_NO_REPLACE_OBJECTS GIT_REPLACE_REF_BASE GIT_PREFIX GIT_SHALLOW_FILE GIT_COMMON_DIR) GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_TEMPLATE_DIR; do
   unset "$_v"
 done
@@ -1244,6 +1260,10 @@ REPO_ROOT="$(cat "$REPO_ROOT_FILE")"; REPO_ROOT="${REPO_ROOT%x}"
 # a deliberately wrong/incomplete "local env vars" list, causing this exact step to silently skip
 # unsetting a hostile GIT_DIR-like variable that then leaks into Codex's own dispatched subprocess:
 GIT_BIN="$(command -v git)"
+case "$GIT_BIN" in
+  /*) ;;
+  *) echo "git resolved to a non-absolute path ($GIT_BIN) -- stop here, do not sanitize or dispatch with it" >&2; exit 1 ;;
+esac
 for _v in $("$GIT_BIN" rev-parse --local-env-vars 2>/dev/null || printf '%s\n' GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CONFIG GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT GIT_OBJECT_DIRECTORY GIT_DIR GIT_WORK_TREE GIT_IMPLICIT_WORK_TREE GIT_GRAFT_FILE GIT_INDEX_FILE GIT_NO_REPLACE_OBJECTS GIT_REPLACE_REF_BASE GIT_PREFIX GIT_SHALLOW_FILE GIT_COMMON_DIR) GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_TEMPLATE_DIR; do
   unset "$_v"
 done

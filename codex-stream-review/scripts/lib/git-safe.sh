@@ -15,6 +15,24 @@
 # it does nothing to stop that value itself from being poisoned.
 GIT_BIN="$(command -v git)"
 
+# `command -v` does not guarantee an absolute result: an exported shell
+# FUNCTION named `git` reports back as the bare name `git` (unlike `type`),
+# and a relative PATH entry resolves to a relative path -- either way,
+# `env -i` below would not retroactively fix it, since it only isolates the
+# environment `$GIT_BIN` runs in, not what `$GIT_BIN` itself points to.
+# Fail loudly as a well-formed bad_args JSON response (this file is sourced
+# before run-ccs-review.sh's own argument parsing even starts, so this is
+# the earliest point such a response can be emitted) rather than letting a
+# non-absolute value silently reach `git_safe()` below.
+case "$GIT_BIN" in
+  /*) ;;
+  *)
+    GIT_BIN_DETAIL_JSON="$(printf '%s' "$GIT_BIN" | jq -Rs '"git resolved to a non-absolute path: " + .')"
+    printf '{"ok":false,"reason":"bad_args","detail":%s}\n' "$GIT_BIN_DETAIL_JSON"
+    exit 1
+    ;;
+esac
+
 # git_safe SUBCOMMAND [ARGS...]
 #
 # Requires the caller to have set $CWD (the target repo) and $SAFE_GIT_HOME
