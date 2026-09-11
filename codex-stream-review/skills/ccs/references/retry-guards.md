@@ -249,8 +249,16 @@ interface reference), so this hollow response is fully eligible to carry one. If
 that value in memory — it is what `SKILL.md`'s "Coverage is a Round-1-only property" section's own
 round-1 two-attempt merge rule consumes, worst-case-wins, alongside the fresh restart's own
 coverage, when this restart occurs at round 1 itself; it is held until round 1's own JSONL line is
-eventually written, exactly like that merge rule describes. Then abandon that thread (add to
-`LEAKED_THREAD_IDS`) and issue exactly ONE fresh restart — same scope flag as round 1
+eventually written, exactly like that merge rule describes. Then abandon that thread: add it to
+`LEAKED_THREAD_IDS`, and if `GROUP_THREADS` already holds an entry for this group (`SKILL.md`'s own
+`GROUP_THREADS` rule establishes it from ANY round-1 response carrying a `threadId`, success or
+failure alike — and this hollow response's own detection route, whether the wrapper's own
+`schema_mismatch` check or Phase 2's own synthetic version, both carry one per the reason table),
+**remove that group's entry from `GROUP_THREADS` at the same moment** — this thread must never sit
+in both sets at once. `SKILL.md`'s own Phase 3 `threads` computation derives a `"current"` entry
+from every `GROUP_THREADS` entry and a `"leaked"` entry from every `LEAKED_THREAD_IDS` entry; a
+thread abandoned via this route is never a session's own `"current"` thread, so it must not remain
+in `GROUP_THREADS` to be double-counted as one. Then issue exactly ONE fresh restart — same scope flag as round 1
 (`--uncommitted`/`--base`/`--commit`), never `--resume`, to a brand-new thread. **This restart does
 NOT re-snapshot or promote a new candidate onto `SNAPSHOT_FILE`** — deliberately simpler than
 `--compact`'s own restart, by design:
@@ -305,8 +313,11 @@ is immediate, unconditional exhaustion.** A repeat `no_material_reviewed` (eithe
 or any other wrapper failure reason whatsoever (`timeout`, `nonzero_exit`, `no_thread_started`,
 `bad_args`, or anything else): if this failure response captured a `threadId` (some reasons do,
 per `SKILL.md`'s own reason table), add it to `LEAKED_THREAD_IDS` immediately — this restart's own
-new thread is abandoned too, exactly like the original hollow thread was, so `SKILL.md`'s Phase 3
-terminal path can clean it up alongside the run's other final threads. Since this design never
+new thread is abandoned too, exactly like the original hollow thread was (including removing this
+group's own entry from `GROUP_THREADS` if this failure's own response established or already held
+one, per that same rule above — this restart's thread is likewise never a session's own `"current"`
+thread), so `SKILL.md`'s Phase 3 terminal path can clean it up alongside the run's other final
+threads. Since this design never
 allocates a candidate snapshot file (no re-snapshot/promotion happens here at all), there is no
 candidate-cleanup step needed on this failure path. Then stop and report `⚠️ COULD NOT VERIFY`,
 never attempt a third thread — matching this file's own existing round-1-fresh-fallback-then-
