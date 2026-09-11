@@ -276,10 +276,17 @@ resume" assumption.** `target.scope` is the ACTUAL scope flag this restart used 
 1's own scope-logging rule), never `"resume"` — `SKILL.md`'s general "`resume` for every round
 2+" rule assumed, until this restart existed, that no round 2+ could ever be anything else; this
 restart is the one documented exception. For `--uncommitted` scope specifically, this round ALSO
-reports its own `coverage_source` exactly like a fresh `--uncommitted` dispatch would — `SKILL.md`'s
-"Coverage is a Round-1-only property" section is extended to treat this restart's own round as a
-SECOND coverage-establishing event for the session (not folded into round 1's own already-recorded
-value), since this restart is genuinely re-collecting the diff fresh, not resuming.
+reports its own `coverage_source` exactly like a fresh `--uncommitted` dispatch would — but which
+role this plays depends on when the restart fires, exactly per `SKILL.md`'s own "Coverage is a
+Round-1-only property" section: if the restart occurs AT round 1 itself (the group's very
+first-ever dispatch attempt failed with `no_material_reviewed` before any successful round-1
+result existed), its coverage is simply part of round 1's own single coverage slot, via that
+section's existing "record whichever attempt carried it" rule — no second event. If the restart
+occurs at round 2+ (an existing thread that had already produced valid earlier-round results
+before going hollow), its own round is a genuine SECOND, independent coverage-establishing event
+for the session — not folded into round 1's own already-recorded value, but a separate value for a
+separate round number — since this restart is genuinely re-collecting the diff fresh, not
+resuming.
 
 **If the ONE fresh restart fails for ANY reason — not just a repeat `no_material_reviewed` — this
 is immediate, unconditional exhaustion.** A repeat `no_material_reviewed` (either detection route),

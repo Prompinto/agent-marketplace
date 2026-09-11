@@ -1924,11 +1924,18 @@ omission rule.
   per round, never per group** — all groups advance in lockstep with the round counter (round 1
   dispatches every group fresh, round 2+ resumes every group), so a per-group `scope` field would
   be redundant state with no current use.
-- `coverage_source`: written only for a round-1 `--uncommitted` scope (per "Coverage is a
-  Round-1-only property" above, including its N-group merge for a parallel round); omitted
-  entirely for round-1 `--base`/`--commit` and for every `--resume` round — the wrapper never
-  reports it for those, so no field is invented. **A single top-level value, merged once at round
-  1** — never per group, never re-merged on a resumed round.
+- `coverage_source`: written for round 1's own `--uncommitted` scope (per "Coverage is a
+  Round-1-only property" above, including its N-group merge for a parallel round), AND ALSO on any
+  later round that is itself a genuinely fresh `--uncommitted` dispatch — specifically, a
+  successful `--compact` restart's own round (`references/compaction.md`) or a
+  `no_material_reviewed` restart's own round occurring at round 2+ (`references/retry-guards.md`,
+  see "Coverage is a Round-1-only property" above for why a restart AT round 1 itself instead uses
+  round 1's own single slot, never a separate line). Each such round writes its OWN `coverage_source`
+  on its OWN JSONL line — never merged into round 1's own line, since they are separate lines for
+  separate round numbers; the merge across all written lines happens only when consulting coverage
+  (the CLEAN gate, the final artifact), not at write time. Omitted entirely for `--base`/`--commit`
+  scope and for an ordinary `--resume` round — the wrapper never reports it for those, so no field
+  is invented. **A single value per round, never per group.**
 - `finding_id`/`linked_finding_id`/`claude_verification[].action`: stable `f<n>` IDs incrementing
   across all rounds, `linked_finding_id` traces a
   disputed finding's multi-round thread, actions are `accept` / `reject_with_rationale` /
@@ -2273,6 +2280,12 @@ Structure:
 - **Source coverage** — if round 1 was `--uncommitted` and its `coverage_source.status` (the
   N-group merged value in parallel mode) was ever `"partial"`/`"unknown"`, mention it regardless
   of the final outcome — which files were omitted, why, and whether it was resolved afterward.
+  **Also disclose a `--compact` restart's own coverage (`references/compaction.md`) or a
+  `no_material_reviewed` restart's own coverage at round 2+ (`references/retry-guards.md`)** when
+  either occurred this session and was ever `"partial"`/`"unknown"` — same unified set of sources
+  the CLEAN gate and final-artifact `coverage` field already consider (see "Partial or unknown
+  source coverage ≠ CLEAN" under Guards above). List the omitted paths and reasons from EVERY
+  included source that contributed to a non-CLEAN/`⚠️ PARTIAL COVERAGE` outcome, not just round 1's.
 - **Thread cleanup results (per group)** — for every group's final thread, whether `--cleanup`
   succeeded, and whether every `(group, thread)` pair in `LEAKED_THREAD_IDS` (left behind when a
   group's round-1 retry abandoned an earlier thread) was also successfully cleaned up — list every
