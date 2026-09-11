@@ -313,7 +313,7 @@ def main():
     try:
         with open(args.result) as f:
             doc = json.load(f)
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         print(f"INVALID: malformed JSON: {exc}", file=sys.stderr)
         sys.exit(1)
     ok, reason = validate(args.schema, doc)

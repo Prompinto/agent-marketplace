@@ -53,10 +53,12 @@ REPO1="$(mktemp -d)"
 mkdir -p "$REPO1/.ccs-ci-result.json"
 OUT1="$(ci_run "$REPO1" 2>&1)"
 STATUS1=$?
-if [ "$STATUS1" -ne 0 ] && [ -d "$REPO1/.ccs-ci-result.json" ] && [ -z "$(ls -A "$REPO1/.ccs-ci-result.json" 2>/dev/null)" ]; then
+if [ "$STATUS1" -ne 0 ] \
+  && printf '%s' "$OUT1" | grep -q "result path exists and is not a regular file" \
+  && [ -d "$REPO1/.ccs-ci-result.json" ] && [ -z "$(ls -A "$REPO1/.ccs-ci-result.json" 2>/dev/null)" ]; then
   pass "CSR-002: pre-existing directory at result path -> loud failure, nothing written inside it"
 else
-  fail "CSR-002: expected a loud nonzero-exit failure and an untouched empty directory, got status=$STATUS1 dir-contents=$(ls -A "$REPO1/.ccs-ci-result.json" 2>&1); output: $OUT1"
+  fail "CSR-002: expected a loud nonzero-exit failure naming the directory conflict and an untouched empty directory, got status=$STATUS1 dir-contents=$(ls -A "$REPO1/.ccs-ci-result.json" 2>&1); output: $OUT1"
 fi
 rm -rf "$REPO1"
 
@@ -66,10 +68,11 @@ rm -rf "$REPO1"
 REPO2="$(mktemp -d)"
 OUT2="$(ci_run "$REPO2" 2>&1)"
 STATUS2=$?
-if [ -f "$REPO2/.ccs-ci-result.json" ]; then
-  pass "positive control: normal run (no pre-existing directory) writes a regular file at the result path"
+if [ "$STATUS2" -eq 0 ] && [ -f "$REPO2/.ccs-ci-result.json" ] \
+  && [ "$(jq -r '.verdict' "$REPO2/.ccs-ci-result.json" 2>/dev/null)" = "CLEAN" ]; then
+  pass "positive control: normal run (no pre-existing directory) writes a genuine CLEAN result file, exit 0"
 else
-  fail "positive control: expected a regular file at $REPO2/.ccs-ci-result.json, got status=$STATUS2 output=$OUT2"
+  fail "positive control: expected exit 0 and a regular file with verdict=CLEAN at $REPO2/.ccs-ci-result.json, got status=$STATUS2 content=$(cat "$REPO2/.ccs-ci-result.json" 2>&1) output=$OUT2"
 fi
 rm -rf "$REPO2"
 
@@ -93,6 +96,25 @@ else
   fail "CSR-008: expected exit 1 with 'INVALID: malformed JSON' and no traceback, got status=$VALIDATE_STATUS output=$VALIDATE_OUT"
 fi
 rm -f "$BAD_JSON_FILE"
+
+# 4. CSR-008 (UTF-8 variant): a result file containing invalid UTF-8 bytes
+# raises UnicodeDecodeError during open()'s implicit text-mode decoding --
+# distinct from json.JSONDecodeError, so it bypassed the first fix's except
+# clause entirely and still tracebacked.
+BAD_UTF8_FILE="$(mktemp)"
+printf '\xff' > "$BAD_UTF8_FILE"
+VALIDATE_UTF8_OUT="$(python3 "$VALIDATE_PY" "$SCHEMA_FILE" "$BAD_UTF8_FILE" 2>&1)"
+VALIDATE_UTF8_STATUS=$?
+if [ "$VALIDATE_UTF8_STATUS" -eq 1 ] \
+  && printf '%s' "$VALIDATE_UTF8_OUT" | grep -q '^INVALID: malformed JSON' \
+  && ! printf '%s' "$VALIDATE_UTF8_OUT" | grep -q "Traceback (most recent call last)"; then
+  pass "CSR-008: invalid UTF-8 bytes in result file -> clean INVALID diagnostic, exit 1, no traceback"
+else
+  fail "CSR-008: expected exit 1 with 'INVALID: malformed JSON' and no traceback for invalid UTF-8, got status=$VALIDATE_UTF8_STATUS output=$VALIDATE_UTF8_OUT"
+fi
+rm -f "$BAD_UTF8_FILE"
+
+rm -rf "$FAKE_BIN_DIR"
 
 echo ""
 if [ "$FAILURES" -eq 0 ]; then
