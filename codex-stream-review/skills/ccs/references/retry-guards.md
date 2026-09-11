@@ -240,10 +240,20 @@ per-group equivalent today; building genuine per-group scope-framing isolation i
 infrastructure work, out of this task's scope. See the parallel-mode fallback below for what
 happens instead when this session has more than one group.
 
-For a single-reviewer session: abandon that thread immediately (add to `LEAKED_THREAD_IDS`) and
-issue exactly ONE fresh restart — same scope flag as round 1 (`--uncommitted`/`--base`/`--commit`),
-never `--resume`, to a brand-new thread. **This restart does NOT re-snapshot or promote a new
-candidate onto `SNAPSHOT_FILE`** — deliberately simpler than `--compact`'s own restart, by design:
+For a single-reviewer session: **first, at the moment this hollow response is parsed — before
+abandoning it or constructing the fresh restart — check it for a `coverage.source` object.** The
+wrapper splices `coverage.source` into every fresh `--uncommitted` dispatch's response regardless
+of success or failure (`schema_mismatch`, exactly how this route is detected, is one of the 7
+unconditionally-eligible post-dispatch reasons — see the "Coverage" documentation in `SKILL.md`'s
+interface reference), so this hollow response is fully eligible to carry one. If present, preserve
+that value in memory — it is what `SKILL.md`'s "Coverage is a Round-1-only property" section's own
+round-1 two-attempt merge rule consumes, worst-case-wins, alongside the fresh restart's own
+coverage, when this restart occurs at round 1 itself; it is held until round 1's own JSONL line is
+eventually written, exactly like that merge rule describes. Then abandon that thread (add to
+`LEAKED_THREAD_IDS`) and issue exactly ONE fresh restart — same scope flag as round 1
+(`--uncommitted`/`--base`/`--commit`), never `--resume`, to a brand-new thread. **This restart does
+NOT re-snapshot or promote a new candidate onto `SNAPSHOT_FILE`** — deliberately simpler than
+`--compact`'s own restart, by design:
 it dispatches this round's own ordinary Step 1 sequence (`SKILL.md`'s Phase 1 Step 1) exactly like
 any round would, just substituting a fresh dispatch for what would otherwise be a `--resume` call:
 - The SAME snapshot revalidation every round 2+ already runs, unmodified (re-verify the LOCAL

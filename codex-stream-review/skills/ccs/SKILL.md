@@ -2293,7 +2293,12 @@ Structure:
   own local record of the reviewed subject could not be re-verified)` /
   `🛑 REVIEW LOG INTEGRITY FAILURE (the review-history log could not be verified or is on an
   incompatible schema version)`. If `COULD NOT VERIFY` in
-  parallel mode, name which group. **For
+  parallel mode, name which group. **If `COULD NOT VERIFY` specifically because a
+  `no_material_reviewed` restart was exhausted (`references/retry-guards.md`)**, name that cause
+  explicitly instead of the generic label — e.g. `⚠️ COULD NOT VERIFY (material verification
+  failed — the review thread never demonstrated it actually reviewed the material, even after one
+  fresh restart)` — never the generic "(Codex review unavailable)" wording for this specific cause.
+  **For
   any `🛑` status**, state
   plainly that a fresh `codex-stream-review:ccs` invocation is required to review the target's
   current state — this run cannot simply be resumed or retried as-is (see
@@ -2308,6 +2313,12 @@ Structure:
   the CLEAN gate and final-artifact `coverage` field already consider (see "Partial or unknown
   source coverage ≠ CLEAN" under Guards above). List the omitted paths and reasons from EVERY
   included source that contributed to a non-CLEAN/`⚠️ PARTIAL COVERAGE` outcome, not just round 1's.
+- **`no_material_reviewed` restart disclosure** — when a `no_material_reviewed` restart
+  (`references/retry-guards.md`) occurred and SUCCEEDED this session (regardless of the session's
+  own final outcome), state this plainly: which thread was discarded as hollow (never actually
+  reviewing the material) and that a fresh thread completed the review instead. The user otherwise
+  has no way of knowing, from the rest of the report, that their original review thread was
+  silently discarded mid-session.
 - **Thread cleanup results (per group)** — for every group's final thread, whether `--cleanup`
   succeeded, and whether every `(group, thread)` pair in `LEAKED_THREAD_IDS` (left behind when a
   group's round-1 retry abandoned an earlier thread) was also successfully cleaned up — list every
