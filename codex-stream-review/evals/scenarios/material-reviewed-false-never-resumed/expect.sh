@@ -14,6 +14,10 @@
 #     response was rejected wholesale, never parsed as a verdict)
 #   - the fixed INVOCATION_LOG shows exactly 2 "mode=fresh" lines (two DIFFERENT thread_id values)
 #     and exactly ZERO "mode=resume" lines -- proof the abandoned thread was never --resume'd
+#     (a missing log FAILS this scenario -- it exists specifically to prove this)
+#   - the FIRST "mode=fresh" thread_id equals the artifact's "leaked" thread_id, and the SECOND
+#     equals the "current" thread_id (same linkage convention as
+#     compact-trigger-uncommitted-success/expect.sh)
 set -euo pipefail
 RESULT_FILE="${1:?usage: expect.sh <result.json>}"
 INVOCATION_LOG="/tmp/ccs-eval-material-reviewed-false-never-resumed-invocation.log"
@@ -52,15 +56,22 @@ if [ -n "$CURRENT_ID" ] && [ -n "$LEAKED_ID" ] && [ "$CURRENT_ID" = "$LEAKED_ID"
 fi
 
 if [ ! -f "$INVOCATION_LOG" ]; then
-  echo "material-reviewed-false-never-resumed: WARN -- invocation log not found at $INVOCATION_LOG (only available immediately after a live run, before this scenario's own cleanup step -- skipping the invocation-count check rather than failing the whole scenario on a missing ephemeral diagnostic file)" >&2
+  echo "material-reviewed-false-never-resumed: FAIL -- invocation log not found at $INVOCATION_LOG (this scenario exists to prove the abandoned thread is never --resume'd -- a missing log means that cannot be checked, so it must fail, not silently pass)" >&2
+  FAIL=1
 else
   FRESH_COUNT="$(grep -c '^mode=fresh ' "$INVOCATION_LOG" || true)"
   RESUME_COUNT="$(grep -c '^mode=resume ' "$INVOCATION_LOG" || true)"
   check "invocation log fresh-mode count" "$FRESH_COUNT" "2"
   check "invocation log resume-mode count" "$RESUME_COUNT" "0"
 
-  FRESH_DISTINCT_IDS="$(grep '^mode=fresh ' "$INVOCATION_LOG" | sed -E 's/^mode=fresh thread_id=([^ ]*).*/\1/' | sort -u | wc -l | tr -d ' ')"
+  FRESH_IDS_ORDERED="$(grep '^mode=fresh ' "$INVOCATION_LOG" | sed -E 's/^mode=fresh thread_id=([^ ]*).*/\1/')"
+  FRESH_DISTINCT_IDS="$(echo "$FRESH_IDS_ORDERED" | sort -u | wc -l | tr -d ' ')"
   check "distinct thread_id values across the 2 fresh invocations" "$FRESH_DISTINCT_IDS" "2"
+
+  FIRST_FRESH_ID="$(echo "$FRESH_IDS_ORDERED" | sed -n '1p')"
+  SECOND_FRESH_ID="$(echo "$FRESH_IDS_ORDERED" | sed -n '2p')"
+  check "leaked thread_id matches the FIRST fresh dispatch (the abandoned hollow thread)" "$LEAKED_ID" "$FIRST_FRESH_ID"
+  check "current thread_id matches the SECOND fresh dispatch (the restart's own thread)" "$CURRENT_ID" "$SECOND_FRESH_ID"
 fi
 
 exit "$FAIL"

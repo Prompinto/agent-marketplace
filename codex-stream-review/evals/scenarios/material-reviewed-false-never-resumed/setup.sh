@@ -22,10 +22,17 @@ echo "BIN_DIR=$BIN_DIR"
 echo "INVOCATION_LOG=$INVOCATION_LOG"
 cat <<'EOF'
 
-Next step (run by hand or have a Claude Code agent do it): invoke
-codex-stream-review:ccs against REPO_DIR, with BIN_DIR prepended to PATH on EVERY Bash call made
-during this run, and FAKE_CODEX_INVOCATION_LOG set to the printed INVOCATION_LOG path on every
-dispatch/cleanup call. Task text: "review the uncommitted change in this fixture repo".
+NOTE: this scenario's real evidence comes from dispatching run-ccs-review.sh directly against
+REPO_DIR (bypassing full skill orchestration), not from a live /ccs session end-to-end -- a live
+session applying SKILL.md's Phase 2 step 1 to the restart's own active receipt schedule would hit
+a null-pair no_material_reviewed instead of CLEAN. See this scenario's own README.md ("Scope of
+what this scenario actually proves") for the full explanation.
+
+Next step (run by hand or have a Claude Code agent do it): dispatch run-ccs-review.sh directly
+against REPO_DIR, with BIN_DIR prepended to PATH on EVERY Bash call made during this run, and
+FAKE_CODEX_INVOCATION_LOG set to the printed INVOCATION_LOG path on every dispatch/cleanup call
+(reproducing what /ccs's own Phase 1 Step 1 would run). Task framing: "review the uncommitted
+change in this fixture repo".
 
 Before dispatching round 1, set on that ONE call only:
   export FAKE_CODEX_SCENARIO=schema_mismatch
