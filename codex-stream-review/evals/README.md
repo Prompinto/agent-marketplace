@@ -193,6 +193,11 @@ structural impossibility.
 | `compact-fresh-b-escalation` | Retry topology's fresh-B escalation: candidate A's own bounded resume-retries exhaust, thread B succeeds on its own single, unretried attempt -- `compaction_attempt_failed_thread: ["A"]`, both the pre-existing old thread AND candidate A end up leaked/deleted, B becomes current | **built + verified** |
 | `compact-clean-repo-dir-polluted` | The 8-check `CLEAN_REPO_DIR` cleanliness recheck fails CLOSED when a stray file is planted into that directory mid-session -- no fresh dispatch for the compaction attempt, no thread ever created for it, immediate fallback to `--resume` on the still-alive old thread | **built + verified** (driven as a real live session -- see that scenario's own `README.md`) |
 
+### Group I — material verification (`no_material_reviewed`; 5 built)
+
+| Scenario | Targets | Status |
+|---|---|---|
+
 ### Secondary tier — live-Codex acceptance (2, built after the 37 scripted scenarios above)
 
 | Scenario | Targets | Status |
