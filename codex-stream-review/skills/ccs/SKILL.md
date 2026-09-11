@@ -643,9 +643,10 @@ up using `--capture-evidence` at all):**
      `scripts/lib/git-safe.sh`) — applied here because this step runs directly in Claude's own
      dispatched shell, outside the wrapper, so it cannot call that internal bash function and must
      replicate the same pattern by hand. `GIT_BIN` is resolved via `command -v git` in this same
-     trusted call, before anything else runs, so a hostile `PATH` introduced later in the same
-     process (e.g. by something reachable from repo content) cannot redirect execution to a decoy
-     `git` — exactly `git_safe()`'s own reasoning for pre-resolving its binary path once, up front.
+     trusted call, before the first Git invocation (the `rev-parse --local-env-vars` enumeration
+     itself), so a hostile `PATH` introduced later in the same process (e.g. by something reachable
+     from repo content) cannot redirect execution to a decoy `git` — exactly `git_safe()`'s own
+     reasoning for pre-resolving its binary path once, up front.
      `SANITIZE_HOME` is a throwaway directory scoped to this one command only — created and removed
      within the same call, never a session-scoped fact like `FAKE_GIT_HOME`/`CLEAN_REPO_DIR`, since
      nothing later needs to reuse it.
@@ -777,8 +778,9 @@ developer setting (not just an attacker scenario) that git will still execute as
 regardless of how clean the surrounding environment is. Confirmed directly: a plain `git diff`
 against a repo with `core.fsmonitor` configured executes that hook; the same call wrapped in this
 `env -i`/`-c core.fsmonitor=` pattern does not. `GIT_BIN` is resolved via `command -v git` before
-any of this runs, exactly like `git_safe()`'s own reasoning, so a hostile `PATH` introduced later
-in this same process cannot redirect execution to a decoy `git`. `SANITIZE_HOME` is scoped to this
+the first Git invocation (the `rev-parse --local-env-vars` enumeration itself), exactly like
+`git_safe()`'s own reasoning, so a hostile `PATH` introduced later in this same process cannot
+redirect execution to a decoy `git`. `SANITIZE_HOME` is scoped to this
 one command only (created and removed within it), never a session-scoped fact.
 
 This counts both tracked-modified files (`git diff --name-only "$DIFF_BASE"`) and untracked files
