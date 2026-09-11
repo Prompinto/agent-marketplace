@@ -1992,6 +1992,41 @@ omission rule.
   rationale. `references/compaction.md`'s own restart Step 4 and `references/retry-guards.md`'s
   `no_material_reviewed` restart both CONSUME this pre-existing field when reconstructing a fresh
   restart's focus text; neither one is the reason it exists.
+- `receipt_issued`: `{thread_id, index}`, on its OWN dedicated JSONL line — one per dispatch
+  attempt to a thread with an active schedule, NEVER merged into a round's own regular line, since
+  a bounded resume retry issues its own slot independent of whether that round's own regular line
+  has been appended yet (see "Receipt slot issuance" above for the full issuance procedure).
+  `thread_id` is either the real threadId once one is known, or — for ANY dispatch that establishes
+  a brand-new thread with no threadId yet (not only round 1's own first dispatch, but equally a
+  `no_material_reviewed` fresh restart, a compaction restart, or `references/retry-guards.md`'s own
+  fresh-thread retry cases) — the provisional placeholder
+  `"PENDING:<basename of that dispatch's own freshly-allocated RECEIPT_SCHEDULE_FILE>"`, never a
+  bare `"PENDING"` literal. Such a placeholder issuance is corrected once the real threadId is
+  parsed, by a SECOND `receipt_issued` line carrying the SAME `index` plus a `reconciles` field
+  naming the exact placeholder string it corrects — this correction is not limited to round 1; it
+  happens at every brand-new-thread establishment event, each of which has its own uniquely-derived
+  placeholder and so never collides with another. This is the SOLE durable authority for "what's
+  the next receipt slot for this thread" — reconstructed by scanning the WHOLE session log for the
+  highest `index` recorded per `thread_id` (a `reconciles` line is authoritative over the
+  placeholder line it corrects, never double-counted as a separate issuance). Never the schedule
+  file itself, which holds only the immutable token mapping, no cursor of its own.
+- `material_reviewed`/`material_receipt`/`material_receipt_index`: the wrapper's own verdict fields
+  (`schemas/review-verdict.schema.json`), carried into `codex_review` verbatim exactly as reported
+  — top-level for a single-reviewer round, inside that group's own `groups[]` entry for a parallel
+  round (though `--compact`/`no_material_reviewed`'s single-group `main`-only constraint,
+  `references/compaction.md`'s "Scope (v1)" section and `references/retry-guards.md`'s own
+  "Recovery — single-reviewer sessions only" bullet, means this nesting rarely interacts with
+  parallel mode in practice). These fields are present ONLY on a round's REAL, logged `ok:true`
+  outcome — a receipt mismatch or a wrapper-level `material_reviewed:false` response never becomes
+  this round's `codex_review` at all: Phase 2 step 1 intercepts it as a synthetic
+  `no_material_reviewed` failure first, and `references/retry-guards.md`'s own recovery abandons
+  that hollow response outright (capturing only its `coverage.source`, when present, for the
+  round-1 coverage merge — never its own `material_receipt`/`material_receipt_index` values, which
+  are not separately persisted anywhere in this log). When that occurrence's one bounded fresh
+  restart succeeds, THAT restart's own genuinely fresh response becomes this round's `codex_review`
+  instead — so the `material_reviewed`/`material_receipt`/`material_receipt_index` values recorded
+  on the line are always the round's own real, valid outcome, never the abandoned hollow attempt's
+  mismatched ones.
 
 **Write:** append via `jq -nc` redirected with `>>`, `umask 077` restated immediately before
 every append (a fresh Bash call each time — the earlier `mkdir`'s umask doesn't carry over).
@@ -2296,8 +2331,9 @@ Structure:
   parallel mode, name which group. **If `COULD NOT VERIFY` specifically because a
   `no_material_reviewed` restart was exhausted (`references/retry-guards.md`)**, name that cause
   explicitly instead of the generic label — e.g. `⚠️ COULD NOT VERIFY (material verification
-  failed — the review thread never demonstrated it actually reviewed the material, even after one
-  fresh restart)` — never the generic "(Codex review unavailable)" wording for this specific cause.
+  failed — see "Material verification" below)` — never the generic "(Codex review unavailable)"
+  wording for this specific cause; the "Material verification" bullet below carries the full
+  per-occurrence detail, so this line only needs to name the cause, not restate it.
   **For
   any `🛑` status**, state
   plainly that a fresh `codex-stream-review:ccs` invocation is required to review the target's
@@ -2313,12 +2349,6 @@ Structure:
   the CLEAN gate and final-artifact `coverage` field already consider (see "Partial or unknown
   source coverage ≠ CLEAN" under Guards above). List the omitted paths and reasons from EVERY
   included source that contributed to a non-CLEAN/`⚠️ PARTIAL COVERAGE` outcome, not just round 1's.
-- **`no_material_reviewed` restart disclosure** — when a `no_material_reviewed` restart
-  (`references/retry-guards.md`) occurred and SUCCEEDED this session (regardless of the session's
-  own final outcome), state this plainly: which thread was discarded as hollow (never actually
-  reviewing the material) and that a fresh thread completed the review instead. The user otherwise
-  has no way of knowing, from the rest of the report, that their original review thread was
-  silently discarded mid-session.
 - **Thread cleanup results (per group)** — for every group's final thread, whether `--cleanup`
   succeeded, and whether every `(group, thread)` pair in `LEAKED_THREAD_IDS` (left behind when a
   group's round-1 retry abandoned an earlier thread) was also successfully cleaned up — list every
@@ -2355,6 +2385,18 @@ Structure:
   success that followed an earlier failed sub-attempt) for any round carrying a preserved
   `compaction_attempt_execution` value — reported as its own clearly labeled line, distinct from
   that round's own real `execution`/`usage` reporting, never merged into it.
+- **Material verification (always reported when a `no_material_reviewed` event occurred at least
+  once this session — regardless of the session's own final outcome, including a full `✅ CLEAN`
+  reached via a successful restart)** — for EACH such occurrence, in round order: which round it
+  happened at, which detection route caught it (the wrapper-level `material_reviewed:false`
+  rejection, or Claude-side receipt-mismatch/invalid-null-pair detection — `SKILL.md`'s Phase 2
+  step 1 and `references/retry-guards.md`), the abandoned/hollow thread id (never actually
+  reviewing the material), and that occurrence's own outcome — either its one bounded fresh restart
+  SUCCEEDED (name the fresh thread that completed the review instead) or it was EXHAUSTED (the
+  session ended `⚠️ COULD NOT VERIFY` at that point, per `references/retry-guards.md`'s "never
+  resume-safe, one bounded fresh restart" rule — no third thread is ever attempted). Never silently
+  omitted: the user otherwise has no way of knowing, from the rest of the report, that an original
+  review thread was silently discarded mid-session as hollow.
 - **Final-verdict artifact (Phase 5 Item B, always attempted)** — report the durable
   `<session-id>.result.json` path (see Phase 3 step 4 above) this run wrote, so the user has a
   single-file machine-readable record of this run's own outcome. If that write failed, say so
