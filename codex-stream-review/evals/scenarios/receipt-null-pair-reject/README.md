@@ -342,7 +342,7 @@ restart receipt) are structurally IDENTICAL across all three `no_material_review
 and this scenario's own genuine null-pair — so nothing durable could mechanically prove which of
 the three actually fired. **That specific route-discrimination gap is now closed** (this is
 narrower than "this scenario's own target behavior is now fully mechanically proven end to end" —
-see the SEPARATE, still-open active-schedule limitation two paragraphs below, which this fix does
+see the SEPARATE, still-open active-schedule limitation later in this section, which this fix does
 NOT resolve): round 1's dispatch passes `run-ccs-review.sh`'s own
 standalone `--keep-last-message` flag (see "Mechanical setup" above), and `expect.sh` asserts that
 captured file's content is exactly this scenario's own null-pair shape, via type-strict `has()` +
