@@ -7,7 +7,7 @@
 #
 # Invoked exactly the way run-ccs-review.sh invokes the real `codex`:
 #   codex exec --json --sandbox read-only -o LAST_MESSAGE_FILE \
-#     -c model_reasoning_effort=xhigh [--output-schema PATH] < PROMPT_FILE
+#     [--output-schema PATH] < PROMPT_FILE
 #   codex exec resume <threadId> --json -o LAST_MESSAGE_FILE \
 #     [--output-schema PATH] < PROMPT_FILE
 #   codex delete --force -- <threadId>

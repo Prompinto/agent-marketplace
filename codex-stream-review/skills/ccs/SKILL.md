@@ -2404,10 +2404,12 @@ Structure:
   memory.
 - **Execution telemetry (always on)** — see "Execution telemetry" above and
   `references/execution-telemetry.md`. Head this bullet's actual content with **"best-effort
-  execution telemetry — not authoritative billing or quota data"**, then list: effort (reasoning
-  effort only — "xhigh on fresh dispatch; inherited on resume" — NEVER a model value); per-round/
-  per-group elapsed time, from each round's own `execution.elapsed_seconds` (per group, in parallel
-  mode); each round's own `round_wall_seconds`; and token usage when available, from each
+  execution telemetry — not authoritative billing or quota data"**, then list: effort (NEVER
+  reported — this wrapper sets no `-c model_reasoning_effort` on either a fresh dispatch or
+  `--resume`, so the effort actually used is whatever the invoking Codex CLI environment/config
+  already had in effect, which this wrapper cannot see or name; NEVER a model value either); per-
+  round/per-group elapsed time, from each round's own `execution.elapsed_seconds` (per group, in
+  parallel mode); each round's own `round_wall_seconds`; and token usage when available, from each
   round/group's own `execution.usage` (state "usage unavailable" for a round/group where it was
   omitted). Any summed figure across rounds/groups must be explicitly labeled as a sum, never
   presented as wall-clock time or billable cost. **When `--compact` was used for this session,

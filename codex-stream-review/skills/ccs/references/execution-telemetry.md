@@ -12,7 +12,8 @@
 Negotiated with Codex across 4 rounds (see `docs/2026-09-05-codex-stream-review-improvement-
 roadmap-design.md`'s "Phase 3 negotiation" section for the full record) — this closes the roadmap's
 old finding #19 (no cost/token visibility anywhere in the final report, `model_reasoning_effort=
-xhigh` hardcoded with no visibility into what that actually costs). Codex live-verified, on the
+xhigh` hardcoded at the time with no visibility into what that actually costs — the hardcoding
+itself was later removed entirely, see section 1's next paragraph). Codex live-verified, on the
 actual installed `codex-cli 0.153.0`, that `codex exec --json`'s own `turn.completed.usage` event
 DOES populate real token-usage figures (`input_tokens`/`cached_input_tokens`/
 `cache_write_input_tokens`/`output_tokens`/`reasoning_output_tokens`, sometimes `total_tokens`) —
@@ -21,9 +22,11 @@ non-representative simplification of the FIXTURE, not evidence the real data doe
 
 **Best-effort only, never authoritative billing/quota data.** No cost subsystem, no caller-facing
 configuration flag (always on, no `--no-telemetry` opt-out or equivalent), no model/quota-lookup API
-call, and never a "model" identity value anywhere — the wrapper only ever sets
-`-c model_reasoning_effort=xhigh` on a fresh dispatch (never `--model`), so reasoning effort, not a
-model name, is the only "what ran" fact this feature's own mechanics ever surface.
+call, and never a "model" identity value anywhere — the wrapper never sets `--model`, and no longer
+sets `-c model_reasoning_effort` either (on a fresh dispatch or `--resume`): it defers entirely to
+whatever the invoking Codex CLI environment/config already has in effect. That means this feature
+has no "what reasoning effort ran" fact of its own to surface either — neither a model name nor a
+reasoning-effort value is knowable or reported by this mechanism.
 
 ## 2. Extraction — wrapper-owned, `run-ccs-review.sh` only
 
@@ -162,8 +165,10 @@ would overstate true wall-clock cost; only a genuine dispatch-to-joined timestam
 A new bullet in `SKILL.md`'s own Final report structure, headed **"best-effort execution telemetry
 — not authoritative billing or quota data"** in the actual report content (see section 1 above for
 why), listing:
-- **Effort** — reasoning effort only: "xhigh on fresh dispatch; inherited on resume" (a `--resume`
-  call carries no `-c` flags of its own) — NEVER a model value.
+- **Effort** — NEVER reported: this wrapper sets no `-c model_reasoning_effort` on either a fresh
+  dispatch or `--resume`, so whatever effort level actually ran is whatever the invoking Codex CLI
+  environment/config already had in effect — a fact this wrapper cannot see or name. NEVER a model
+  value either, for the same reason (`--model` is never set).
 - **Per-round/per-group elapsed time** — from each round's own `execution.elapsed_seconds`
   (per-group, in parallel mode).
 - **`round_wall_seconds`** — per round, from section 5 above.
