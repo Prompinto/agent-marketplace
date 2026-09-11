@@ -61,7 +61,7 @@ dispatch/cleanup call. Task text: "review the uncommitted change in this fixture
 Round 1's own fresh dispatch establishes a brand-new thread, so per SKILL.md's receipt schedule
 rules it passes --receipt-schedule-file <the schedule YOU just generated live, via SKILL.md's own
 mktemp + 70-iteration shasum -a 256 loop> --receipt-slot 1 -- this thread genuinely HAS an active
-schedule. ALSO pass --keep-last-message "\$ROUND1_LAST_MESSAGE_FILE" on this ONE call (a standalone
+schedule. ALSO pass --keep-last-message "$ROUND1_LAST_MESSAGE_FILE" on this ONE call (a standalone
 run-ccs-review.sh wrapper flag, unconditionally available in its own argument parser regardless of
 session-level --keep-evidence -- do NOT turn --keep-evidence on for this run, it is not needed and
 would change unrelated cleanup-on-failure behavior). This durably copies round 1's own real

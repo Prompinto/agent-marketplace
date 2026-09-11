@@ -113,14 +113,19 @@ if [ ! -f "$ROUND1_LAST_MESSAGE_FILE" ]; then
   echo "receipt-null-pair-reject: FAIL -- round 1's kept last-message file not found at $ROUND1_LAST_MESSAGE_FILE (this scenario exists to prove round 1's real dispatched content was the null-pair route, not Task 12's or Task 13's -- a missing file means that cannot be checked, so it must fail, not silently pass)" >&2
   FAIL=1
 else
-  ROUND1_DISPATCHED_REVIEWED="$(jq -r '.material_reviewed' "$ROUND1_LAST_MESSAGE_FILE" 2>/dev/null || echo "PARSE_ERROR")"
-  check "round 1's own kept dispatched content: material_reviewed (must be true -- this is the null-pair route, not Task 12's material_reviewed:false route)" "$ROUND1_DISPATCHED_REVIEWED" "true"
+  # Type-strict per-field checks (mirrors run-ccs-review.sh's own has()+type
+  # semantic-validation pattern, ~lines 1177-1182): a missing field, a `false`
+  # boolean, or any other falsy value must NOT be conflated with a genuine
+  # JSON `true`/`null`, or a malformed captured message would incorrectly
+  # still pass.
+  ROUND1_DISPATCHED_REVIEWED="$(jq -r 'if (has("material_reviewed") and (.material_reviewed | type) == "boolean" and .material_reviewed == true) then "true" else "false" end' "$ROUND1_LAST_MESSAGE_FILE" 2>/dev/null || echo "PARSE_ERROR")"
+  check "round 1's own kept dispatched content: material_reviewed (must be the JSON boolean true -- this is the null-pair route, not Task 12's material_reviewed:false route)" "$ROUND1_DISPATCHED_REVIEWED" "true"
 
-  ROUND1_DISPATCHED_RECEIPT="$(jq -r '.material_receipt // "null"' "$ROUND1_LAST_MESSAGE_FILE" 2>/dev/null || echo "PARSE_ERROR")"
-  check "round 1's own kept dispatched content: material_receipt (must be null -- proves this is the null-pair route, not Task 13's non-null wrong-value mismatch)" "$ROUND1_DISPATCHED_RECEIPT" "null"
+  ROUND1_DISPATCHED_RECEIPT="$(jq -r 'if (has("material_receipt") and (.material_receipt | type) == "null") then "null" else "not_null_or_missing" end' "$ROUND1_LAST_MESSAGE_FILE" 2>/dev/null || echo "PARSE_ERROR")"
+  check "round 1's own kept dispatched content: material_receipt (must be the JSON null -- proves this is the null-pair route, not Task 13's non-null wrong-value mismatch)" "$ROUND1_DISPATCHED_RECEIPT" "null"
 
-  ROUND1_DISPATCHED_RECEIPT_INDEX="$(jq -r '.material_receipt_index // "null"' "$ROUND1_LAST_MESSAGE_FILE" 2>/dev/null || echo "PARSE_ERROR")"
-  check "round 1's own kept dispatched content: material_receipt_index (must be null -- paired with the null receipt above)" "$ROUND1_DISPATCHED_RECEIPT_INDEX" "null"
+  ROUND1_DISPATCHED_RECEIPT_INDEX="$(jq -r 'if (has("material_receipt_index") and (.material_receipt_index | type) == "null") then "null" else "not_null_or_missing" end' "$ROUND1_LAST_MESSAGE_FILE" 2>/dev/null || echo "PARSE_ERROR")"
+  check "round 1's own kept dispatched content: material_receipt_index (must be the JSON null -- paired with the null receipt above)" "$ROUND1_DISPATCHED_RECEIPT_INDEX" "null"
 fi
 
 RESULT_DIR="$(dirname "$RESULT_FILE")"
