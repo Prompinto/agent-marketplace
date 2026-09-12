@@ -143,15 +143,19 @@ have had:
 None of this makes PCA-001 false or unimportant — unbounded growth in default mode is real, and this
 response is not disputing that. What is being disputed is the audit's framing of it as a fresh,
 unaddressed "High" severity gap sitting on equal footing with a concrete, guaranteed-wrong JSON
-literal (PCA-002). This response's position: **PCA-001 describes a known, already-triaged,
-already-partially-mitigated tradeoff under active, cautious iteration — not a fact this project was
-unaware of or has neglected.** It should stay tracked (it already is), and the audit's own
-recommended next step (gather real usage data before changing the default) is correct and already the
-plan — but it does not currently warrant new code changes beyond what is already tracked as a future
-candidate.
+literal (PCA-002). This response's position, stated precisely: **the retained-context risk is known;
+an opt-in mitigation (`--compact`) is shipped (`ccs_backlog_from_real_usage_feedback.md`'s own
+Candidate 3 entry records it as SHIPPED, not as an open decision); the project deliberately keeps it
+opt-in pending further real-review validation before any default-policy change.** That is "known,
+deliberately deferred; re-evaluate after measured runs" — not "already an open, explicitly tracked
+default-policy task" with its own owner or milestone, since no such tracked decision item currently
+exists. The audit's own recommended next step (gather real usage data before changing the default) is
+correct and already the plan — but it does not currently warrant new code changes beyond what is
+already shipped.
 
 **Verdict: no dispute on the facts; dispute the "fresh High-severity gap" framing. No new fix
-dispatched from this response — already an open, deliberately-paced tracked item.**
+dispatched from this response — a known, deliberately-deferred tradeoff, not an open policy task with
+an owner or milestone.**
 
 ## O-001 through O-004 — no dispute
 
@@ -170,12 +174,15 @@ O-002/O-003 wording only once it exists to validate against.**
 1. **Now, this pass:** fix PCA-002 (correct the invalid/incomplete JSON example; add a deterministic
    `jq -e .` + schema-validation test for it) and PCA-003 (add a short safe-input-template doc section
    to `skills/stream-review/SKILL.md`, no wrapper code change). Both routed through
-   `codex-stream-review:ccs` review with no round limit, per this project's standing practice.
+   `codex-stream-review:ccs` review under the skill's normal 20-round hard cap (`skills/ccs/SKILL.md`
+   line 39) — per this project's standing practice, review/fix rounds will not be self-limited for
+   cost reasons short of that cap, but no unlimited mode exists.
 2. **Tracked as a separate, dedicated follow-up project (not this pass):** PCA-004's prompt-capture
    fixture + curated live-eval corpus. This deserves its own design cycle given its scope.
-3. **No change from this response:** PCA-001. Already an open, explicitly-tracked, deliberately-paced
-   item; this response's only addition is the context above for why "High severity, act now" is not
-   the right frame given what already exists and why it was built opt-in.
+3. **No change from this response:** PCA-001. A known, deliberately-deferred tradeoff with a shipped
+   opt-in mitigation — not an open policy task with an owner or milestone; this response's only
+   addition is the context above for why "High severity, act now" is not the right frame given what
+   already exists and why it was built opt-in.
 4. **No change from this response:** O-001 through O-004. Agreed to defer per the audit's own
    sequencing (PCA-004 first).
 
