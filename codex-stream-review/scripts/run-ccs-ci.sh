@@ -75,6 +75,23 @@ if [ ! -f "$SCHEMA_FILE" ]; then
   usage_error "schema file not found: $SCHEMA_FILE"
 fi
 
+# Resolved once, here, before anything else runs -- same reasoning as GIT_BIN in
+# scripts/lib/git-safe.sh: an absolute path invoked later is immune to a hostile PATH
+# introduced afterward (e.g. by something reachable from the PR's own untrusted checkout),
+# whereas a bare `claude` invocation at the actual call site would still do an ambient-PATH
+# lookup at that later point.
+CLAUDE_BIN="$(command -v claude)" || usage_error "claude CLI not found on PATH"
+# `command -v` can return a bare name (an exported shell FUNCTION named
+# `claude` reports as just "claude", unlike `type`) or a relative path (a
+# relative PATH entry) -- neither is safe to invoke after this script's own
+# later `cd "$REPO_ROOT"` into the untrusted checkout, since a relative/bare
+# result would then resolve against the WRONG (target-repo) directory,
+# defeating the whole point of resolving it here. Require an absolute path.
+case "$CLAUDE_BIN" in
+  /*) ;;
+  *) usage_error "claude CLI resolved to a non-absolute path: $CLAUDE_BIN" ;;
+esac
+
 REPO_ROOT=""
 BASE_REF=""
 WORKFLOW_RUN_ID=""
@@ -136,6 +153,14 @@ RESULT_PATH="$REPO_ROOT/$RESULT_FILENAME"
 # negotiated design.
 write_result_atomic() {
   local json_text="$1" tmp_path
+  # `mv -f` onto a path that already names a directory silently moves the
+  # temp file INSIDE it and reports success -- defeating the fixed-path
+  # artifact contract .github/workflows/ccs-ci-review.yml relies on. Reject
+  # up front rather than letting that happen quietly.
+  if [ -e "$RESULT_PATH" ] && [ ! -f "$RESULT_PATH" ]; then
+    printf 'run-ccs-ci.sh: result path exists and is not a regular file: %s\n' "$RESULT_PATH" >&2
+    exit 1
+  fi
   tmp_path="$(mktemp "$REPO_ROOT/.ccs-ci-result.XXXXXX")" || {
     printf 'run-ccs-ci.sh: mktemp for result file failed\n' >&2
     exit 1
@@ -147,6 +172,21 @@ write_result_atomic() {
   fi
   if ! mv -f "$tmp_path" "$RESULT_PATH"; then
     printf 'run-ccs-ci.sh: atomic rename of result file to %s failed\n' "$RESULT_PATH" >&2
+    exit 1
+  fi
+  # Belt-and-suspenders in case of an unexpected race between the pre-check
+  # above and this mv (e.g. something else recreating $RESULT_PATH as a
+  # directory in between). This window is not fully closeable with plain
+  # mv/test -- it is narrow, but real -- so this is detection, not prevention.
+  if [ ! -f "$RESULT_PATH" ]; then
+    # If $RESULT_PATH is (now) a directory, `mv -f` moved our temp file INSIDE
+    # it rather than failing -- best-effort clean up that stray file (known by
+    # the temp file's own basename) so a detected failure doesn't also leave
+    # debris behind.
+    if [ -d "$RESULT_PATH" ]; then
+      rm -f "$RESULT_PATH/$(basename "$tmp_path")" 2>/dev/null
+    fi
+    printf 'run-ccs-ci.sh: result path is not a regular file after write: %s\n' "$RESULT_PATH" >&2
     exit 1
   fi
 }
@@ -327,7 +367,7 @@ mktemp_registered CLAUDE_STDERR_FILE
 # codex-stream-review:ccs skill in the first place.
 (
   cd "$REPO_ROOT" || exit 127
-  claude -p --output-format json --dangerously-skip-permissions \
+  "$CLAUDE_BIN" -p --output-format json --dangerously-skip-permissions \
     --setting-sources user \
     --json-schema "$SCHEMA_TEXT" \
     -- "$PROMPT_TEXT"

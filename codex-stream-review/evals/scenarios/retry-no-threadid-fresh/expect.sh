@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Scenario-specific assertions for retry-no-threadid-fresh, invoked by
 # check-result.sh as `expect.sh <result.json>`. Schema structure is already
-# validated by check-result.sh itself (lib/schema-check.jq) before this runs.
+# validated by check-result.sh's own schema validation step before this runs.
 #
 # Asserts, per this scenario's README:
 #   - exit_state is a real terminal status (CLEAN, since fake-codex's

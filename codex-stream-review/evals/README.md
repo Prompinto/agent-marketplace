@@ -327,7 +327,7 @@ evals/
   check-consistency.sh    -- aggregates check-result.sh outcomes across N repeated .result.json files
   lib/
     common.sh             -- shared setup.sh helpers (fixture repos, fake-codex injection, install-path resolution)
-    schema-check.jq       -- structural validator for schemas/interactive-result.schema.json
+    validate_interactive_result.py -- JSON Schema validator for schemas/interactive-result.schema.json
     check-thread-cleanup.sh -- confirms a "deleted" thread left no trace under ~/.codex/sessions/
   scenarios/
     <name>/

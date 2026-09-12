@@ -53,6 +53,18 @@ kill_process_group() {
   kill -KILL -"$pid" 2>/dev/null
 }
 on_signal() {
+  # Round 5 finding (ported from run-ccs-review.sh): this function used to
+  # leave $CODEX_PID reaped-but-set for its whole remaining body (job
+  # cleanup, keep_and_remove_last_message, JSON output) with the real trap
+  # still installed -- a SECOND INT/TERM arriving anywhere in that window
+  # re-enters this same function (live-reproduced: two TERM signals sent to
+  # a handler that keeps a reaped PID around both see the same stale value
+  # on the second entry), and the kill_process_group call below would then
+  # act on that stale, possibly-OS-recycled PID. Disabling INT/TERM for the
+  # rest of this cleanup closes that off entirely -- this function always
+  # exits the whole script before returning, so there is no later point that
+  # still needs INT/TERM handling restored.
+  trap '' INT TERM
   kill_process_group "${CODEX_PID:-}"
   # Reap the killed dispatch before touching $LAST_MESSAGE_FILE: SIGKILL only
   # requests termination, it does not prove the child has actually stopped
@@ -61,6 +73,10 @@ on_signal() {
   # race the writer. Guarded on CODEX_PID being set: a signal landing before
   # dispatch (e.g. during diff collection) has no PID to wait on.
   [ -n "${CODEX_PID:-}" ] && wait "$CODEX_PID" 2>/dev/null
+  # Reset immediately, now that INT/TERM are disabled above -- a stale PID
+  # left here risks the OS reusing it for an unrelated process that a later
+  # kill_process_group call would wrongly TERM/KILL.
+  CODEX_PID=""
   local job_pid
   for job_pid in $(jobs -p 2>/dev/null); do
     kill -KILL -"$job_pid" 2>/dev/null
@@ -206,10 +222,13 @@ mktemp_registered EVENTLOG
 # final answer text this same process already produced).
 mktemp_registered LAST_MESSAGE_FILE
 
-# Round dispatch (Step 4, finalized flags -- do not add --sandbox or
-# model_reasoning_effort to resume: `codex exec resume --help` has no
-# --sandbox flag at all; the resumed turn inherits its thread's original
-# turn_context). No positional PROMPT argument on either form: per
+# Round dispatch (Step 4, finalized flags -- do not add --sandbox to
+# resume: `codex exec resume --help` has no --sandbox flag at all; the
+# resumed turn inherits its thread's original turn_context). Neither form
+# sets -c model_reasoning_effort -- this wrapper defers entirely to
+# whatever the invoking Codex CLI environment/config already has in
+# effect, on both a fresh dispatch and a resume. No positional PROMPT
+# argument on either form: per
 # `codex exec --help`, omitting it (or passing `-`) makes the CLI read its
 # instructions from stdin -- redirected here from $FOCUS_RECEIVED_FILE,
 # never passed as an argv value.
@@ -220,7 +239,7 @@ mktemp_registered LAST_MESSAGE_FILE
       ${SCHEMA:+--output-schema "$SCHEMA"} < "$FOCUS_RECEIVED_FILE"
   else
     codex exec --json --sandbox read-only -o "$LAST_MESSAGE_FILE" \
-      -c model_reasoning_effort=xhigh ${SCHEMA:+--output-schema "$SCHEMA"} \
+      ${SCHEMA:+--output-schema "$SCHEMA"} \
       < "$FOCUS_RECEIVED_FILE"
   fi
 ) > "$EVENTLOG" 2>&1 &

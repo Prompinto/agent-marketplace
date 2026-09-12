@@ -36,8 +36,13 @@ cat > "$G2_STATE/round-1-final-answer.json" <<'EOF'
 {"verdict":"CLEAN","findings":[],"summary":"DISPOSITION g2:f1: RESOLVED -- stub_1.py now has a docstring explaining the return value.","dimensions":{"correctness":{"status":"not_applicable","evidence":"n/a"},"security":{"status":"not_applicable","evidence":"no security-relevant surface"},"performance":{"status":"not_applicable","evidence":"trivial function"},"reuse":{"status":"checked","evidence":"re-read stub_1.py: a docstring is now present"},"contracts":{"status":"not_applicable","evidence":"n/a"},"resources_concurrency":{"status":"not_applicable","evidence":"no resource or concurrency surface"},"intent":{"status":"checked","evidence":"intent is now documented"}},"material_reviewed":true,"material_receipt":null,"material_receipt_index":null}
 EOF
 
-G1_LOG="$(mktemp -u /tmp/ccs-eval-g1-invocations.XXXXXX)"
-G2_LOG="$(mktemp -u /tmp/ccs-eval-g2-invocations.XXXXXX)"
+# mktemp (not -u): FAKE_CODEX_INVOCATION_LOG is appended to (>>), which
+# creates the file itself if it doesn't already exist -- reserving a
+# genuinely unique path via a real file, rather than mktemp -u's guessed
+# (and possibly already-taken) name, closes the TOCTOU window with no
+# downstream effect on the append-based logging this file is used for.
+G1_LOG="$(mktemp /tmp/ccs-eval-g1-invocations.XXXXXX)"
+G2_LOG="$(mktemp /tmp/ccs-eval-g2-invocations.XXXXXX)"
 
 echo "REPO_DIR=$REPO_DIR"
 echo "BIN_DIR=$BIN_DIR"

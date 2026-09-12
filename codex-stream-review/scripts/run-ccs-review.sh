@@ -96,10 +96,14 @@ emit_final_output() {
 # object (never an empty `{}` placeholder, and never absent/null) --
 # omitted entirely otherwise, collapsing "no such event" and "an emitted
 # but empty {} usage" to the identical "usage unavailable" outcome. Never
-# reports a "model" value -- this wrapper never sets --model, only
-# -c model_reasoning_effort=xhigh on a fresh dispatch (inherited, unset, on
-# --resume), and SKILL.md's own final report is what surfaces that text,
-# not this JSON field.
+# reports a "model" or "reasoning effort" value -- this wrapper never sets
+# --model or -c model_reasoning_effort on either a fresh dispatch or
+# --resume, deferring entirely to whatever the invoking Codex CLI
+# environment/config already has in effect. That means, unlike an earlier
+# revision, this wrapper has no way to know or claim what reasoning effort
+# was actually used for a given dispatch -- SKILL.md's own final report
+# must not assert a specific effort level either, and this JSON field
+# stays silent on it rather than guessing.
 build_execution_json() {
   [ -n "${DISPATCH_PID:-}" ] || return 0
   local elapsed
@@ -482,12 +486,14 @@ while [ $# -gt 0 ]; do
       # N-parameterized instruction -- never restates a live token value, only the index to look up.
       [ $# -ge 2 ] || { printf '{"ok":false,"reason":"bad_args","detail":"--receipt-slot requires a value"}\n'; exit 1; }
       case "$2" in
-        # 1-3 digits, no leading zero (real slots are 1-70 per the design's N=70 schedule; this
-        # bound also keeps the value well clear of bash native-arithmetic overflow, and rejects
-        # a leading-zero value like "01" that would mismatch the schedule's own "1:", "2:" labels).
-        [1-9]|[1-9][0-9]|[1-9][0-9][0-9]) ;;
+        # Exactly 1-70 (the only range the design's N=70 schedule ever issues -- the
+        # schedule-file validator below hard-requires exactly 70 sequential labels via
+        # `seq 1 70`, so a slot outside 1-70 can never resolve to a real receipt). This
+        # also rejects a leading-zero value like "01" that would mismatch the schedule's
+        # own "1:", "2:" labels, and stays well clear of bash native-arithmetic overflow.
+        [1-9]|[1-6][0-9]|70) ;;
         *)
-          DETAIL_JSON="$(printf '%s' "$2" | jq -Rs '"--receipt-slot must be a positive integer, got: " + .')"
+          DETAIL_JSON="$(printf '%s' "$2" | jq -Rs '"--receipt-slot must be an integer from 1 to 70, got: " + .')"
           printf '{"ok":false,"reason":"bad_args","detail":%s}\n' "$DETAIL_JSON"
           exit 1 ;;
       esac
@@ -998,7 +1004,7 @@ trap 'DEFERRED_SIGNAL=1' INT TERM
       ${SCHEMA:+--output-schema "$SCHEMA"} < "$PROMPT_FILE"
   else
     codex exec --json --sandbox read-only -o "$LAST_MESSAGE_FILE" \
-      -c model_reasoning_effort=xhigh ${SCHEMA:+--output-schema "$SCHEMA"} \
+      ${SCHEMA:+--output-schema "$SCHEMA"} \
       < "$PROMPT_FILE"
   fi
 ) > "$EVENTLOG" 2>&1 &

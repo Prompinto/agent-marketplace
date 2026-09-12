@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Scenario-specific assertions for claim-clean-resolution. Schema structure
 # (claims must be an array; each claim entry's required keys) is already
-# validated by check-result.sh's schema-check.jq before this runs.
+# validated by check-result.sh's own schema validation step before this runs.
 #
 # Asserts, per this scenario's README:
 #   - exit_state == "CLEAN"

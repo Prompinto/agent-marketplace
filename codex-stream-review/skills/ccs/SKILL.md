@@ -497,8 +497,13 @@ up using `--capture-evidence` at all):**
 - **Unconditional stale-eventlog sweep (best-effort):** a best-effort sweep for orphaned raw
   event-log files left behind by a past, interrupted `--capture-evidence` session:
   ```bash
-  find /tmp -maxdepth 1 -name 'ccs-*-round-*-eventlog.jsonl*' -mmin +60 -delete
+  find /tmp -maxdepth 1 -name 'ccs-*-round-*-eventlog.jsonl*' -mmin +60 -user "$(id -un)" -delete
   ```
+  `-user "$(id -un)"` scopes the sweep to files owned by the invoking user, so it can never delete
+  another user's own similarly-named stale files on a shared multi-tenant host — a same-user false
+  positive (an unrelated project on the same machine coincidentally using a matching filename
+  pattern) remains a residual, accepted risk.
+
   Running this on EVERY `/ccs` invocation — capture-enabled or not — is what makes the cleanup
   bound honest: an orphaned eventlog is removed no later than the start of the very next `/ccs`
   invocation of any kind, at least 60 minutes after being orphaned. 60 minutes is safe because an
@@ -615,10 +620,14 @@ up using `--capture-evidence` at all):**
      ```bash
      REPO_ROOT_FILE="<literal REPO_ROOT_FILE path resolved in Phase 0 step 3 above>"
      REPO_ROOT="$(cat "$REPO_ROOT_FILE")"; REPO_ROOT="${REPO_ROOT%x}"
-     for _v in $(git rev-parse --local-env-vars 2>/dev/null || printf '%s\n' GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CONFIG GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT GIT_OBJECT_DIRECTORY GIT_DIR GIT_WORK_TREE GIT_IMPLICIT_WORK_TREE GIT_GRAFT_FILE GIT_INDEX_FILE GIT_NO_REPLACE_OBJECTS GIT_REPLACE_REF_BASE GIT_PREFIX GIT_SHALLOW_FILE GIT_COMMON_DIR) GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_TEMPLATE_DIR; do
+     GIT_BIN="$(command -v git)"
+     case "$GIT_BIN" in
+       /*) ;;
+       *) echo "git resolved to a non-absolute path ($GIT_BIN) -- stop here, do not sanitize or dispatch with it" >&2; exit 1 ;;
+     esac
+     for _v in $("$GIT_BIN" rev-parse --local-env-vars 2>/dev/null || printf '%s\n' GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CONFIG GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT GIT_OBJECT_DIRECTORY GIT_DIR GIT_WORK_TREE GIT_IMPLICIT_WORK_TREE GIT_GRAFT_FILE GIT_INDEX_FILE GIT_NO_REPLACE_OBJECTS GIT_REPLACE_REF_BASE GIT_PREFIX GIT_SHALLOW_FILE GIT_COMMON_DIR) GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_TEMPLATE_DIR; do
        unset "$_v"
      done
-     GIT_BIN="$(command -v git)"
      SANITIZE_HOME=$(mktemp -d)
      env -i "PATH=/usr/bin:/bin" "HOME=$SANITIZE_HOME" "GIT_CONFIG_NOSYSTEM=1" \
        "$GIT_BIN" -C "$REPO_ROOT" -c core.fsmonitor= status --short --untracked-files=all
@@ -643,9 +652,10 @@ up using `--capture-evidence` at all):**
      `scripts/lib/git-safe.sh`) — applied here because this step runs directly in Claude's own
      dispatched shell, outside the wrapper, so it cannot call that internal bash function and must
      replicate the same pattern by hand. `GIT_BIN` is resolved via `command -v git` in this same
-     trusted call, before anything else runs, so a hostile `PATH` introduced later in the same
-     process (e.g. by something reachable from repo content) cannot redirect execution to a decoy
-     `git` — exactly `git_safe()`'s own reasoning for pre-resolving its binary path once, up front.
+     trusted call, before the first Git invocation (the `rev-parse --local-env-vars` enumeration
+     itself), so a hostile `PATH` introduced later in the same process (e.g. by something reachable
+     from repo content) cannot redirect execution to a decoy `git` — exactly `git_safe()`'s own
+     reasoning for pre-resolving its binary path once, up front.
      `SANITIZE_HOME` is a throwaway directory scoped to this one command only — created and removed
      within the same call, never a session-scoped fact like `FAKE_GIT_HOME`/`CLEAN_REPO_DIR`, since
      nothing later needs to reuse it.
@@ -713,10 +723,14 @@ own):
 ```bash
 REPO_ROOT_FILE="<literal REPO_ROOT_FILE path resolved once in Phase 0>"
 REPO_ROOT="$(cat "$REPO_ROOT_FILE")"; REPO_ROOT="${REPO_ROOT%x}"
-for _v in $(git rev-parse --local-env-vars 2>/dev/null || printf '%s\n' GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CONFIG GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT GIT_OBJECT_DIRECTORY GIT_DIR GIT_WORK_TREE GIT_IMPLICIT_WORK_TREE GIT_GRAFT_FILE GIT_INDEX_FILE GIT_NO_REPLACE_OBJECTS GIT_REPLACE_REF_BASE GIT_PREFIX GIT_SHALLOW_FILE GIT_COMMON_DIR) GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_TEMPLATE_DIR; do
+GIT_BIN="$(command -v git)"
+case "$GIT_BIN" in
+  /*) ;;
+  *) echo "git resolved to a non-absolute path ($GIT_BIN) -- stop here, do not sanitize or dispatch with it" >&2; exit 1 ;;
+esac
+for _v in $("$GIT_BIN" rev-parse --local-env-vars 2>/dev/null || printf '%s\n' GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CONFIG GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT GIT_OBJECT_DIRECTORY GIT_DIR GIT_WORK_TREE GIT_IMPLICIT_WORK_TREE GIT_GRAFT_FILE GIT_INDEX_FILE GIT_NO_REPLACE_OBJECTS GIT_REPLACE_REF_BASE GIT_PREFIX GIT_SHALLOW_FILE GIT_COMMON_DIR) GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_TEMPLATE_DIR; do
   unset "$_v"
 done
-GIT_BIN="$(command -v git)"
 SANITIZE_HOME=$(mktemp -d)
 if env -i "PATH=/usr/bin:/bin" "HOME=$SANITIZE_HOME" "GIT_CONFIG_NOSYSTEM=1" \
   "$GIT_BIN" -C "$REPO_ROOT" -c core.fsmonitor= rev-parse --verify -q HEAD >/dev/null 2>&1; then
@@ -777,8 +791,9 @@ developer setting (not just an attacker scenario) that git will still execute as
 regardless of how clean the surrounding environment is. Confirmed directly: a plain `git diff`
 against a repo with `core.fsmonitor` configured executes that hook; the same call wrapped in this
 `env -i`/`-c core.fsmonitor=` pattern does not. `GIT_BIN` is resolved via `command -v git` before
-any of this runs, exactly like `git_safe()`'s own reasoning, so a hostile `PATH` introduced later
-in this same process cannot redirect execution to a decoy `git`. `SANITIZE_HOME` is scoped to this
+the first Git invocation (the `rev-parse --local-env-vars` enumeration itself), exactly like
+`git_safe()`'s own reasoning, so a hostile `PATH` introduced later in this same process cannot
+redirect execution to a decoy `git`. `SANITIZE_HOME` is scoped to this
 one command only (created and removed within it), never a session-scoped fact.
 
 This counts both tracked-modified files (`git diff --name-only "$DIFF_BASE"`) and untracked files
@@ -803,10 +818,14 @@ each scope with the matching command:
 ```bash
 REPO_ROOT_FILE="<literal REPO_ROOT_FILE path resolved once in Phase 0>"
 REPO_ROOT="$(cat "$REPO_ROOT_FILE")"; REPO_ROOT="${REPO_ROOT%x}"
-for _v in $(git rev-parse --local-env-vars 2>/dev/null || printf '%s\n' GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CONFIG GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT GIT_OBJECT_DIRECTORY GIT_DIR GIT_WORK_TREE GIT_IMPLICIT_WORK_TREE GIT_GRAFT_FILE GIT_INDEX_FILE GIT_NO_REPLACE_OBJECTS GIT_REPLACE_REF_BASE GIT_PREFIX GIT_SHALLOW_FILE GIT_COMMON_DIR) GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_TEMPLATE_DIR; do
+GIT_BIN="$(command -v git)"
+case "$GIT_BIN" in
+  /*) ;;
+  *) echo "git resolved to a non-absolute path ($GIT_BIN) -- stop here, do not sanitize or dispatch with it" >&2; exit 1 ;;
+esac
+for _v in $("$GIT_BIN" rev-parse --local-env-vars 2>/dev/null || printf '%s\n' GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CONFIG GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT GIT_OBJECT_DIRECTORY GIT_DIR GIT_WORK_TREE GIT_IMPLICIT_WORK_TREE GIT_GRAFT_FILE GIT_INDEX_FILE GIT_NO_REPLACE_OBJECTS GIT_REPLACE_REF_BASE GIT_PREFIX GIT_SHALLOW_FILE GIT_COMMON_DIR) GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_TEMPLATE_DIR; do
   unset "$_v"
 done
-GIT_BIN="$(command -v git)"
 SANITIZE_HOME=$(mktemp -d)
 
 # --base <ref>:
@@ -844,10 +863,14 @@ allowed to produce a "successfully" hashed empty/partial file that would silentl
 revalidation:
 ```bash
 REPO_ROOT_FILE="<literal from Phase 0>"; REPO_ROOT="$(cat "$REPO_ROOT_FILE")"; REPO_ROOT="${REPO_ROOT%x}"
-for _v in $(git rev-parse --local-env-vars 2>/dev/null || printf '%s\n' GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CONFIG GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT GIT_OBJECT_DIRECTORY GIT_DIR GIT_WORK_TREE GIT_IMPLICIT_WORK_TREE GIT_GRAFT_FILE GIT_INDEX_FILE GIT_NO_REPLACE_OBJECTS GIT_REPLACE_REF_BASE GIT_PREFIX GIT_SHALLOW_FILE GIT_COMMON_DIR) GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_TEMPLATE_DIR; do
+GIT_BIN="$(command -v git)"
+case "$GIT_BIN" in
+  /*) ;;
+  *) echo "git resolved to a non-absolute path ($GIT_BIN) -- stop here, do not sanitize or dispatch with it" >&2; exit 1 ;;
+esac
+for _v in $("$GIT_BIN" rev-parse --local-env-vars 2>/dev/null || printf '%s\n' GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CONFIG GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT GIT_OBJECT_DIRECTORY GIT_DIR GIT_WORK_TREE GIT_IMPLICIT_WORK_TREE GIT_GRAFT_FILE GIT_INDEX_FILE GIT_NO_REPLACE_OBJECTS GIT_REPLACE_REF_BASE GIT_PREFIX GIT_SHALLOW_FILE GIT_COMMON_DIR) GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_TEMPLATE_DIR; do
   unset "$_v"
 done
-GIT_BIN="$(command -v git)"
 SANITIZE_HOME=$(mktemp -d)
 SNAPSHOT_FILE=$(mktemp "/tmp/ccs-${SESSION_ID}-snapshot.bin.XXXXXX")
 SNAPSHOT_OK=1
@@ -1232,8 +1255,16 @@ REPO_ROOT="$(cat "$REPO_ROOT_FILE")"; REPO_ROOT="${REPO_ROOT%x}"
 # runs during its own investigation inside it, inherits whatever environment this dispatching
 # shell passes down. A leaked GIT_DIR/GIT_WORK_TREE here would not corrupt the wrapper's own
 # collection, but it could redirect Codex's own investigation-time git commands to the wrong
-# repository:
-for _v in $(git rev-parse --local-env-vars 2>/dev/null || printf '%s\n' GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CONFIG GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT GIT_OBJECT_DIRECTORY GIT_DIR GIT_WORK_TREE GIT_IMPLICIT_WORK_TREE GIT_GRAFT_FILE GIT_INDEX_FILE GIT_NO_REPLACE_OBJECTS GIT_REPLACE_REF_BASE GIT_PREFIX GIT_SHALLOW_FILE GIT_COMMON_DIR) GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_TEMPLATE_DIR; do
+# repository. GIT_BIN is resolved via `command -v git` before this enumeration call itself runs
+# (never a bare `git`) -- otherwise a hostile PATH could substitute a decoy `git` here that returns
+# a deliberately wrong/incomplete "local env vars" list, causing this exact step to silently skip
+# unsetting a hostile GIT_DIR-like variable that then leaks into Codex's own dispatched subprocess:
+GIT_BIN="$(command -v git)"
+case "$GIT_BIN" in
+  /*) ;;
+  *) echo "git resolved to a non-absolute path ($GIT_BIN) -- stop here, do not sanitize or dispatch with it" >&2; exit 1 ;;
+esac
+for _v in $("$GIT_BIN" rev-parse --local-env-vars 2>/dev/null || printf '%s\n' GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CONFIG GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT GIT_OBJECT_DIRECTORY GIT_DIR GIT_WORK_TREE GIT_IMPLICIT_WORK_TREE GIT_GRAFT_FILE GIT_INDEX_FILE GIT_NO_REPLACE_OBJECTS GIT_REPLACE_REF_BASE GIT_PREFIX GIT_SHALLOW_FILE GIT_COMMON_DIR) GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM GIT_TEMPLATE_DIR; do
   unset "$_v"
 done
 
@@ -2373,10 +2404,12 @@ Structure:
   memory.
 - **Execution telemetry (always on)** — see "Execution telemetry" above and
   `references/execution-telemetry.md`. Head this bullet's actual content with **"best-effort
-  execution telemetry — not authoritative billing or quota data"**, then list: effort (reasoning
-  effort only — "xhigh on fresh dispatch; inherited on resume" — NEVER a model value); per-round/
-  per-group elapsed time, from each round's own `execution.elapsed_seconds` (per group, in parallel
-  mode); each round's own `round_wall_seconds`; and token usage when available, from each
+  execution telemetry — not authoritative billing or quota data"**, then list: effort (NEVER
+  reported — this wrapper sets no `-c model_reasoning_effort` on either a fresh dispatch or
+  `--resume`, so the effort actually used is whatever the invoking Codex CLI environment/config
+  already had in effect, which this wrapper cannot see or name; NEVER a model value either); per-
+  round/per-group elapsed time, from each round's own `execution.elapsed_seconds` (per group, in
+  parallel mode); each round's own `round_wall_seconds`; and token usage when available, from each
   round/group's own `execution.usage` (state "usage unavailable" for a round/group where it was
   omitted). Any summed figure across rounds/groups must be explicitly labeled as a sum, never
   presented as wall-clock time or billable cost. **When `--compact` was used for this session,

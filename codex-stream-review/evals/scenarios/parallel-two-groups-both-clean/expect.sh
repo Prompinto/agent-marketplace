@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Scenario-specific assertions for parallel-two-groups-both-clean. Schema
-# structure already validated by check-result.sh's schema-check.jq.
+# structure already validated by check-result.sh's own schema validation step.
 #
 #   - exit_state == "CLEAN"
 #   - threads[] has exactly 2 entries (one per dispatched group), both

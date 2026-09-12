@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Scenario-specific assertions for claim-retraction. Schema structure already
-# validated by check-result.sh's schema-check.jq before this runs.
+# validated by check-result.sh's own schema validation step before this runs.
 #
 #   - exit_state == "CLEAN"
 #   - round_count == 3 (see setup.sh's header comment for why this is 3

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Scenario-specific assertions for claim-still-open-marker. Schema structure
-# already validated by check-result.sh's schema-check.jq.
+# already validated by check-result.sh's own schema validation step.
 #
 #   - exit_state != "CLEAN" (a STILL OPEN marker never converges a claim to
 #     CLEAN on its own)

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Scenario-specific assertions for parallel-group-namespaced-claims. Schema
-# structure already validated by check-result.sh's schema-check.jq.
+# structure already validated by check-result.sh's own schema validation step.
 #
 #   - exit_state == "CLEAN"
 #   - claims[] has exactly two entries: "g1:f1" and "g2:f1", both
