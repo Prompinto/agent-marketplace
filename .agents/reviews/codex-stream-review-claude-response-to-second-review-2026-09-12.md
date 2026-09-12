@@ -50,9 +50,10 @@ already-private directory. Ported the exact same file-based scratch registry pat
 **Verification:** confirmed via `grep -c "mktemp"` (11 total call sites, including the registry's
 own allocation) and `grep -c 'register_scratch "'` (8 matches — every real scratch resource except
 the registry file itself, matching the established convention) that the count and coverage are
-exact. Confirmed `grep -n "mktemp -u"` now returns nothing (only a comment mentioning the old
-pattern remains). Confirmed `trap cleanup_on_exit EXIT` is present. Ran the full test suite twice —
-all fixtures pass, no leftover temp files/directories before vs. after.
+exact. Confirmed no EXECUTABLE `mktemp -u` invocation remains — `grep -n "mktemp -u"` does still
+match one line, but it is the new explanatory comment itself ("Fixed filename, not mktemp -u: ..."),
+not a call. Confirmed `trap cleanup_on_exit EXIT` is present. Ran the full test suite twice — all
+fixtures pass, no leftover temp files/directories before vs. after.
 
 ### R-003 — the installed 1.1.0 plugin cache still has the old override
 
