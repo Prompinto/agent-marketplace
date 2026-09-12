@@ -45,7 +45,7 @@ This remediation pass:
 5. Concluded with a capstone whole-diff review (base `331696c` → `1188d7a`) that came back CLEAN,
    `material_reviewed:true`, on its second round (thread `01a0924a-480c-7e13-884e-014a39c5a2ee`).
 
-**Final state:** 18 commits on top of the pre-existing version-bump commit, full test suite passing
+**Final state:** 19 commits on top of the pre-existing version-bump commit, full test suite passing
 (`test-run-ccs-review.sh`, `test-run-ccs-ci.sh`, both Python validators' `--selftest`,
 `collect_untracked_files.py --selftest`), whole-diff CLEAN, ready for a PR.
 
@@ -192,7 +192,7 @@ at `run-ccs-review.sh:1001` — confirmed by directly reading that installed fil
 fix will only take effect for the user's own everyday `/ccs` usage once this branch is merged, a new
 version is published, and the plugin is reinstalled/updated.
 
-## 5. Full commit list (18 commits, base `331696c` → `1188d7a`)
+## 5. Full commit list (19 commits, base `331696c` → `1188d7a`)
 
 | # | Commit | Message |
 |---|---|---|
@@ -216,8 +216,6 @@ version is published, and the plugin is reinstalled/updated.
 | 18 | `7fecacd` | fix(ccs): stop overriding the user's own Codex reasoning-effort config |
 | 19 | `1188d7a` | docs(ccs): correct reasoning-effort claims after removing the xhigh override |
 
-(19 rows, 18 unique remediation commits — table numbering above starts at 1 for readability, matches
-`git log --oneline 331696c..HEAD --reverse` exactly.)
 
 ## 6. Group-by-group execution log, review rounds, and notable events
 
