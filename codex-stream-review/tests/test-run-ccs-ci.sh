@@ -8,6 +8,28 @@
 # result file.
 set -u
 
+# Interruption-safe scratch cleanup (R-002 follow-up on L-005): every mktemp
+# site below already has an inline `rm -rf`/`rm -f` on its normal path, but an
+# early hard exit (a SETUP FAILED exit, or `set -u` itself) between creation
+# and that inline cleanup would leak it. Ports this plugin's own
+# register_temp_file/cleanup_temp_files production pattern -- already reused
+# verbatim in test-run-ccs-review.sh -- as a backstop EXIT trap; it does not
+# replace any fixture's own inline cleanup.
+SCRATCH_REGISTRY="$(mktemp)"
+register_scratch() {
+  printf '%s\0' "$1" >> "$SCRATCH_REGISTRY"
+}
+cleanup_on_exit() {
+  if [ -f "$SCRATCH_REGISTRY" ]; then
+    while IFS= read -r -d '' scratch_path || [ -n "$scratch_path" ]; do
+      [ -n "$scratch_path" ] && rm -rf -- "$scratch_path"
+    done < "$SCRATCH_REGISTRY"
+    rm -f "$SCRATCH_REGISTRY"
+  fi
+  return 0
+}
+trap cleanup_on_exit EXIT
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WRAPPER="$SCRIPT_DIR/../scripts/run-ccs-ci.sh"
 
@@ -25,6 +47,7 @@ fail() { echo "FAIL: $1"; FAILURES=$((FAILURES + 1)); }
 # validator and reach write_result_atomic(), which is what these fixtures
 # actually test.
 FAKE_BIN_DIR="$(mktemp -d)"
+register_scratch "$FAKE_BIN_DIR"
 WRID="test-run-42"
 SHA="0000000000000000000000000000000000000001"
 PRN="7"
@@ -50,6 +73,7 @@ ci_run() {
 # script fail loudly, never silently succeed with `mv` moving the temp file
 # inside that directory.
 REPO1="$(mktemp -d)"
+register_scratch "$REPO1"
 mkdir -p "$REPO1/.ccs-ci-result.json"
 OUT1="$(ci_run "$REPO1" 2>&1)"
 STATUS1=$?
@@ -66,6 +90,7 @@ rm -rf "$REPO1"
 # produces a real regular file at the result path -- confirms CSR-002's fix
 # didn't break the ordinary success path.
 REPO2="$(mktemp -d)"
+register_scratch "$REPO2"
 OUT2="$(ci_run "$REPO2" 2>&1)"
 STATUS2=$?
 if [ "$STATUS2" -eq 0 ] && [ -f "$REPO2/.ccs-ci-result.json" ] \
@@ -85,6 +110,7 @@ VALIDATE_PY="$SCRIPT_DIR/../scripts/validate_ci_result.py"
 SCHEMA_FILE="$SCRIPT_DIR/../schemas/ci-result.schema.json"
 
 BAD_JSON_FILE="$(mktemp)"
+register_scratch "$BAD_JSON_FILE"
 printf '{not-json' > "$BAD_JSON_FILE"
 VALIDATE_OUT="$(python3 "$VALIDATE_PY" "$SCHEMA_FILE" "$BAD_JSON_FILE" 2>&1)"
 VALIDATE_STATUS=$?
@@ -102,6 +128,7 @@ rm -f "$BAD_JSON_FILE"
 # distinct from json.JSONDecodeError, so it bypassed the first fix's except
 # clause entirely and still tracebacked.
 BAD_UTF8_FILE="$(mktemp)"
+register_scratch "$BAD_UTF8_FILE"
 printf '\xff' > "$BAD_UTF8_FILE"
 VALIDATE_UTF8_OUT="$(python3 "$VALIDATE_PY" "$SCHEMA_FILE" "$BAD_UTF8_FILE" 2>&1)"
 VALIDATE_UTF8_STATUS=$?
@@ -121,6 +148,7 @@ rm -f "$BAD_UTF8_FILE"
 # into the untrusted checkout. Confirm this is rejected via usage_error,
 # never silently invoked.
 RELDIR="$(mktemp -d)"
+register_scratch "$RELDIR"
 mkdir -p "$RELDIR/relbin"
 cat > "$RELDIR/relbin/claude" <<'CLAUDE_EOF'
 #!/usr/bin/env bash
@@ -129,6 +157,7 @@ exit 1
 CLAUDE_EOF
 chmod +x "$RELDIR/relbin/claude"
 REPO5="$(mktemp -d)"
+register_scratch "$REPO5"
 OUT5="$(cd "$RELDIR" && PATH="relbin:$PATH" bash "$WRAPPER" --cwd "$REPO5" --base-ref main --workflow-run-id "$WRID" --head-sha "$SHA" --pr-number "$PRN" 2>&1)"
 STATUS5=$?
 if [ "$STATUS5" -eq 2 ] && printf '%s' "$OUT5" | grep -q "claude CLI resolved to a non-absolute path"; then
@@ -146,8 +175,12 @@ rm -rf "$RELDIR" "$REPO5"
 # behind. Exercises the exact cleanup expression directly, since winning the
 # actual race deterministically isn't cheaply constructible.
 DEBRIS_DIR="$(mktemp -d)"
+register_scratch "$DEBRIS_DIR"
 mkdir -p "$DEBRIS_DIR/result_as_dir"
-FAKE_TMP_PATH="$(mktemp -u "$DEBRIS_DIR/.ccs-ci-result.XXXXXX")"
+# Fixed filename, not mktemp -u: DEBRIS_DIR is already a private mktemp -d
+# directory nobody else can guess the path to, so randomizing the basename
+# inside it adds no TOCTOU protection (R-002).
+FAKE_TMP_PATH="$DEBRIS_DIR/.ccs-ci-result.fake"
 : > "$FAKE_TMP_PATH"
 # Simulate exactly what `mv -f "$tmp_path" "$RESULT_PATH"` does when
 # $RESULT_PATH is (now) a directory: the temp file lands INSIDE it under its
