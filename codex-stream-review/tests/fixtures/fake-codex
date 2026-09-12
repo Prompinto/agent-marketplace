@@ -141,6 +141,22 @@
 #                         groups race on the same round counter. Unset
 #                         (default): zero behavior change, matches every
 #                         existing test exactly.
+#   FAKE_CODEX_CAPTURE_PROMPT_PATH  optional file path. When set, this
+#                         fixture copies its own stdin -- the full rendered
+#                         prompt file content, since a real dispatch always
+#                         redirects `< PROMPT_FILE` rather than piping it --
+#                         to this path via a plain `cat`, before proceeding
+#                         with its normal behavior (otherwise completely
+#                         unaffected). Reading stdin fully here is always
+#                         safe, per this file's own header comment above:
+#                         it's a plain file redirect, never a pipe, so this
+#                         cannot block regardless of the prompt's size. Lets
+#                         a test assert on the ACTUAL rendered prompt bytes
+#                         (boundary markers, the exact-shape JSON example,
+#                         untrusted content placement) instead of only the
+#                         wrapper's post-dispatch JSON result. Unset
+#                         (default): stdin is still never read, byte-for-byte
+#                         unaffected, matching every existing test exactly.
 set -u
 
 # Appends one line to $FAKE_CODEX_INVOCATION_LOG (if set) recording this
@@ -177,6 +193,16 @@ if [ "${1:-}" = "delete" ]; then
   fi
   echo "fake-codex: no such thread" >&2
   exit 1
+fi
+
+# FAKE_CODEX_CAPTURE_PROMPT_PATH (see doc comment above): only the exec/exec
+# resume invocation shapes ever get a real `< PROMPT_FILE` stdin redirect
+# (the `delete` branch above returns before this point, so it never reaches
+# here) -- `cat` drains it fully into the target path, then the rest of this
+# fixture proceeds exactly as before. A no-op, byte-for-byte identical to
+# before, when unset (the default every pre-existing fixture relies on).
+if [ -n "${FAKE_CODEX_CAPTURE_PROMPT_PATH:-}" ]; then
+  cat > "$FAKE_CODEX_CAPTURE_PROMPT_PATH"
 fi
 
 [ -n "${FAKE_CODEX_MARKER_FILE:-}" ] && : > "$FAKE_CODEX_MARKER_FILE"
