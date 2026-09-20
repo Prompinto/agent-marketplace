@@ -386,12 +386,12 @@ keep-evidence gate for why). See "Phase 3 — Terminal path" below.
 
 ## Reference files this skill must read in full — when and why
 
-Three of the six below are conditional (read only if the session actually uses that flag — if OFF,
-never read or act on that file: zero behavior change from every other place in this skill). Three
-apply unconditionally to every invocation, with no OFF state — for those three, the "read it now"
-instruction isn't signaling a special trigger, just naming the one point in the run before which
-each must be read. Every one of the six is read once, before Phase 1 ever dispatches, and its
-procedure is required at the specific later points listed under it — skipping the read leaves
+Three of the seven below are conditional (read only if the session actually uses that flag — if
+OFF, never read or act on that file: zero behavior change from every other place in this skill).
+Four apply unconditionally to every invocation, with no OFF state — for those four, the "read it
+now" instruction isn't signaling a special trigger, just naming the one point in the run before
+which each must be read. Every one of the seven is read once, before Phase 1 ever dispatches, and
+its procedure is required at the specific later points listed under it — skipping the read leaves
 those points undocumented.
 
 ### Investigation evidence capture (opt-in via `--capture-evidence`)
@@ -428,7 +428,7 @@ revalidation check every round 2+ runs in Phase 1 Step 1.
 
 ### Claim ledger (always on, no opt-in)
 Applies to every invocation. Read `codex-stream-review/skills/ccs/references/claim-ledger.md` in
-full (order relative to the other two always-on files here doesn't matter; all three must be read
+full (order relative to the other three always-on files here doesn't matter; all four must be read
 before Phase 1 ever dispatches). Required at four later points: Phase 1 Step 0's round-2+ History
 construction (requesting `DISPOSITION` confirmations on still-open claims), Phase 2 step 3's
 verification pass (judging `claim_id`/`evidence_delta`, parsing `DISPOSITION` markers), Phase 2's
@@ -438,9 +438,17 @@ gate.
 ### Execution telemetry (always on, no opt-in)
 Applies to every invocation, wrapper-owned, no caller-facing configuration. Read
 `codex-stream-review/skills/ccs/references/execution-telemetry.md` in full (same read-order rule as
-the other two always-on files). Required at three later points: Phase 1 Step 1's round-level
+the other three always-on files). Required at three later points: Phase 1 Step 1's round-level
 wall-clock timestamps, Phase 2 step 6's JSONL line construction (`execution`/`round_wall_seconds`),
 and the Final report's own execution-telemetry bullet.
+
+### Defect-class sweep (always on, no opt-in)
+Applies to every invocation. Read `codex-stream-review/skills/ccs/references/defect-class-sweep.md`
+in full (same read-order rule as the other always-on files here). Required at four later points:
+Phase 1 Step 0's round-2+ History construction (requesting `SWEEP_VERIFIED` confirmations on
+still-open sweeps), Phase 2 step 3's verification pass (running the sweep and/or parsing a
+`SWEEP_VERIFIED` marker), Phase 2's JSONL line construction (`defect_class_sweeps[]`), and the
+Guards section's CLEAN gate.
 
 ---
 
@@ -1133,6 +1141,16 @@ idiom section above for why `FOCUS_FILE` is the one exception) — into that gro
     focus text — see that reference's section 4 for why this distinction matters. Never request a
     disposition for a claim that's still an actively-disputed, currently-appearing finding in the
     most recently completed round — the normal accept/rebut cycle already covers that.
+  - **Defect-class sweep re-verification requests (always on — see `references/defect-class-sweep.md`
+    section 4).** For every `sweep_id` reconstructed via that reference's own per-field reducer
+    whose CURRENT `reverify_status` is `"unverified"` OR `"disputed"` (never `"confirmed"` — those
+    never need re-asking), THIS round's own History text must explicitly name that `sweep_id`
+    alongside its recorded `grep_command`, `origin_site` (every line range in the array, not just
+    the first — see that reference's section 5 for why this field is an array), and count —
+    copying the actual JSONL values, never a paraphrase — requesting the trusted-zone `SWEEP_VERIFIED`
+    obligation's response for it. This is ordinary scope guidance inside untrusted `--focus` text
+    (same as claim disposition requests above); the obligation to answer, and its exact grammar,
+    are already anchored in `build_review_prompt()`'s own trusted zone.
 
 ### Step 1 — dispatch (primary channel)
 
@@ -1484,6 +1502,80 @@ this check's job is ONLY detection and correct sequencing, never its own separat
      <claim_id>: RESOLVED|RETRACTED|STILL OPEN -- <reason>` markers (per that reference's section 4)
      — apply its exact fail-closed validation rules (one marker per requested claim_id, only
      recognized claim_ids, non-empty reason) before treating any claim as closed.
+   - **Defect-class sweep verification (always on — see `references/defect-class-sweep.md` section
+     4), parsed during this SAME pass, no extra LLM call:** for every `sweep_id` THIS round's own
+     History text requested re-verification for, parse THIS round's own Codex `summary` text for a
+     `SWEEP_VERIFIED <sweep_id>: CONFIRMED|DISPUTED -- <reason>` marker — same fail-closed parsing
+     discipline as `DISPOSITION` (fence exclusion, column-zero anchoring, known-id-first matching,
+     exactly-one-marker). A requested `sweep_id` with no valid marker, or a malformed/duplicated one,
+     is treated as carrying INCOMPLETE verification for that sweep — never silently accepted as
+     confirmed, and write NO `defect_class_sweeps[]` entry this round at all for it — a no-op record
+     that changes nothing is not a status-only entry in that reference's own sense, and writing one
+     anyway would falsely suggest a marker was actually parsed (this applies group-by-group in
+     parallel mode too — see the full-quorum rule below for the specific case where OTHER
+     dispatched groups DID validly respond this round but quorum still isn't met; that case also
+     writes no entry, for the same "carries forward unchanged" reason). Its `reverify_status`
+     therefore simply CARRIES FORWARD UNCHANGED into the next round's own reducer reconstruction
+     (per that reference's section 5's per-field "most recent entry that actually set this field"
+     rule) — this stays `"unverified"` for a sweep that has never reached FULL QUORUM on a valid
+     `CONFIRMED` marker (whether because NO dispatched group has yet responded validly, or, in
+     parallel mode, because at least one dispatched group's own response is still
+     missing/malformed even though one or more OTHER groups already validly confirmed this exact
+     round), and stays `"disputed"` for one that was previously disputed and is still awaiting its
+     next valid marker; never silently reset to `"unverified"` merely because this particular round
+     produced no marker.
+     **Only when a valid `CONFIRMED` or `DISPUTED` marker actually arrived**, record the
+     resulting `reverify_status` (`"confirmed"`/`"disputed"`) via a status-only `defect_class_sweeps[]`
+     entry this round (see that reference's section 5 for the exact shape). A `DISPUTED` outcome is
+     not itself a dead end: treat the marker's own `<what you found instead>` text as an ordinary
+     Codex finding, through the SAME accept/rebut cycle this step already runs for every other
+     finding.
+     **Parallel-mode conflict rule — required whenever a round dispatches more than one group and
+     the SAME `sweep_id` was requested in more than one group's own History (the Round-2+ History
+     construction step above requests re-verification for every still-open sweep, independent of
+     which group originally created it, so more than one group's own dispatch CAN legitimately be
+     asked about the identical `sweep_id` the same round):** if two or more groups' own valid
+     markers for that `sweep_id`, parsed THIS round, disagree (one `CONFIRMED`, another
+     `DISPUTED`), write only ONE status-only `defect_class_sweeps[]` entry for it this round — the
+     `DISPUTED` outcome, never `CONFIRMED` — fail closed toward "still needs another look," the
+     same discipline `DISPOSITION`'s own STILL-OPEN-over-RESOLVED bias and this file's every other
+     ambiguity-resolution rule already use. This is necessary because the reducer's own per-field
+     "most recent entry wins" rule (`references/defect-class-sweep.md` section 5) has no ordering
+     guarantee across entries added within the SAME round for the SAME field — live-reproduced
+     directly: reducing two same-round status-only entries for one `sweep_id` (one `disputed`, one
+     `confirmed`) yields `confirmed` if the disputed entry happens to be listed first in that
+     round's own array, or `disputed` if the order is reversed — an outcome that must never depend
+     on incidental array-construction order. Writing only the disputed outcome's own single entry
+     (never both, never the confirmed one when a genuine disagreement exists) removes this
+     ordering-dependence entirely: there is only ever one entry to reduce for that field this
+     round, so no ordering question can arise.
+     **A `"confirmed"` outcome requires EVERY dispatched group this round to have returned a
+     valid marker for that `sweep_id` — never merely every group that HAPPENED to return a valid
+     one.** Since the History-construction rule requests re-verification for a given still-open
+     sweep from EVERY dispatched group, not a subset, "every dispatched group" and "every group
+     asked about this sweep_id" are the SAME set this round — no separate bookkeeping is needed
+     beyond this round's own known dispatch-group list. A group whose marker for that `sweep_id`
+     is missing or malformed writes NO entry at all (per the existing missing-marker rule above),
+     so if even one dispatched group's marker is missing/malformed this round while every OTHER
+     dispatched group validly returned `CONFIRMED`, this is NOT unanimous agreement — it is an
+     INCOMPLETE round for that sweep, and no entry is written for it at all this round (its
+     `reverify_status` simply carries forward unchanged, exactly like the ordinary single-reviewer
+     missing-marker case). Live-reproduced the gap this closes: with two dispatched groups, group A
+     validly returning `CONFIRMED` and group B's marker missing/malformed, writing group A's own
+     `confirmed` status-only entry alone (with nothing from B) lets the reducer resolve to
+     `"confirmed"` even though only one of two dispatched groups ever actually verified anything —
+     the CLEAN gate would then accept a sweep only ever independently checked by a MINORITY of
+     dispatched groups. Requiring every dispatched group's own valid marker before writing
+     `"confirmed"` at all removes this: an incomplete round now produces no field-setting entry,
+     so `reverify_status` correctly stays wherever it already was rather than advancing on
+     partial evidence. **This full-quorum requirement applies ONLY to a `"confirmed"` outcome — a
+     `"disputed"` outcome from even ONE dispatched group's own valid marker is written
+     immediately** (never waiting for every group), matching the fail-closed-toward-disagreement
+     bias already established above: a single credible dispute is sufficient reason to keep
+     looking, but unanimous confirmation requires unanimous evidence. A round where every
+     dispatched group's own valid marker for a given `sweep_id` agrees on `CONFIRMED` writes that
+     single, mutually-agreed, full-quorum outcome as normal, exactly as the non-parallel case
+     already does.
 4. **Whole-flow re-check (narrow → wide → narrow), for any fix applied this round.** Zoom out to
    the whole affected file/function's control flow, not just the new lines — does the fix
    introduce the same class of problem it just fixed, in a new form; is it consistent with how
@@ -1493,6 +1585,38 @@ this check's job is ONLY detection and correct sequencing, never its own separat
    performance group is watching) — this is exactly why each group's round-2+ History must recap
    changes made since its last round even when those changes were prompted by another group's
    finding (see "Per-group History construction" above).
+
+   **Defect-class sweep (always on, no opt-in — full mechanics in
+   `references/defect-class-sweep.md`, already read in full per this file's own "Reference files
+   this skill must read in full" section above; the summary immediately below is a quick-reference
+   recap of the most load-bearing steps for this exact point in the flow, never a substitute for
+   that file's own complete, authoritative rules — in particular its scope-expansion guard's
+   `search_truncated`/`search_error` forced transitions to `"pending_scope"`/`"pending_error"`,
+   which block session-wide CLEAN, are NOT restated in full below and must be applied from that
+   file directly).** After the sibling-path check above, for any VALID/PARTIAL finding just fixed:
+   does this finding read as an instance of a REPEATABLE defect class (the same anti-pattern,
+   missing check, or copy-pasted logic error) rather than a one-off? State that judgment explicitly
+   in this finding's own `claude_verification[].rationale` text either way — if judged NOT
+   class-like, a concrete one-sentence reason why, so the classification itself is never a silent,
+   unlogged default. If judged class-like: actually grep the repository for the same pattern (the
+   literal command, never a vague description) before deciding whether it is class-like — the grep
+   result identifies CANDIDATES, never the classification itself. Recognition of the already-fixed
+   origin site among those candidates is a TWO-STEP process, both steps required: (1) a cheap
+   coordinate pre-screen — a candidate whose `file`/`line` falls within the line range this fix's
+   own edit touched is flagged for a closer look; (2) for every flagged candidate, an actual read of
+   its surrounding code determines whether it is literally the fix just applied or a distinct
+   occurrence — coordinates alone never make the final call, since `grep -n`'s own output is
+   line-granular and cannot by itself distinguish multiple genuine occurrences sharing one line.
+   Every candidate the pre-screen does NOT flag is confirmed like any other ordinary raw candidate.
+   If confirmed occurrences other than the origin exceed 5, or lie outside the origin's own
+   directory, do not silently expand scope — disclose the pattern/count/locations to the user and
+   ask before fixing further; **but check `references/defect-class-sweep.md`'s own scope-expansion
+   guard FIRST for two conditions this recap does not restate — a truncated search (hit its own
+   candidate-count cap) forces `"pending_scope"` UNCONDITIONALLY, even under the 5-occurrence cap,
+   and a genuine search command failure forces `"pending_error"` instead, a distinct
+   search-health question the same disclose-and-ask step above does not resolve.** Record the
+   sweep via `defect_class_sweeps[]` (JSONL field, below) regardless of outcome — a completed,
+   empty sweep is a valid result, not a skipped step.
 5. **Convergence check** (below) — evaluated across all dispatched groups together, not per group
    independently (see "Convergence = 100% CLEAN" below).
 6. **Narrate progress** — one English line: `Round R/20: Codex N findings → accepted A /
@@ -1693,7 +1817,18 @@ round 2+" rule (see that field's own description above). Two distinct cases foll
   evaluate this condition using only prior JSONL lines, since this round's own append (step 6,
   below) hasn't happened yet at this point in the loop; a claim closed by THIS round's own
   `DISPOSITION` marker must count as closed for THIS round's own convergence check, not only
-  starting next round. Never assume from memory across a 20-round run.
+  starting next round. Never assume from memory across a 20-round run. **AND**
+- **Defect-class sweep closure (always on — see `references/defect-class-sweep.md` sections 3-4):
+  every `sweep_id` that has ever appeared this session (per-group, in parallel mode) has a CURRENT
+  `scope_decision` of `"approved"`, `"rejected"`, or `"not_applicable"` (never `"pending_scope"` or
+  `"pending_error"`) AND a CURRENT `reverify_status` of `"confirmed"` (never `"unverified"` or
+  `"disputed"`).** Reconstruct both via that reference's own per-field reducer over EVERY PRIOR
+  round's `defect_class_sweeps[]` entries, **THEN merge in THIS round's own just-parsed,
+  not-yet-appended judgments from step 3 above** — same "merge this round's own pending judgment in
+  before checking" rule the claim-ledger-closure condition above already follows, for the identical
+  reason (this round's own append hasn't happened yet at this point in the loop). A session that
+  never triggered any defect-class sweep has no `sweep_id`s to check, so this condition is
+  automatically satisfied.
 
 **`--compact` precedence (checked here, before the arrow below ever fires):** do NOT stop the loop
 here — even though every condition above holds — when ALL of the following also hold: `COMPACT_MODE`
@@ -1891,7 +2026,16 @@ optional round-level array (`claim_closures[]`), present only on a round that ac
 or more claims.** The session's first `.round`-bearing line only also gains a top-level
 `schema_version` field (see `references/claim-ledger.md`'s legacy-session policy — a
 `receipt_issued` line, having no `.round`, may legitimately precede it and is never mistaken for
-it). **Execution telemetry (always on, no opt-in
+it). **The defect-class sweep mechanism (always on, no opt-in — see
+`references/defect-class-sweep.md`) adds one new optional round-level array
+(`defect_class_sweeps[]`), present only on a round that either swept a class-like finding (a full
+entry) or received a valid `SWEEP_VERIFIED` marker with no accompanying fresh sweep (a status-only
+entry) — see that reference's section 5 for the full field list and both entry shapes. A transition
+to `"disputed"` needs only ONE dispatched group's own valid marker to satisfy this presence
+condition; a transition to `"confirmed"`, in a parallel round, needs EVERY dispatched group's own
+valid `CONFIRMED` marker this round (the full-quorum rule above) — a round where some but not all
+dispatched groups validly confirm writes NO entry at all, not a partial/premature one.**
+**Execution telemetry (always on, no opt-in
 — see "Execution telemetry" above and `references/execution-telemetry.md`) adds `execution`
 (top-level for a single-reviewer round, inside that group's own `groups[]` entry for a parallel
 round — present whenever that dispatch's own `$DISPATCH_PID` was actually captured, omitted entirely
