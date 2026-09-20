@@ -2044,6 +2044,702 @@ else
 fi
 rm -f "$DM_FIXTURE_14"
 
+# --- SWEEP_VERIFIED marker parser fixtures (defect-class-sweep.md section 4) ---
+# Exercises tests/fixtures/parse-sweep-verified-markers.sh against free-text
+# blobs standing in for Codex's `summary` field. Same grammar/fail-closed
+# rules as the DISPOSITION parser above, own marker keywords/state names.
+# Pure text parsing -- no wrapper dispatch, no fake-codex involved.
+
+SWEEP_PARSER="$SCRIPT_DIR/fixtures/parse-sweep-verified-markers.sh"
+
+sv_line_for() {
+  # $1 = parser output (one line per requested sweep_id), $2 = sweep_id
+  printf '%s\n' "$1" | grep "^$2 "
+}
+
+# 1. One valid CONFIRMED marker and one valid DISPUTED marker, naming the
+# specific mis-excluded hit the DISPUTED grammar requires.
+SV_FIXTURE_1="$(mktemp)"
+register_scratch "$SV_FIXTURE_1"
+cat > "$SV_FIXTURE_1" <<'EOF'
+Some narration before the markers.
+SWEEP_VERIFIED g1:f3: CONFIRMED -- re-grepped for parsedConfig\.value, my 4 raw hits match exactly
+SWEEP_VERIFIED g1:f5: DISPUTED -- src/other/loader.ts:88 falls outside the reported range and looks unfixed
+EOF
+SV_OUT="$(bash "$SWEEP_PARSER" "$SV_FIXTURE_1" g1:f3 g1:f5)"
+if [ "$(sv_line_for "$SV_OUT" g1:f3)" = "g1:f3 CONFIRMED re-grepped for parsedConfig\.value, my 4 raw hits match exactly" ] \
+  && [ "$(sv_line_for "$SV_OUT" g1:f5)" = "g1:f5 DISPUTED src/other/loader.ts:88 falls outside the reported range and looks unfixed" ]; then
+  pass "SWEEP_VERIFIED parser: one valid CONFIRMED and one valid DISPUTED (naming the mis-excluded hit) both parse correctly"
+else
+  fail "SWEEP_VERIFIED parser: expected clean parses for g1:f3/g1:f5, got: $SV_OUT"
+fi
+rm -f "$SV_FIXTURE_1"
+
+# 2. Zero markers for a requested sweep_id fails closed as missing -- never
+# state agreement with a reported sweep without having actually run the
+# re-grep, per the trusted-zone obligation's own wording.
+SV_FIXTURE_2="$(mktemp)"
+register_scratch "$SV_FIXTURE_2"
+cat > "$SV_FIXTURE_2" <<'EOF'
+No SWEEP_VERIFIED marker anywhere in this response.
+EOF
+SV_OUT="$(bash "$SWEEP_PARSER" "$SV_FIXTURE_2" g1:f9)"
+if [ "$(sv_line_for "$SV_OUT" g1:f9)" = "g1:f9 FAIL_CLOSED missing" ]; then
+  pass "SWEEP_VERIFIED parser: zero markers for a requested sweep_id fails closed as missing"
+else
+  fail "SWEEP_VERIFIED parser: expected g1:f9 FAIL_CLOSED missing, got: $SV_OUT"
+fi
+rm -f "$SV_FIXTURE_2"
+
+# 3. Two markers for the same sweep_id (even agreeing) still fails closed as
+# duplicate -- same "exactly one marker" cardinality rule as DISPOSITION.
+SV_FIXTURE_3="$(mktemp)"
+register_scratch "$SV_FIXTURE_3"
+cat > "$SV_FIXTURE_3" <<'EOF'
+SWEEP_VERIFIED g1:f3: CONFIRMED -- first pass
+SWEEP_VERIFIED g1:f3: CONFIRMED -- second, agreeing pass, still a duplicate
+EOF
+SV_OUT="$(bash "$SWEEP_PARSER" "$SV_FIXTURE_3" g1:f3)"
+if [ "$(sv_line_for "$SV_OUT" g1:f3)" = "g1:f3 FAIL_CLOSED duplicate" ]; then
+  pass "SWEEP_VERIFIED parser: two agreeing markers for the same sweep_id still fail closed as duplicate"
+else
+  fail "SWEEP_VERIFIED parser: expected g1:f3 FAIL_CLOSED duplicate, got: $SV_OUT"
+fi
+rm -f "$SV_FIXTURE_3"
+
+# 4. A marker inside a fenced code block is excluded, fails closed as
+# missing -- same fence-exclusion rule as DISPOSITION.
+SV_FIXTURE_4="$(mktemp)"
+register_scratch "$SV_FIXTURE_4"
+cat > "$SV_FIXTURE_4" <<'EOF'
+```
+SWEEP_VERIFIED g1:f3: CONFIRMED -- inside a fence, must not match
+```
+EOF
+SV_OUT="$(bash "$SWEEP_PARSER" "$SV_FIXTURE_4" g1:f3)"
+if [ "$(sv_line_for "$SV_OUT" g1:f3)" = "g1:f3 FAIL_CLOSED missing" ]; then
+  pass "SWEEP_VERIFIED parser: a marker inside a fenced code block is excluded, fails closed as missing"
+else
+  fail "SWEEP_VERIFIED parser: expected g1:f3 FAIL_CLOSED missing, got: $SV_OUT"
+fi
+rm -f "$SV_FIXTURE_4"
+
+# --- defect-class-sweep per-field reducer fixtures (defect-class-sweep.md ---
+# --- section 5, no real API calls) ---
+# Exercises tests/fixtures/sweep-per-field-reducer.jq: reconstructing a
+# sweep's current state from a full entry plus later status-only entries,
+# each setting only the field(s) it carries. Pure jq over hand-built JSONL
+# fixtures -- no wrapper dispatch, no fake-codex involved.
+
+SWEEP_REDUCER_JQ="$SCRIPT_DIR/fixtures/sweep-per-field-reducer.jq"
+
+sw_reduce() {
+  # $1 = jsonl file; prints one compact JSON object per distinct sweep_id
+  jq -n -c -f "$SWEEP_REDUCER_JQ" "$1"
+}
+
+# 1. A full entry with no later status-only update reconstructs unchanged.
+SW_FIXTURE_1="$(mktemp)"
+register_scratch "$SW_FIXTURE_1"
+cat > "$SW_FIXTURE_1" <<'EOF'
+{"round":3,"defect_class_sweeps":[{"sweep_id":"g1:f3","finding_ids":["g1:f3"],"source_round":3,"grep_command":"grep -rn x","origin_site":["a.ts:1-1"],"search_error":null,"search_truncated":false,"other_candidates_found":5,"other_occurrences_confirmed":4,"sites_fixed_this_round":4,"scope_decision":"not_applicable","reverify_status":"unverified"}]}
+EOF
+SW_OUT="$(sw_reduce "$SW_FIXTURE_1")"
+if [ "$(printf '%s' "$SW_OUT" | jq -r '.reverify_status')" = "unverified" ] \
+  && [ "$(printf '%s' "$SW_OUT" | jq -r '.scope_decision')" = "not_applicable" ] \
+  && [ "$(printf '%s' "$SW_OUT" | jq -r '.other_occurrences_confirmed')" = "4" ]; then
+  pass "sweep reducer: a full entry with no later update reconstructs every field unchanged"
+else
+  fail "sweep reducer: expected reverify_status=unverified scope_decision=not_applicable other_occurrences_confirmed=4, got: $SW_OUT"
+fi
+rm -f "$SW_FIXTURE_1"
+
+# 2. A full entry followed by a later round's status-only entry updating
+# ONLY reverify_status must merge into ONE reconstructed object -- the
+# status-only entry must not silently drop grep_command/origin_site/counts
+# that only the earlier full entry ever set.
+SW_FIXTURE_2="$(mktemp)"
+register_scratch "$SW_FIXTURE_2"
+cat > "$SW_FIXTURE_2" <<'EOF'
+{"round":3,"defect_class_sweeps":[{"sweep_id":"g1:f3","finding_ids":["g1:f3"],"source_round":3,"grep_command":"grep -rn x","origin_site":["a.ts:1-1"],"search_error":null,"search_truncated":false,"other_candidates_found":5,"other_occurrences_confirmed":4,"sites_fixed_this_round":4,"scope_decision":"not_applicable","reverify_status":"unverified"}]}
+{"round":4,"defect_class_sweeps":[{"sweep_id":"g1:f3","reverify_status":"confirmed"}]}
+EOF
+SW_OUT="$(sw_reduce "$SW_FIXTURE_2")"
+if [ "$(printf '%s' "$SW_OUT" | jq -r '.reverify_status')" = "confirmed" ] \
+  && [ "$(printf '%s' "$SW_OUT" | jq -r '.grep_command')" = "grep -rn x" ] \
+  && [ "$(printf '%s' "$SW_OUT" | jq -c '.origin_site')" = '["a.ts:1-1"]' ] \
+  && [ "$(printf '%s' "$SW_OUT" | jq -r '.scope_decision')" = "not_applicable" ]; then
+  pass "sweep reducer: a status-only update merges into the earlier full entry, updating only reverify_status"
+else
+  fail "sweep reducer: expected reverify_status=confirmed with grep_command/origin_site/scope_decision preserved from the full entry, got: $SW_OUT"
+fi
+rm -f "$SW_FIXTURE_2"
+
+# 3. Two INDEPENDENT status-only updates across separate rounds, one setting
+# only scope_decision and a later one setting only reverify_status, must
+# both land on the final reconstructed object -- neither update may clobber
+# the other's own field. Uses "rejected" (not "approved") for the
+# scope_decision transition deliberately: per defect-class-sweep.md section
+# 3, "pending_scope" -> "approved" requires a full uncapped re-search/
+# re-recount first (never a bare status-only flip with stale counts), while
+# "pending_scope" -> "rejected" IS a legitimate bare flip (user declines,
+# no recount needed) -- this fixture must not appear to bless the forbidden
+# transition merely by using it as a convenient two-independent-fields example.
+SW_FIXTURE_3="$(mktemp)"
+register_scratch "$SW_FIXTURE_3"
+cat > "$SW_FIXTURE_3" <<'EOF'
+{"round":5,"defect_class_sweeps":[{"sweep_id":"g1:f4","finding_ids":["g1:f4"],"source_round":5,"grep_command":"grep -rn y","origin_site":["b.ts:10-10"],"search_error":null,"search_truncated":true,"other_candidates_found":20,"other_occurrences_confirmed":0,"sites_fixed_this_round":0,"scope_decision":"pending_scope","reverify_status":"unverified"}]}
+{"round":6,"defect_class_sweeps":[{"sweep_id":"g1:f4","scope_decision":"rejected"}]}
+{"round":7,"defect_class_sweeps":[{"sweep_id":"g1:f4","reverify_status":"confirmed"}]}
+EOF
+SW_OUT="$(sw_reduce "$SW_FIXTURE_3")"
+if [ "$(printf '%s' "$SW_OUT" | jq -r '.scope_decision')" = "rejected" ] \
+  && [ "$(printf '%s' "$SW_OUT" | jq -r '.reverify_status')" = "confirmed" ] \
+  && [ "$(printf '%s' "$SW_OUT" | jq -r '.search_truncated')" = "true" ]; then
+  pass "sweep reducer: two independent status-only updates across separate rounds both land without clobbering each other's field"
+else
+  fail "sweep reducer: expected scope_decision=rejected reverify_status=confirmed search_truncated=true, got: $SW_OUT"
+fi
+rm -f "$SW_FIXTURE_3"
+
+# 4. A sweep set to "disputed", then a LATER round with no defect_class_sweeps[]
+# entry for it at all (the missing/malformed-marker path per SKILL.md's own
+# Phase 2 step 3 -- no valid marker means no entry is written this round),
+# must carry "disputed" forward UNCHANGED into the next reconstruction --
+# never silently reset to "unverified" merely because a later round produced
+# no marker for it. This is the exact "reverify_status simply stays
+# unverified" wording bug this implementation's own round-4 review caught.
+SW_FIXTURE_4="$(mktemp)"
+register_scratch "$SW_FIXTURE_4"
+cat > "$SW_FIXTURE_4" <<'EOF'
+{"round":8,"defect_class_sweeps":[{"sweep_id":"g1:f9","finding_ids":["g1:f9"],"source_round":8,"grep_command":"grep -rn z","origin_site":["c.ts:5-5"],"search_error":null,"search_truncated":false,"other_candidates_found":2,"other_occurrences_confirmed":2,"sites_fixed_this_round":2,"scope_decision":"not_applicable","reverify_status":"unverified"}]}
+{"round":9,"defect_class_sweeps":[{"sweep_id":"g1:f9","reverify_status":"disputed"}]}
+EOF
+SW_OUT="$(sw_reduce "$SW_FIXTURE_4")"
+if [ "$(printf '%s' "$SW_OUT" | jq -r '.reverify_status')" = "disputed" ]; then
+  pass "sweep reducer: a sweep left at reverify_status=disputed with no later round's entry at all still reconstructs as disputed, never silently reset to unverified"
+else
+  fail "sweep reducer: expected reverify_status=disputed to carry forward with no round-10 entry, got: $SW_OUT"
+fi
+rm -f "$SW_FIXTURE_4"
+
+# 5. Parallel-mode full-quorum requirement for a "confirmed" transition
+# (SKILL.md's own Phase 2 step 3 parallel-mode conflict rule; defect-class-
+# sweep.md section 4's own "confirmed has a FULL-QUORUM requirement" rule).
+# The quorum GATE itself lives entirely upstream, in SKILL.md's own Phase 2
+# step 3 decision of WHETHER to write a status-only entry at all this round
+# -- the reducer has no per-field vote-counting concept of its own and never
+# needs one. These two fixtures document that boundary precisely, by
+# directly modeling each of Phase 2's own two possible OUTCOMES as reducer
+# input (never re-implementing the quorum decision itself, which is Phase
+# 2's job, not the reducer's):
+#   5a. Quorum WAS met upstream (every dispatched group validly confirmed),
+#       so Phase 2 already wrote the single, mutually-agreed status-only
+#       "confirmed" entry this round -- the reducer, given that entry, must
+#       resolve reverify_status to "confirmed". This proves the reducer's
+#       own ordinary status-only-entry handling still works correctly after
+#       the quorum fix; it is not itself testing the quorum decision.
+#   5b. Quorum was NOT met upstream (SKILL.md's own rule: a marker missing/
+#       malformed from even one dispatched group means NO entry is written
+#       at all this round, per the exact gap this implementation's own
+#       round-3 review found) -- so the reducer, given NO new entry for this
+#       round at all, must leave reverify_status at its own prior value
+#       (unverified), never advancing on partial evidence that was never
+#       even written down. This proves the reducer correctly does nothing
+#       when Phase 2 correctly withholds the write -- the actual mechanism
+#       that closes the round-3 gap is this upstream withholding, which this
+#       fixture models by simply supplying no entry, not any reducer-side
+#       quorum logic.
+SW_FIXTURE_5A="$(mktemp)"
+register_scratch "$SW_FIXTURE_5A"
+cat > "$SW_FIXTURE_5A" <<'EOF'
+{"round":10,"defect_class_sweeps":[{"sweep_id":"g1:f10","finding_ids":["g1:f10"],"source_round":10,"grep_command":"grep -rn w","origin_site":["e.ts:1-1"],"search_error":null,"search_truncated":false,"other_candidates_found":1,"other_occurrences_confirmed":1,"sites_fixed_this_round":1,"scope_decision":"not_applicable","reverify_status":"unverified"}]}
+{"round":11,"defect_class_sweeps":[{"sweep_id":"g1:f10","reverify_status":"confirmed"}]}
+EOF
+SW_OUT="$(sw_reduce "$SW_FIXTURE_5A")"
+if [ "$(printf '%s' "$SW_OUT" | jq -r '.reverify_status')" = "confirmed" ]; then
+  pass "sweep reducer: a status-only confirmed entry (representing the quorum-MET outcome Phase 2 already decided to write, per SKILL.md's own full-quorum rule) resolves to confirmed -- the reducer correctly applies its own ordinary merge semantics to whatever Phase 2 already decided, with no vote-counting logic of its own needed"
+else
+  fail "sweep reducer: expected reverify_status=confirmed for a written status-only confirmed entry, got: $SW_OUT"
+fi
+rm -f "$SW_FIXTURE_5A"
+
+SW_FIXTURE_5B="$(mktemp)"
+register_scratch "$SW_FIXTURE_5B"
+cat > "$SW_FIXTURE_5B" <<'EOF'
+{"round":10,"defect_class_sweeps":[{"sweep_id":"g1:f11","finding_ids":["g1:f11"],"source_round":10,"grep_command":"grep -rn v","origin_site":["f.ts:1-1"],"search_error":null,"search_truncated":false,"other_candidates_found":1,"other_occurrences_confirmed":1,"sites_fixed_this_round":1,"scope_decision":"not_applicable","reverify_status":"unverified"}]}
+EOF
+SW_OUT="$(sw_reduce "$SW_FIXTURE_5B")"
+if [ "$(printf '%s' "$SW_OUT" | jq -r '.reverify_status')" = "unverified" ]; then
+  pass "sweep reducer: WITHOUT the write happening at all this round (the actual quorum-not-met case -- SKILL.md's own rule is to write NO entry when even one dispatched group's marker is missing/malformed), reverify_status correctly stays unverified -- confirming the fix's real mechanism is upstream write suppression, never a reducer-side vote count"
+else
+  fail "sweep reducer: expected reverify_status=unverified when no status-only entry was ever written this round, got: $SW_OUT"
+fi
+rm -f "$SW_FIXTURE_5B"
+
+# --- origin-recognition structural-ceiling regression guard ---
+# (defect-class-sweep.md section 2's own "grep -n's output is line-granular"
+# rationale for requiring a mandatory confirmation READ, never a coordinate-
+# only match). Live-reproduces the exact counterexample the design doc's own
+# round 14 used: two genuinely distinct call sites sharing one line number,
+# which a position-only scheme cannot tell apart but grep -n's own output
+# still (correctly) reports as a single line. This is a regression guard on
+# that structural fact holding, not a test of the two-step recognition
+# PROCESS itself (an actual read-based judgment call, not mechanically
+# testable without a real model in the loop).
+SW_SAME_LINE_DIR="$(mktemp -d)"
+register_scratch "$SW_SAME_LINE_DIR"
+cat > "$SW_SAME_LINE_DIR/sibling.ts" <<'EOF'
+function wrapper() { unsafeCall(a); unsafeCall(b); }
+EOF
+SW_GREP_OUT="$(grep -n 'unsafeCall(' "$SW_SAME_LINE_DIR/sibling.ts")"
+SW_GREP_LINES="$(printf '%s\n' "$SW_GREP_OUT" | wc -l | tr -d ' ')"
+SW_GREP_MATCHES="$(printf '%s\n' "$SW_GREP_OUT" | grep -o 'unsafeCall(' | wc -l | tr -d ' ')"
+if [ "$SW_GREP_LINES" = "1" ] && [ "$SW_GREP_MATCHES" = "2" ]; then
+  pass "origin-recognition structural ceiling: grep -n reports one line for two distinct call sites, confirming coordinates alone cannot distinguish them (mandatory read-based confirmation, not coordinates, is required)"
+else
+  fail "origin-recognition structural ceiling: expected 1 grep -n line containing 2 occurrences, got $SW_GREP_LINES line(s)/$SW_GREP_MATCHES occurrence(s): $SW_GREP_OUT"
+fi
+rm -rf "$SW_SAME_LINE_DIR"
+
+# --- bounded-search combined-signal regression guard (defect-class-sweep.md ---
+# --- section 6's own final bash-c-wrapped, private-dir, 4-signal form) ---
+# Live-reproduces the EXACT pipeline section 6 documents -- an explicit
+# `bash -c '...'` wrapper (so this test's own zsh-vs-bash PIPESTATUS
+# discovery is itself pinned: this whole suite is invoked under bash per its
+# own shebang, but section 6's mechanism must ALSO work when the CALLER is
+# zsh, exercised separately by case (h) below), <pattern>/<scope> passed as
+# POSITIONAL ARGUMENTS (never textually substituted into the script body),
+# a private `mktemp -d`/`chmod 700` FIFO directory, a single `read`
+# capturing both PIPESTATUS indices, reader started before grep,
+# explicit-PID `wait`, and an explicit `|| exit 4` guard on the final
+# $STATUS_FILE write -- run against the following cases this design's own
+# review history found a prior, narrower form insufficient for:
+#   (a) common fast path -- SIGPIPE (141), NOT search_error.
+#   (b) genuine invalid-pattern error (grep exit 2) -- search_error.
+#   (c) nonexistent scope directory (grep exit 2) -- search_error.
+#   (d) MASKED-STATUS -- permission error + SIGPIPE co-occurring, grep exit
+#       141 masks the real error -- caught via $ERRFILE's own content.
+#   (e) stderr READER itself fails to write $ERRFILE -- caught via
+#       READER_STATUS.
+#   (f) mktemp -d/mkfifo itself fails -- caught via the wrapper's own exit 3.
+#   (g) a DIFFERENT process, the stdout head writing $RESULT_FILE, fails
+#       while grep itself succeeds with real matches -- caught via
+#       STDOUT_HEAD_STATUS, its own genuine RETRY case (not search_error).
+#   (h) the CALLING shell is genuinely zsh, not bash -- PIPESTATUS capture
+#       must still work.
+#   (i) round-8 fix: a pattern containing a single quote plus shell
+#       metacharacters must never be able to inject a command into the
+#       CALLING shell -- proven by asserting an injection marker stays
+#       EMPTY, not merely "the pipeline ran without erroring".
+#   (j) round-8 fix: a $STATUS_FILE write failure can make the wrapper exit
+#       some OTHER nonzero value, NOT the deliberate mktemp/mkfifo sentinel
+#       3 -- the combined check must treat WRAPPER_EXIT as "nonzero, full
+#       stop," never as "equals 3" specifically.
+sgs_is_search_error() {
+  # $1 = GREP_STATUS, $2 = ERRFILE path, $3 = READER_STATUS,
+  # $4 = wrapper exit status -- ANY nonzero value means the wrapper itself
+  # failed: e.g. the deliberate sentinel 3 when mktemp -d/mkfifo itself
+  # failed and neither grep nor the reader ever ran, OR some OTHER nonzero
+  # value (live-reproduced: 1) when $STATUS_FILE's own write failed instead.
+  # Checked as "nonzero, full stop" below -- NEVER narrowed to "equals 3"
+  # specifically, since the wrapper is not guaranteed to fail with that
+  # exact sentinel in every failure mode. Mirrors section 6's own combined
+  # check exactly: wrapper exit != 0, OR READER_STATUS != 0, OR
+  # (GREP_STATUS >= 2 AND != 141), OR ERRFILE non-empty -- any ONE alone
+  # sufficient. Deliberately does NOT consider STDOUT_HEAD_STATUS -- that is
+  # its own separate RETRY case, checked by sgs_check itself, never folded
+  # into search_error.
+  local status="$1" errfile="$2" reader_status="$3" wrapper_exit="$4"
+  if [ "$wrapper_exit" -ne 0 ] || [ "$reader_status" -ne 0 ] \
+    || { [ "$status" -ge 2 ] && [ "$status" != "141" ]; } || [ -s "$errfile" ]; then
+    return 0
+  fi
+  return 1
+}
+
+sgs_run_pipeline() {
+  # $1 = pattern, $2 = scope dir, $3 = ERRFILE out path, $4 = RESULT out path,
+  # $5 = optional: "readonly_errfile" (reader-write failure),
+  # "readonly_resultfile" (stdout-head-write failure), "fail_mkfifo"
+  # (simulated by making $PRIVDIR itself read-only right after creation, so
+  # mkfifo inside it fails -- the actual documented failure mode, distinct
+  # from the old bare-mktemp-u pre-occupation trick this design no longer
+  # uses now that the FIFO lives in a private per-attempt directory),
+  # "readonly_statusfile" ($STATUS_FILE itself pre-created and chmod 000'd
+  # BEFORE the pipeline runs, so its final write fails with some OTHER
+  # nonzero wrapper exit, not the mktemp/mkfifo sentinel 3).
+  # Prints "GREP_STATUS STDOUT_HEAD_STATUS READER_STATUS WRAPPER_EXIT"
+  # (space-separated) on stdout. Runs the pipeline through the SAME `bash -c`
+  # wrapper section 6 itself documents, called from whatever shell is
+  # currently running this test (this suite's own shebang is bash, so this
+  # exercises "bash calling bash -c" here; case (h) below separately
+  # exercises "zsh calling bash -c"). <pattern>/<scope> are passed as
+  # POSITIONAL ARGUMENTS ($1/$2 inside the script), matching section 6's own
+  # fix exactly -- never textually substituted into the script body, so a
+  # pattern containing a single quote cannot break out of the script.
+  local pattern="$1" scope="$2" errfile="$3" resultfile="$4" mode="${5:-}"
+  local statusfile wrapper_exit gstat shstat rstat
+  statusfile="$(mktemp)"
+  if [ "$mode" = "readonly_statusfile" ]; then
+    chmod 000 "$statusfile"
+  fi
+
+  ERRFILE="$errfile" RESULT_FILE="$resultfile" STATUS_FILE="$statusfile" \
+    ERR_LINE_CAP="$ERR_LINE_CAP" MAX_CANDIDATE_FILES="$MAX_CANDIDATE_FILES" \
+    SGS_MODE="$mode" \
+    bash -c '
+      set -u
+      PATTERN="$1"; SCOPE="$2"
+      PRIVDIR="$(mktemp -d)" || { echo "mktemp -d failed" >&2; exit 3; }
+      chmod 700 "$PRIVDIR"
+      if [ "$SGS_MODE" = "fail_mkfifo" ]; then
+        chmod 000 "$PRIVDIR"
+      fi
+      ERRFIFO="$PRIVDIR/errfifo"
+      if ! mkfifo "$ERRFIFO" 2>/dev/null; then
+        echo "mkfifo failed" >&2
+        chmod 700 "$PRIVDIR" 2>/dev/null
+        rm -rf "$PRIVDIR"
+        exit 3
+      fi
+      if [ "$SGS_MODE" = "readonly_errfile" ]; then
+        : > "$ERRFILE"; chmod 000 "$ERRFILE"
+      fi
+      if [ "$SGS_MODE" = "readonly_resultfile" ]; then
+        : > "$RESULT_FILE"; chmod 000 "$RESULT_FILE"
+      fi
+      head -n "$ERR_LINE_CAP" < "$ERRFIFO" > "$ERRFILE" 2>/dev/null &
+      ERR_READER_PID=$!
+      /usr/bin/grep -rn -- "$PATTERN" "$SCOPE" 2>"$ERRFIFO" | head -n "$((MAX_CANDIDATE_FILES + 1))" > "$RESULT_FILE"
+      read -r GREP_STATUS STDOUT_HEAD_STATUS <<< "${PIPESTATUS[0]} ${PIPESTATUS[1]}"
+      wait "$ERR_READER_PID"
+      READER_STATUS=$?
+      if [ "$SGS_MODE" = "readonly_resultfile" ]; then
+        chmod 755 "$RESULT_FILE" 2>/dev/null
+      fi
+      chmod 700 "$PRIVDIR" 2>/dev/null
+      rm -rf "$PRIVDIR"
+      echo "$GREP_STATUS $STDOUT_HEAD_STATUS $READER_STATUS" > "$STATUS_FILE" || exit 4
+    ' bash "$pattern" "$scope"
+  wrapper_exit=$?
+
+  if [ "$mode" = "readonly_statusfile" ]; then
+    chmod 755 "$statusfile" 2>/dev/null
+  fi
+  if [ -s "$statusfile" ]; then
+    gstat="$(awk '{print $1}' "$statusfile")"
+    shstat="$(awk '{print $2}' "$statusfile")"
+    rstat="$(awk '{print $3}' "$statusfile")"
+  else
+    gstat=0; shstat=0; rstat=0
+  fi
+  rm -f "$statusfile"
+  echo "$gstat $shstat $rstat $wrapper_exit"
+}
+
+ERR_LINE_CAP=20
+MAX_CANDIDATE_FILES=5
+
+sgs_check() {
+  # $1 = label, $2 = "detected"|"not_detected"|"retry" (expected), $3 =
+  # pipeline output ("GREP_STATUS STDOUT_HEAD_STATUS READER_STATUS
+  # WRAPPER_EXIT"), $4 = errfile path. "retry" means STDOUT_HEAD_STATUS != 0
+  # -- its own genuine retry case, checked independently of search_error.
+  local label="$1" expected="$2" out="$3" errfile="$4" gstat shstat rstat wexit actual
+  gstat="$(printf '%s' "$out" | awk '{print $1}')"
+  shstat="$(printf '%s' "$out" | awk '{print $2}')"
+  rstat="$(printf '%s' "$out" | awk '{print $3}')"
+  wexit="$(printf '%s' "$out" | awk '{print $4}')"
+  if [ "$shstat" -ne 0 ]; then
+    actual="retry"
+  elif sgs_is_search_error "$gstat" "$errfile" "$rstat" "$wexit"; then
+    actual="detected"
+  else
+    actual="not_detected"
+  fi
+  if [ "$actual" = "$expected" ]; then
+    pass "combined-signal regression guard: $label (GREP=$gstat STDOUT_HEAD=$shstat READER=$rstat WRAPPER_EXIT=$wexit, expected $expected)"
+  else
+    fail "combined-signal regression guard: $label expected $expected, got $actual (GREP=$gstat STDOUT_HEAD=$shstat READER=$rstat WRAPPER_EXIT=$wexit, errfile_size=$(wc -c < "$errfile" 2>/dev/null || echo N/A))"
+  fi
+}
+
+# (a) common fast path: far more matches than the cap, no real error.
+SGS_DIR_A="$(mktemp -d)"
+register_scratch "$SGS_DIR_A"
+for i in $(seq 1 100000); do
+  printf 'sgsmatch line %d with padding text to make this line reasonably long\n' "$i"
+done > "$SGS_DIR_A/manylines.txt"
+SGS_ERRFILE_A="$(mktemp)"; register_scratch "$SGS_ERRFILE_A"
+SGS_RESULT_A="$(mktemp)"; register_scratch "$SGS_RESULT_A"
+SGS_OUT_A="$(sgs_run_pipeline "sgsmatch" "$SGS_DIR_A" "$SGS_ERRFILE_A" "$SGS_RESULT_A")"
+sgs_check "(a) common fast path (many matches, SIGPIPE expected, no real error)" "not_detected" "$SGS_OUT_A" "$SGS_ERRFILE_A"
+rm -f "$SGS_ERRFILE_A" "$SGS_RESULT_A"
+rm -rf "$SGS_DIR_A"
+
+# (b) genuine invalid-pattern error.
+SGS_ERRFILE_B="$(mktemp)"; register_scratch "$SGS_ERRFILE_B"
+SGS_RESULT_B="$(mktemp)"; register_scratch "$SGS_RESULT_B"
+SGS_OUT_B="$(sgs_run_pipeline "[invalid" "/tmp" "$SGS_ERRFILE_B" "$SGS_RESULT_B")"
+sgs_check "(b) genuine invalid-pattern error" "detected" "$SGS_OUT_B" "$SGS_ERRFILE_B"
+rm -f "$SGS_ERRFILE_B" "$SGS_RESULT_B"
+
+# (c) nonexistent scope directory.
+SGS_ERRFILE_C="$(mktemp)"; register_scratch "$SGS_ERRFILE_C"
+SGS_RESULT_C="$(mktemp)"; register_scratch "$SGS_RESULT_C"
+SGS_OUT_C="$(sgs_run_pipeline "anything" "/tmp/ccs_sgs_nonexistent_scope_dir_xyz" "$SGS_ERRFILE_C" "$SGS_RESULT_C")"
+sgs_check "(c) nonexistent scope directory" "detected" "$SGS_OUT_C" "$SGS_ERRFILE_C"
+rm -f "$SGS_ERRFILE_C" "$SGS_RESULT_C"
+
+# (d) masked-status case: a permission-denied path alongside enough matches
+# to also trigger (a)'s own SIGPIPE -- the actual round-5 defect. GREP_STATUS
+# alone (even excluding 141) fails open here since SIGPIPE masks the real
+# permission-error exit code; only the combined check (via $ERRFILE's own
+# non-empty diagnostic content) catches it.
+SGS_DIR_D="$(mktemp -d)"
+register_scratch "$SGS_DIR_D"
+mkdir -p "$SGS_DIR_D/noperm"
+chmod 000 "$SGS_DIR_D/noperm"
+for i in $(seq 1 100000); do
+  printf 'sgsmatch line %d with padding text to make this line reasonably long\n' "$i"
+done > "$SGS_DIR_D/manylines.txt"
+SGS_ERRFILE_D="$(mktemp)"; register_scratch "$SGS_ERRFILE_D"
+SGS_RESULT_D="$(mktemp)"; register_scratch "$SGS_RESULT_D"
+SGS_OUT_D="$(sgs_run_pipeline "sgsmatch" "$SGS_DIR_D" "$SGS_ERRFILE_D" "$SGS_RESULT_D")"
+sgs_check "(d) permission error masked by SIGPIPE" "detected" "$SGS_OUT_D" "$SGS_ERRFILE_D"
+rm -f "$SGS_ERRFILE_D" "$SGS_RESULT_D"
+chmod 755 "$SGS_DIR_D/noperm"
+rm -rf "$SGS_DIR_D"
+
+# (e) reader-failure case: the stderr reader (head) cannot write $ERRFILE at
+# all (simulated via a read-only target), which itself breaks the FIFO's
+# write end and delivers SIGPIPE to grep -- masking grep's real status for a
+# DIFFERENT root cause than (d). Only READER_STATUS (non-zero here) catches
+# this; GREP_STATUS and $ERRFILE's own content both fail open. Needs a
+# genuine diagnostic for grep to try to emit -- one chmod-000'd unreadable
+# subdirectory is enough (single "Permission denied" stderr line); it is the
+# READER's own failure being tested here, not grep's diagnostic volume, so a
+# many-paths scope (which the corrected pipeline's single-quoted $SCOPE
+# positional argument no longer supports via word-splitting) isn't needed.
+SGS_DIR_E="$(mktemp -d)"
+register_scratch "$SGS_DIR_E"
+mkdir -p "$SGS_DIR_E/noperm"
+chmod 000 "$SGS_DIR_E/noperm"
+SGS_ERRFILE_E="$(mktemp)"; register_scratch "$SGS_ERRFILE_E"
+SGS_RESULT_E="$(mktemp)"; register_scratch "$SGS_RESULT_E"
+SGS_OUT_E="$(sgs_run_pipeline "anything" "$SGS_DIR_E" "$SGS_ERRFILE_E" "$SGS_RESULT_E" "readonly_errfile")"
+sgs_check "(e) stderr reader itself fails to write ERRFILE (read-only target)" "detected" "$SGS_OUT_E" "$SGS_ERRFILE_E"
+rm -f "$SGS_ERRFILE_E" "$SGS_RESULT_E"
+chmod 755 "$SGS_DIR_E/noperm"
+rm -rf "$SGS_DIR_E"
+
+# (f) mktemp -d/mkfifo itself fails -- the private FIFO directory made
+# unwritable right after creation (simulating a permissions problem on the
+# temp filesystem itself), so mkfifo inside it fails. Neither grep nor the
+# reader ever runs; the wrapper's own exit 3 alone must catch this.
+SGS_ERRFILE_F="$(mktemp)"; register_scratch "$SGS_ERRFILE_F"
+SGS_RESULT_F="$(mktemp)"; register_scratch "$SGS_RESULT_F"
+SGS_OUT_F="$(sgs_run_pipeline "anything" "/tmp" "$SGS_ERRFILE_F" "$SGS_RESULT_F" "fail_mkfifo")"
+sgs_check "(f) mktemp -d/mkfifo itself fails (private dir made unwritable)" "detected" "$SGS_OUT_F" "$SGS_ERRFILE_F"
+rm -f "$SGS_ERRFILE_F" "$SGS_RESULT_F"
+
+# (g) a DIFFERENT process -- the stdout head writing $RESULT_FILE -- fails,
+# while grep itself succeeds with real matches (GREP_STATUS=0). Neither
+# GREP_STATUS, $ERRFILE, nor READER_STATUS (all about the stderr side) has
+# any visibility into this; only STDOUT_HEAD_STATUS catches it, and it is
+# its OWN genuine retry case, never folded into search_error.
+SGS_DIR_G="$(mktemp -d)"
+register_scratch "$SGS_DIR_G"
+printf 'findme pattern here\n' > "$SGS_DIR_G/data.txt"
+SGS_ERRFILE_G="$(mktemp)"; register_scratch "$SGS_ERRFILE_G"
+SGS_RESULT_G="$(mktemp)"; register_scratch "$SGS_RESULT_G"
+SGS_OUT_G="$(sgs_run_pipeline "findme" "$SGS_DIR_G" "$SGS_ERRFILE_G" "$SGS_RESULT_G" "readonly_resultfile")"
+sgs_check "(g) stdout head itself fails to write RESULT_FILE (grep succeeds with real matches)" "retry" "$SGS_OUT_G" "$SGS_ERRFILE_G"
+rm -f "$SGS_ERRFILE_G" "$SGS_RESULT_G"
+rm -rf "$SGS_DIR_G"
+
+# (h) same-shape check as (b), but invoked with the CALLING shell explicitly
+# set to zsh -- confirming section 6's own "wrap in bash -c regardless of
+# ambient shell" fix actually works when the caller genuinely is zsh (this
+# suite's own shebang is bash, so (a)-(g) above exercise bash calling
+# bash -c; this is the zsh-calling-bash-c case the design doc's own round-7
+# review specifically found broken in the PRIOR, unwrapped form). The inner
+# script is written to a temp file via a quoted heredoc (no interpolation at
+# write time -- $PATTERN/$SCOPE/$ERRFIFO etc. stay literal in the file) and
+# invoked as `bash "$scriptfile" "$pattern" "$scope"` from inside the zsh -c
+# wrapper, itself called with pattern/scope/scriptfile as zsh's OWN
+# positional params ($1/$2/$3) -- this avoids the triple-nested
+# quote-escaping a previous round found fragile, while still proving
+# PIPESTATUS capture works when the CALLING shell is genuinely zsh.
+if command -v /bin/zsh >/dev/null 2>&1; then
+  SGS_ZSH_ERRFILE="$(mktemp)"; register_scratch "$SGS_ZSH_ERRFILE"
+  SGS_ZSH_RESULT="$(mktemp)"; register_scratch "$SGS_ZSH_RESULT"
+  SGS_ZSH_STATUSFILE="$(mktemp)"; register_scratch "$SGS_ZSH_STATUSFILE"
+  SGS_ZSH_SCRIPTFILE="$(mktemp)"; register_scratch "$SGS_ZSH_SCRIPTFILE"
+  cat > "$SGS_ZSH_SCRIPTFILE" <<'SGS_ZSH_SCRIPT_EOF'
+set -u
+PATTERN="$1"; SCOPE="$2"
+PRIVDIR="$(mktemp -d)" || { echo "mktemp -d failed" >&2; exit 3; }
+chmod 700 "$PRIVDIR"
+ERRFIFO="$PRIVDIR/errfifo"
+if ! mkfifo "$ERRFIFO" 2>/dev/null; then
+  echo "mkfifo failed" >&2
+  rm -rf "$PRIVDIR"
+  exit 3
+fi
+head -n "$ERR_LINE_CAP" < "$ERRFIFO" > "$ERRFILE" 2>/dev/null &
+ERR_READER_PID=$!
+/usr/bin/grep -rn -- "$PATTERN" "$SCOPE" 2>"$ERRFIFO" | head -n "$((MAX_CANDIDATE_FILES + 1))" > "$RESULT_FILE"
+read -r GREP_STATUS STDOUT_HEAD_STATUS <<< "${PIPESTATUS[0]} ${PIPESTATUS[1]}"
+wait "$ERR_READER_PID"
+READER_STATUS=$?
+rm -rf "$PRIVDIR"
+echo "$GREP_STATUS $STDOUT_HEAD_STATUS $READER_STATUS" > "$STATUS_FILE" || exit 4
+SGS_ZSH_SCRIPT_EOF
+  ERRFILE="$SGS_ZSH_ERRFILE" RESULT_FILE="$SGS_ZSH_RESULT" STATUS_FILE="$SGS_ZSH_STATUSFILE" \
+    ERR_LINE_CAP="$ERR_LINE_CAP" MAX_CANDIDATE_FILES="$MAX_CANDIDATE_FILES" \
+    /bin/zsh -c 'bash "$1" "$2" "$3"' -- "$SGS_ZSH_SCRIPTFILE" "[invalid" "/tmp"
+  SGS_ZSH_WRAPPER_EXIT=$?
+  if [ -s "$SGS_ZSH_STATUSFILE" ] && sgs_is_search_error \
+    "$(awk '{print $1}' "$SGS_ZSH_STATUSFILE")" "$SGS_ZSH_ERRFILE" \
+    "$(awk '{print $3}' "$SGS_ZSH_STATUSFILE")" "$SGS_ZSH_WRAPPER_EXIT"; then
+    pass "combined-signal regression guard: (h) zsh calling bash -c still correctly captures GREP_STATUS via PIPESTATUS (a genuine invalid-pattern error, detected)"
+  else
+    fail "combined-signal regression guard: (h) zsh calling bash -c failed to detect a genuine invalid-pattern error -- status file: $(cat "$SGS_ZSH_STATUSFILE" 2>/dev/null || echo MISSING), wrapper_exit=$SGS_ZSH_WRAPPER_EXIT"
+  fi
+  rm -f "$SGS_ZSH_ERRFILE" "$SGS_ZSH_RESULT" "$SGS_ZSH_STATUSFILE" "$SGS_ZSH_SCRIPTFILE"
+fi
+
+# (i) round-8 shell-injection fix: a pattern containing a single quote plus a
+# shell metacharacter sequence must never be able to inject a command into
+# the CALLING shell -- proven by asserting an injection marker file stays
+# EMPTY afterward, not merely "the pipeline ran without erroring". Passing
+# this value as a POSITIONAL ARGUMENT (this test's own sgs_run_pipeline,
+# updated above) rather than textually substituting it into the script body
+# means it can only ever reach grep as an ordinary (failing) literal search
+# pattern.
+SGS_INJECT_MARKER="$(mktemp)"; register_scratch "$SGS_INJECT_MARKER"
+rm -f "$SGS_INJECT_MARKER"
+SGS_INJECT_PATTERN="x' ; printf injected > $SGS_INJECT_MARKER ; : '"
+SGS_ERRFILE_I="$(mktemp)"; register_scratch "$SGS_ERRFILE_I"
+SGS_RESULT_I="$(mktemp)"; register_scratch "$SGS_RESULT_I"
+SGS_OUT_I="$(sgs_run_pipeline "$SGS_INJECT_PATTERN" "/tmp" "$SGS_ERRFILE_I" "$SGS_RESULT_I")"
+SGS_I_GSTAT="$(printf '%s' "$SGS_OUT_I" | awk '{print $1}')"
+if [ -e "$SGS_INJECT_MARKER" ]; then
+  fail "combined-signal regression guard: (i) shell-injection pattern EXECUTED -- marker file exists, injection succeeded (GREP_STATUS=$SGS_I_GSTAT)"
+else
+  pass "combined-signal regression guard: (i) shell-injection pattern with an embedded single quote runs harmlessly as grep's own literal pattern -- no injection marker created (GREP_STATUS=$SGS_I_GSTAT)"
+fi
+rm -f "$SGS_ERRFILE_I" "$SGS_RESULT_I" "$SGS_INJECT_MARKER"
+
+# (j) round-8 STATUS_FILE-write-failure fix: pre-creating $STATUS_FILE and
+# chmod 000'ing it BEFORE the pipeline runs makes the wrapper's own final
+# write fail -- live-reproduced to exit some OTHER nonzero value, NOT the
+# deliberate mktemp/mkfifo sentinel 3. The assertion below deliberately does
+# NOT hardcode which nonzero value it is; it only checks "nonzero" (matching
+# sgs_is_search_error's own "-ne 0, never == 3" check) and confirms the
+# combined-signal logic still classifies this as search_error via the
+# wrapper-exit-nonzero signal alone.
+SGS_ERRFILE_J="$(mktemp)"; register_scratch "$SGS_ERRFILE_J"
+SGS_RESULT_J="$(mktemp)"; register_scratch "$SGS_RESULT_J"
+SGS_OUT_J="$(sgs_run_pipeline "anything" "/tmp" "$SGS_ERRFILE_J" "$SGS_RESULT_J" "readonly_statusfile")"
+SGS_J_WEXIT="$(printf '%s' "$SGS_OUT_J" | awk '{print $4}')"
+if [ "$SGS_J_WEXIT" -eq 0 ]; then
+  fail "combined-signal regression guard: (j) STATUS_FILE write failure should make the wrapper exit nonzero, got WRAPPER_EXIT=0"
+else
+  sgs_check "(j) STATUS_FILE write failure (chmod 000, pre-created) -- wrapper exits nonzero (not necessarily 3)" "detected" "$SGS_OUT_J" "$SGS_ERRFILE_J"
+fi
+rm -f "$SGS_ERRFILE_J" "$SGS_RESULT_J"
+
+# --- SWEEP_VERIFIED Context-propagation integration test (defect-class-
+# --- sweep.md sections 4/5) ---
+# Real dispatch through the wrapper (fake-codex backend, FAKE_CODEX_CAPTURE_
+# PROMPT_PATH), not a hand-authored text/JSONL fixture like the parser/
+# reducer tests above. Proves the actual multi-range Context-propagation
+# path this design requires: a focus text naming a sweep_id with TWO origin
+# ranges (the deduplicated-parallel-sweep case section 5's origin_site array
+# exists for) must have BOTH ranges actually reach the rendered prompt Codex
+# receives -- copying only the first would silently drop one origin from
+# Codex's own independent re-verification, exactly what finding 3 of this
+# implementation's own round-2 review flagged as missing from the trusted
+# SWEEP_VERIFIED obligation text.
+SV_CTX_FOCUS="## Context: why this review is being requested
+
+Round 2 fix-and-reverify. One still-open defect-class sweep needs your
+independent re-verification:
+
+sweep_id: g1:f7
+grep_command: grep -rn 'unsafeCall(' src/
+origin_site: src/a.ts:10-10, src/b.ts:22-22
+other_occurrences_confirmed: 3
+
+Please state SWEEP_VERIFIED g1:f7 in your summary field per the instructions above."
+
+SV_CTX_CAPTURE="$(mktemp)"
+register_scratch "$SV_CTX_CAPTURE"
+export FAKE_CODEX_SCENARIO=normal FAKE_CODEX_CAPTURE_PROMPT_PATH="$SV_CTX_CAPTURE"
+SV_CTX_OUT="$(printf '%s' "$SV_CTX_FOCUS" | PATH="$FAKE_BIN_DIR:$PATH" HOME="$FAKE_HOME" "$WRAPPER" --cwd "$PD_REPO" --uncommitted 2>&1)"
+unset FAKE_CODEX_SCENARIO FAKE_CODEX_CAPTURE_PROMPT_PATH
+
+if [ "$(printf '%s' "$SV_CTX_OUT" | tail -1 | jq -r '.ok' 2>/dev/null)" != "true" ]; then
+  fail "SWEEP_VERIFIED Context propagation: dispatch should return ok:true, got: $SV_CTX_OUT"
+elif [ ! -s "$SV_CTX_CAPTURE" ]; then
+  fail "SWEEP_VERIFIED Context propagation: FAKE_CODEX_CAPTURE_PROMPT_PATH produced no/empty file"
+elif grep -qF "src/a.ts:10-10" "$SV_CTX_CAPTURE" && grep -qF "src/b.ts:22-22" "$SV_CTX_CAPTURE" \
+  && grep -qF "SWEEP_VERIFIED" "$SV_CTX_CAPTURE" && grep -qF "g1:f7" "$SV_CTX_CAPTURE"; then
+  pass "SWEEP_VERIFIED Context propagation: both origin ranges of a multi-range sweep, the sweep_id, and the SWEEP_VERIFIED obligation all reach the actual rendered prompt"
+else
+  fail "SWEEP_VERIFIED Context propagation: expected both origin ranges (src/a.ts:10-10, src/b.ts:22-22), sweep_id g1:f7, and the SWEEP_VERIFIED obligation all present in the captured prompt"
+fi
+rm -f "$SV_CTX_CAPTURE"
+
+# --- SWEEP_VERIFIED DISPUTED end-to-end regression (defect-class-sweep.md ---
+# --- sections 4/5, design doc's own explicit "genuinely open implementation ---
+# --- risk" call-out) ---
+# Real dispatch through the wrapper, with FAKE_CODEX_FINAL_ANSWER scripting an
+# ACTUAL DISPUTED response (not a hand-authored text fixture like the parser
+# test above) -- proves the full path: Context is built with a sweep's origin
+# range, a real dispatch response containing a valid
+# "SWEEP_VERIFIED <id>: DISPUTED -- <mis-excluded hit>" marker in its own
+# summary field comes back through the wrapper, and that marker's text
+# actually identifies a specific site distinct from the reported origin
+# range -- the end-to-end join the hand-authored parser test alone cannot
+# prove (it never touches a real dispatch response at all).
+SV_DISPUTED_FOCUS="## Context: why this review is being requested
+
+Round 2 fix-and-reverify. One still-open defect-class sweep needs your
+independent re-verification:
+
+sweep_id: g1:f9
+grep_command: grep -rn 'unsafeCall(' src/
+origin_site: src/c.ts:15-15
+other_occurrences_confirmed: 2
+
+Please state SWEEP_VERIFIED g1:f9 in your summary field per the instructions above."
+
+SV_DISPUTED_ANSWER='{"verdict":"CLEAN","findings":[],"summary":"SWEEP_VERIFIED g1:f9: DISPUTED -- src/d.ts:40 falls outside the reported origin range and still contains an unsafe call Claude'"'"'s own confirmation missed","dimensions":{"correctness":{"status":"checked","evidence":"e"},"security":{"status":"checked","evidence":"e"},"performance":{"status":"not_applicable","evidence":"e"},"reuse":{"status":"not_applicable","evidence":"e"},"contracts":{"status":"not_applicable","evidence":"e"},"resources_concurrency":{"status":"not_applicable","evidence":"e"},"intent":{"status":"not_applicable","evidence":"e"}},"material_reviewed":true,"material_receipt":null,"material_receipt_index":null}'
+
+export FAKE_CODEX_SCENARIO=normal FAKE_CODEX_FINAL_ANSWER="$SV_DISPUTED_ANSWER"
+SV_DISPUTED_OUT="$(printf '%s' "$SV_DISPUTED_FOCUS" | PATH="$FAKE_BIN_DIR:$PATH" HOME="$FAKE_HOME" "$WRAPPER" --cwd "$PD_REPO" --uncommitted 2>&1)"
+unset FAKE_CODEX_SCENARIO FAKE_CODEX_FINAL_ANSWER
+
+if [ "$(printf '%s' "$SV_DISPUTED_OUT" | tail -1 | jq -r '.ok' 2>/dev/null)" != "true" ]; then
+  fail "SWEEP_VERIFIED DISPUTED end-to-end: dispatch should return ok:true, got: $SV_DISPUTED_OUT"
+else
+  SV_DISPUTED_SUMMARY="$(printf '%s' "$SV_DISPUTED_OUT" | tail -1 | jq -r '.verdict.summary // empty')"
+  SV_DISPUTED_TMPFILE="$(mktemp)"
+  register_scratch "$SV_DISPUTED_TMPFILE"
+  printf '%s\n' "$SV_DISPUTED_SUMMARY" > "$SV_DISPUTED_TMPFILE"
+  SV_DISPUTED_PARSED="$(bash "$SWEEP_PARSER" "$SV_DISPUTED_TMPFILE" g1:f9)"
+  rm -f "$SV_DISPUTED_TMPFILE"
+  if [ "$(sv_line_for "$SV_DISPUTED_PARSED" g1:f9)" = "g1:f9 DISPUTED src/d.ts:40 falls outside the reported origin range and still contains an unsafe call Claude's own confirmation missed" ]; then
+    pass "SWEEP_VERIFIED DISPUTED end-to-end: a real dispatch response's DISPUTED marker for the requested sweep_id round-trips through the wrapper and the SAME parser used elsewhere, correctly naming the specific mis-excluded hit"
+  else
+    fail "SWEEP_VERIFIED DISPUTED end-to-end: expected a parsed DISPUTED marker naming src/d.ts:40, got parser output: $SV_DISPUTED_PARSED (raw summary: $SV_DISPUTED_SUMMARY)"
+  fi
+fi
+
 # --- parallel-mode coverage merge fixtures (parallel-mode.md / SKILL.md's ---
 # --- "Round-1 N-group merge" worst-case-wins rule) ---
 # Exercises tests/fixtures/parallel-coverage-merge.jq. Pure jq over inline
