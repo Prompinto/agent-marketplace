@@ -573,6 +573,402 @@ else
 fi
 unset FAKE_CODEX_SCENARIO
 
+# --- input_too_large: a NEW pre-dispatch preflight, reintroduced against a
+# different, confirmed threshold (CODEX_BACKEND_INPUT_CHAR_LIMIT=1048576
+# CHARACTERS -- the real Azure OpenAI backend's own confirmed hard limit),
+# never the old removed byte-based PROMPT_SIZE_LIMIT_BYTES/artifact_too_large
+# pair just exercised above. fake-codex is never even invoked here (the check
+# fires before `codex exec`/`codex exec resume` is ever launched) --
+# FAKE_CODEX_INVOCATION_LOG below is the direct proof of that, not just an
+# absence of FAKE_CODEX_SCENARIO.
+ITL_INVOCATION_LOG="$(mktemp)"
+register_scratch "$ITL_INVOCATION_LOG"
+export FAKE_CODEX_SCENARIO=normal FAKE_CODEX_INVOCATION_LOG="$ITL_INVOCATION_LOG"
+
+# 1,100,000 plain ASCII 'y' characters -- combined with the tiny real diff
+# already present in $PD_REPO (from `echo "line" > "$PD_REPO/f.txt"` above),
+# the fully-rendered prompt comfortably exceeds 1,048,576 characters.
+ITL_BIG_FOCUS="$(python3 -c "print('y' * 1100000)" 2>/dev/null || perl -e 'print "y" x 1100000')"
+OUT="$(printf '%s' "$ITL_BIG_FOCUS" | PATH="$FAKE_BIN_DIR:$PATH" HOME="$FAKE_HOME" "$WRAPPER" --cwd "$PD_REPO" --uncommitted 2>&1)"
+pd_assert_reason "$OUT" "input_too_large" "input_too_large (fresh, real diff present)"
+if printf '%s' "$OUT" | tail -1 | jq -e 'has("threadId") | not' >/dev/null 2>&1; then
+  pass "input_too_large (fresh, real diff present): no threadId (never dispatched)"
+else
+  fail "input_too_large (fresh, real diff present): should carry no threadId, got: $OUT"
+fi
+COV_STATUS="$(printf '%s' "$OUT" | tail -1 | jq -r '.coverage.source.status // empty')"
+if [ "$COV_STATUS" = "complete" ] || [ "$COV_STATUS" = "partial" ]; then
+  pass "input_too_large (fresh, real diff present): coverage.source is spliced in (status=$COV_STATUS)"
+else
+  fail "input_too_large (fresh, real diff present): expected a real coverage.source.status, got: $OUT"
+fi
+if [ ! -s "$ITL_INVOCATION_LOG" ]; then
+  pass "input_too_large (fresh, real diff present): fake codex was never invoked (invocation log empty)"
+else
+  fail "input_too_large (fresh, real diff present): fake codex should never be invoked, but the log recorded: $(cat "$ITL_INVOCATION_LOG")"
+fi
+: > "$ITL_INVOCATION_LOG"
+
+# --resume case: oversized follow-up/rebuttal focus text on an existing
+# thread. Must carry the RESUMED thread's own id (this occurrence is the one
+# exception to "every threadId-carrying reason is resume-safe" -- see
+# SKILL.md's resume-safety table) and, unlike the fresh case above, never
+# carries coverage.source (a --resume round never collects a diff at all).
+ITL_TID="$(pd_new_tid)"
+OUT="$(printf '%s' "$ITL_BIG_FOCUS" | PATH="$FAKE_BIN_DIR:$PATH" HOME="$FAKE_HOME" "$WRAPPER" --cwd "$PD_REPO" --resume "$ITL_TID" 2>&1)"
+pd_assert_reason "$OUT" "input_too_large" "input_too_large (resume)"
+pd_assert_threadid_present "$OUT" "input_too_large (resume)"
+if [ "$(pd_threadid "$OUT")" = "$ITL_TID" ]; then
+  pass "input_too_large (resume): threadId echoes the resumed thread, not a new one"
+else
+  fail "input_too_large (resume): threadId should echo $ITL_TID, got: $OUT"
+fi
+if printf '%s' "$OUT" | tail -1 | jq -e 'has("coverage") | not' >/dev/null 2>&1; then
+  pass "input_too_large (resume): no coverage.source (a --resume round never carries one)"
+else
+  fail "input_too_large (resume): should carry no coverage, got: $OUT"
+fi
+if [ ! -s "$ITL_INVOCATION_LOG" ]; then
+  pass "input_too_large (resume): fake codex was never invoked (invocation log empty)"
+else
+  fail "input_too_large (resume): fake codex should never be invoked, but the log recorded: $(cat "$ITL_INVOCATION_LOG")"
+fi
+: > "$ITL_INVOCATION_LOG"
+
+# Non-repo-artifact variant: a freshly-init'd, zero-file repo has an empty
+# diff, so the oversized focus text is the SOLE content -- the wrapper's own
+# CLEAN_REPO_DIR-shaped case (see run-ccs-review.sh's input_too_large branch
+# and references/non-repo-artifact.md).
+ITL_EMPTY_REPO="$(mktemp -d)"
+register_scratch "$ITL_EMPTY_REPO"
+must git -C "$ITL_EMPTY_REPO" init -q
+OUT="$(printf '%s' "$ITL_BIG_FOCUS" | PATH="$FAKE_BIN_DIR:$PATH" HOME="$FAKE_HOME" "$WRAPPER" --cwd "$ITL_EMPTY_REPO" --uncommitted 2>&1)"
+pd_assert_reason "$OUT" "input_too_large" "input_too_large (fresh, non-repo-artifact / empty diff)"
+DETAIL="$(printf '%s' "$OUT" | tail -1 | jq -r '.detail // empty')"
+if printf '%s' "$DETAIL" | grep -q 'pasted artifact'; then
+  pass "input_too_large (fresh, non-repo-artifact / empty diff): detail names the pasted artifact, not the diff"
+else
+  fail "input_too_large (fresh, non-repo-artifact / empty diff): detail should name the pasted artifact, got: $OUT"
+fi
+if [ ! -s "$ITL_INVOCATION_LOG" ]; then
+  pass "input_too_large (fresh, non-repo-artifact / empty diff): fake codex was never invoked (invocation log empty)"
+else
+  fail "input_too_large (fresh, non-repo-artifact / empty diff): fake codex should never be invoked, but the log recorded: $(cat "$ITL_INVOCATION_LOG")"
+fi
+rm -rf "$ITL_EMPTY_REPO"
+unset FAKE_CODEX_SCENARIO FAKE_CODEX_INVOCATION_LOG
+rm -f "$ITL_INVOCATION_LOG"
+unset ITL_BIG_FOCUS ITL_TID ITL_EMPTY_REPO
+
+# Exact-boundary regression (round-3 ccs review finding, third revision):
+# every ORIGINAL input_too_large fixture used values FAR from 1,048,576
+# (1,100,000 comfortably over; 1,000/400,000 comfortably under) -- none of
+# them would catch an off-by-one change to the actual comparison operator in
+# run-ccs-review.sh (`-gt` changed to `-ge`, or the constant changed by 1).
+#
+# `run-ccs-review.sh` embeds a per-dispatch random `$BOUNDARY` token
+# (`DIFF_$$_${RANDOM}${RANDOM}`, repeated 6 times in the rendered prompt)
+# whose own digit count varies run to run, so the real prompt-template
+# overhead is NOT a fixed constant across separate invocations. TWO earlier
+# revisions of this fixture both tried to work around that by treating one
+# dispatch's OWN reported/implied count as proof about a DIFFERENT,
+# separately-dispatched invocation's real length -- ROUND 2's ccs review
+# caught the first attempt's "inconclusive" escape hatch defeating the
+# entire point of the fixture; ROUND 3's ccs review then caught that even
+# the "convergence" fix that followed still compared two SEPARATE
+# dispatches (a candidate, and a following +1-length probe) as if their
+# reported counts described the SAME rendered prompt -- each is its own
+# process with its own independently-randomized BOUNDARY, so a "+1 dispatch
+# reports 1,048,577" fact proves nothing about the CANDIDATE dispatch's own
+# real count, which could be anywhere from far below to already over the
+# limit depending on how that candidate's own random BOUNDARY happened to
+# land. No amount of cross-invocation arithmetic can close this gap, because
+# the two invocations are genuinely, unavoidably different renders.
+#
+# Fixed by measuring the ACTUAL rendered prompt DIRECTLY from a SINGLE
+# dispatch, never inferring it from a different one. `run-ccs-review.sh`'s
+# `--focus`/diff content is always redirected `< PROMPT_FILE` into the real
+# `codex` binary on every dispatch that gets far enough to launch one (i.e.
+# every `ok:true` outcome) -- `tests/fixtures/fake-codex` already supports
+# capturing that exact stdin via `FAKE_CODEX_CAPTURE_PROMPT_PATH` (see that
+# fixture's own doc comment: "copies its own stdin -- the full rendered
+# prompt file content... to this path"). So for an `ok:true` dispatch, this
+# fixture reads back the REAL rendered prompt fake-codex was actually
+# handed and counts its own characters directly with `wc -m` -- the exact
+# same measurement the wrapper itself performed on THIS SAME prompt file,
+# no estimation, no second dispatch, no cross-invocation gap. For an
+# `ok:false` (`input_too_large`) dispatch, the wrapper's own `detail` field
+# already reports that exact same measurement directly (fake-codex is never
+# even invoked on this path, so there's no prompt file to capture instead).
+# Either way, this fixture only ever trusts a SINGLE dispatch's own
+# self-reported truth about itself.
+#
+# One more consequence of this same principle, caught while implementing
+# this very fix (live-reproduced: an at-limit dispatch confirmed at exactly
+# 1,048,576 was followed by a "+1" dispatch that measured 1,048,573, not
+# 1,048,577): a length derived as "the confirmed at-limit length, plus one
+# character" is STILL a cross-invocation inference the moment it's actually
+# dispatched -- the +1 dispatch is its own separate process with its own
+# separately-randomized BOUNDARY, so "one more character than a length that
+# measured X" does NOT mean "this new dispatch measures X+1." There is no
+# way to avoid a second, separate dispatch to test the limit+1 case (a
+# single process cannot dispatch itself twice with two different focus
+# lengths), so instead this fixture converges to EACH target independently
+# via `eb_converge_to` below -- 1,048,576 and 1,048,577 are each found by
+# their OWN from-scratch convergence loop, neither one ever assuming
+# anything about the other's own randomized overhead.
+export FAKE_CODEX_SCENARIO=normal FAKE_CODEX_INVOCATION_LOG="$(mktemp)"
+register_scratch "$FAKE_CODEX_INVOCATION_LOG"
+EB_EMPTY_REPO="$(mktemp -d)"
+register_scratch "$EB_EMPTY_REPO"
+must git -C "$EB_EMPTY_REPO" init -q
+EB_CAPTURED_PROMPT="$(mktemp)"
+register_scratch "$EB_CAPTURED_PROMPT"
+# eb_dispatch FOCUS_TEXT -> dispatches FOCUS_TEXT once (resetting both
+# $FAKE_CODEX_INVOCATION_LOG and $EB_CAPTURED_PROMPT first, so the caller
+# can inspect whether THIS specific dispatch reached fake-codex, and what
+# prompt content it captured if so). Sets $EB_LAST_OK/$EB_LAST_OUT/
+# $EB_LAST_INVOKED/$EB_LAST_REAL_CHARS for the caller to inspect directly
+# (a bash function's own return value is only ever a small integer).
+# $EB_LAST_REAL_CHARS is THIS dispatch's own real, directly-measured
+# rendered-prompt character count -- from the captured stdin file (`wc -m`)
+# on `ok:true` (fake-codex was genuinely invoked and received it), or from
+# the wrapper's own `detail` text (which already performed this exact
+# measurement itself) on `ok:false` with reason `input_too_large`. Either
+# way, this is never an estimate and never inferred from a different
+# dispatch -- it is what THIS single dispatch's own rendered prompt
+# genuinely was, measured the same way the wrapper itself measures it.
+eb_dispatch() {
+  local focus out ok detail reported
+  focus="$1"
+  : > "$FAKE_CODEX_INVOCATION_LOG"
+  : > "$EB_CAPTURED_PROMPT"
+  out="$(printf '%s' "$focus" | PATH="$FAKE_BIN_DIR:$PATH" HOME="$FAKE_HOME" FAKE_CODEX_CAPTURE_PROMPT_PATH="$EB_CAPTURED_PROMPT" "$WRAPPER" --cwd "$EB_EMPTY_REPO" --uncommitted 2>&1)"
+  ok="$(printf '%s' "$out" | tail -1 | jq -r '.ok // empty')"
+  EB_LAST_OK="$ok"
+  EB_LAST_OUT="$out"
+  [ -s "$FAKE_CODEX_INVOCATION_LOG" ] && EB_LAST_INVOKED=1 || EB_LAST_INVOKED=0
+  if [ "$ok" = "true" ]; then
+    EB_LAST_REAL_CHARS="$(LC_ALL=C.UTF-8 wc -m < "$EB_CAPTURED_PROMPT" 2>/dev/null | tr -d ' ')"
+    return 0
+  fi
+  detail="$(printf '%s' "$out" | tail -1 | jq -r '.detail // empty')"
+  reported="$(printf '%s' "$detail" | grep -oE '[0-9]+-character prompt' | grep -oE '[0-9]+')"
+  EB_LAST_REAL_CHARS="$reported"
+  return 0
+}
+# eb_converge_to TARGET -> dispatches candidate lengths (starting from a
+# rough guess, corrected by the EXACT observed error each iteration, bounded
+# to 20 attempts) until ONE dispatch's OWN directly-measured real char count
+# lands EXACTLY at TARGET. Each candidate is judged purely on ITS OWN
+# eb_dispatch result -- never on a different iteration's or a different
+# target's own measurement, which is exactly the cross-invocation-inference
+# mistake both earlier revisions of this fixture made (see the comment
+# block above). This is called TWICE, independently, for the two distinct
+# targets below (1,048,576 and 1,048,577) -- neither call's result is ever
+# reused or extrapolated for the other; each is its own fully independent
+# convergence from its own fresh starting guess, so nothing about one
+# target's own randomized BOUNDARY overhead is ever assumed to predict the
+# other's. Sets $EB_CONVERGED/$EB_CONVERGED_OUT/$EB_CONVERGED_INVOKED for
+# the caller.
+eb_converge_to() {
+  local target="$1" len attempt focus
+  len=1100000
+  EB_CONVERGED=0
+  attempt=0
+  while [ "$attempt" -lt 20 ]; do
+    attempt=$(( attempt + 1 ))
+    focus="$(python3 -c "print('y' * $len)" 2>/dev/null || perl -e "print \"y\" x $len")"
+    eb_dispatch "$focus"
+    if [ -z "$EB_LAST_REAL_CHARS" ]; then
+      fail "input_too_large exact boundary: could not read back a real character count while converging toward $target (ok=$EB_LAST_OK) -- got: $EB_LAST_OUT"
+      return 0
+    fi
+    if [ "$EB_LAST_REAL_CHARS" -eq "$target" ] 2>/dev/null; then
+      EB_CONVERGED=1
+      EB_CONVERGED_OUT="$EB_LAST_OUT"
+      EB_CONVERGED_INVOKED="$EB_LAST_INVOKED"
+      return 0
+    fi
+    # Adjust by the EXACT observed error on THIS dispatch's own real count.
+    len=$(( len + (target - EB_LAST_REAL_CHARS) ))
+  done
+  fail "input_too_large exact boundary: could not converge on a dispatch whose own real measured length is exactly $target within 20 attempts -- either the wrapper's own rendered-prompt length is not a stable linear function of focus length (a real defect worth investigating separately), or this convergence loop itself has a bug; last attempt targeted $len chars, last real measured count was $EB_LAST_REAL_CHARS"
+}
+eb_converge_to 1048576
+if [ "$EB_CONVERGED" -eq 1 ]; then
+  if [ "$(printf '%s' "$EB_CONVERGED_OUT" | tail -1 | jq -r '.ok // empty')" = "true" ]; then
+    pass "input_too_large exact boundary: a prompt whose own directly-measured real rendered length is exactly 1,048,576 characters dispatched normally (ok:true), not rejected"
+  else
+    fail "input_too_large exact boundary: the dispatch whose own real measured length is exactly 1,048,576 should have been ok:true, got: $EB_CONVERGED_OUT"
+  fi
+  if [ "$EB_CONVERGED_INVOKED" -eq 1 ]; then
+    pass "input_too_large exact boundary: fake codex WAS invoked for the confirmed-exact at-limit prompt"
+  else
+    fail "input_too_large exact boundary: fake codex should have been invoked for the confirmed-exact at-limit prompt, but its invocation log was empty"
+  fi
+fi
+eb_converge_to 1048577
+if [ "$EB_CONVERGED" -eq 1 ]; then
+  pd_assert_reason "$EB_CONVERGED_OUT" "input_too_large" "input_too_large exact boundary: a prompt whose own directly-measured real rendered length is exactly 1,048,577 characters (independently converged to, never inferred from the at-limit case above)"
+  if [ "$EB_CONVERGED_INVOKED" -eq 0 ]; then
+    pass "input_too_large exact boundary: fake codex was never invoked for the confirmed-exact limit+1 prompt"
+  else
+    fail "input_too_large exact boundary: fake codex should never be invoked for the confirmed-exact limit+1 prompt, but its invocation log recorded an entry"
+  fi
+fi
+unset -f eb_dispatch eb_converge_to
+unset EB_CONVERGED EB_CONVERGED_OUT EB_CONVERGED_INVOKED EB_LAST_OK EB_LAST_REAL_CHARS EB_LAST_OUT EB_LAST_INVOKED
+rm -rf "$EB_EMPTY_REPO"
+rm -f "$EB_CAPTURED_PROMPT"
+unset FAKE_CODEX_SCENARIO FAKE_CODEX_INVOCATION_LOG EB_EMPTY_REPO EB_CAPTURED_PROMPT
+
+# Boundary sanity check: a prompt comfortably UNDER the char limit must still
+# dispatch normally (reach the fake codex binary) -- this new guard must not
+# falsely trigger on ordinary-sized input. 1000 'y' characters plus this
+# suite's own prompt template/diff overhead stays far below 1,048,576.
+export FAKE_CODEX_SCENARIO=normal
+ITL_SMALL_FOCUS="$(python3 -c "print('y' * 1000)" 2>/dev/null || perl -e 'print "y" x 1000')"
+OUT="$(printf '%s' "$ITL_SMALL_FOCUS" | PATH="$FAKE_BIN_DIR:$PATH" HOME="$FAKE_HOME" "$WRAPPER" --cwd "$PD_REPO" --uncommitted 2>&1)"
+if [ "$(printf '%s' "$OUT" | tail -1 | jq -r '.ok')" = "true" ]; then
+  pass "input_too_large boundary: an ordinary-sized focus text still dispatches normally (ok:true), guard does not falsely trigger"
+else
+  fail "input_too_large boundary: an ordinary-sized focus text should reach real dispatch, got: $OUT"
+fi
+unset FAKE_CODEX_SCENARIO ITL_SMALL_FOCUS
+
+# UTF-8 multibyte regression: 400,000 Korean characters is exactly
+# 1,200,000 BYTES (3 bytes/char) but only 400,000 CHARACTERS -- comfortably
+# under the 1,048,576-character limit despite being well over the limit's
+# equivalent BYTE count. A byte-based implementation would wrongly reject
+# this; the real char-based check must accept it and dispatch normally.
+export FAKE_CODEX_SCENARIO=normal
+ITL_MULTIBYTE_FOCUS="$(python3 -c "print('한' * 400000)" 2>/dev/null)"
+if [ -n "$ITL_MULTIBYTE_FOCUS" ]; then
+  OUT="$(printf '%s' "$ITL_MULTIBYTE_FOCUS" | PATH="$FAKE_BIN_DIR:$PATH" HOME="$FAKE_HOME" "$WRAPPER" --cwd "$PD_REPO" --uncommitted 2>&1)"
+  if [ "$(printf '%s' "$OUT" | tail -1 | jq -r '.ok')" = "true" ]; then
+    pass "input_too_large UTF-8 regression: 400,000 multibyte characters (1,200,000 bytes) dispatch normally -- counted as characters, not bytes"
+  else
+    fail "input_too_large UTF-8 regression: 400,000 multibyte characters should dispatch normally (char count under the limit despite byte count over it), got: $OUT"
+  fi
+else
+  fail "input_too_large UTF-8 regression: could not construct multibyte fixture text (python3 unavailable?)"
+fi
+unset FAKE_CODEX_SCENARIO ITL_MULTIBYTE_FOCUS
+
+# Locale-branching regression (round-1 ccs review finding, genuinely discriminating even on a
+# host where C.UTF-8 is actually installed): a `wc -m` run under an LC_ALL value that isn't a real
+# installed locale does NOT reliably fail (nonzero exit, or empty/non-numeric stdout) -- confirmed
+# live, `LC_ALL=definitely_not_a_locale wc -m` exits 0 and silently prints a BYTE count instead (a
+# "numeric result", indistinguishable on its face from a genuine char count). An earlier revision
+# of `_measure_prompt_chars` trusted exactly that signal -- "did wc -m produce a numeric result" --
+# as its sole proxy for "was C.UTF-8 actually available," which NEVER consulted `locale -a` at all
+# and so ALWAYS invoked `LC_ALL=C.UTF-8 wc -m` directly regardless of what `locale -a` would have
+# reported. The fix instead consults `locale -a` for real availability BEFORE ever invoking `wc -m`
+# under a candidate locale, and must fall all the way through to the safe byte-count fallback when
+# `locale -a` reports NEITHER UTF-8 locale present. This IS genuinely discriminating even here: a
+# fake `locale` binary reports an EMPTY `-a` listing (neither C.UTF-8 nor en_US.UTF-8 present),
+# prepended ahead of the real `locale` (and ahead of $FAKE_BIN_DIR, so this override wins) for this
+# one check only -- the FIXED implementation must skip both UTF-8 attempts entirely per that report
+# and fall through to `wc -c`'s own byte count (1,200,000 for this same 400,000-character fixture,
+# which exceeds the limit and correctly triggers `input_too_large`), while the OLD implementation
+# never checked `locale -a` at all and would have called `LC_ALL=C.UTF-8 wc -m` directly -- which,
+# on THIS host where C.UTF-8 really is installed, silently succeeds with the real 400,000 char
+# count and dispatches normally. The two implementations' real, observable behavior diverges on
+# this exact input under this exact fake-locale environment, regardless of what UTF-8 locales this
+# host actually has installed -- confirmed by hand-testing both function bodies against this same
+# fake-locale PATH override before writing this fixture.
+FAKE_LOCALE_DIR="$(mktemp -d)"
+register_scratch "$FAKE_LOCALE_DIR"
+cat > "$FAKE_LOCALE_DIR/locale" <<'LOCALE_EOF'
+#!/usr/bin/env bash
+if [ "$1" = "-a" ]; then
+  exit 0
+fi
+exec /usr/bin/locale "$@"
+LOCALE_EOF
+chmod +x "$FAKE_LOCALE_DIR/locale"
+export FAKE_CODEX_SCENARIO=normal
+ITL_LOCALE_MULTIBYTE_FOCUS="$(python3 -c "print('한' * 400000)" 2>/dev/null)"
+if [ -n "$ITL_LOCALE_MULTIBYTE_FOCUS" ]; then
+  OUT="$(printf '%s' "$ITL_LOCALE_MULTIBYTE_FOCUS" | PATH="$FAKE_LOCALE_DIR:$FAKE_BIN_DIR:$PATH" HOME="$FAKE_HOME" "$WRAPPER" --cwd "$PD_REPO" --uncommitted 2>&1)"
+  pd_assert_reason "$OUT" "input_too_large" "input_too_large locale-branching: with locale -a reporting neither UTF-8 locale present"
+else
+  fail "input_too_large locale-branching: could not construct multibyte fixture text (python3 unavailable?)"
+fi
+unset FAKE_CODEX_SCENARIO ITL_LOCALE_MULTIBYTE_FOCUS
+rm -rf "$FAKE_LOCALE_DIR"
+
+# Locale-alias regression (round-2 ccs review finding): the fix that added
+# `locale -a`-gated availability checking (immediately above) originally
+# hardcoded only the HYPHENATED spelling (`C.UTF-8`/`en_US.UTF-8`), which
+# matches what THIS test suite's own macOS host reports, but glibc-based
+# Linux (this project's own `ubuntu-latest` CI runner) commonly reports the
+# UNHYPHENATED form instead (`C.utf8`/`en_US.utf8`) -- a hardcoded
+# hyphenated-only pattern would silently treat a genuinely-installed Linux
+# locale as unavailable and fall through to the byte-count fallback,
+# wrongly rejecting a valid multibyte prompt (the same false-rejection
+# failure mode as the original bug, just via a different platform gap). The
+# fix matches EITHER spelling and passes back whichever exact string
+# `locale -a` itself reported.
+#
+# This fixture can only test the MATCHING logic, not a full end-to-end
+# multibyte-counting round-trip: `wc -m`'s own locale resolution goes
+# through the real OS locale database, not the `locale` binary this fixture
+# shadows via PATH -- and this dev/test host (macOS) genuinely has no
+# `C.utf8` (unhyphenated) locale registered at the libc level at all
+# (confirmed live: even with a fake `locale -a` claiming it exists,
+# `LC_ALL=C.utf8 wc -m` on this host silently falls back to a byte count,
+# since the OS itself doesn't recognize that exact locale name -- this is
+# an OS/libc difference between platforms, not something a fake `locale -a`
+# can paper over). So instead of trying to get a real correct multibyte
+# COUNT out of this host under a locale name it doesn't actually support,
+# this fixture verifies the one thing that IS host-independent and IS the
+# actual code path under test: that `_measure_prompt_chars` correctly
+# EXTRACTS "C.utf8" (the unhyphenated form) from `locale -a`'s reported
+# output and passes THAT EXACT STRING as `LC_ALL` to `wc -m` -- via a fake
+# `wc` that echoes back which `LC_ALL` value it was invoked under, never
+# silently falling through to the hardcoded-hyphenated-only matcher a
+# regression would reintroduce. The fake `locale -a` reports ONLY the
+# unhyphenated spelling, so a reversion to the old hyphenated-only pattern
+# would report "unavailable" for both attempts and reach the fake `wc`
+# under no LC_ALL match at all -- observably different from the fixed
+# matcher's real behavior, confirmed by hand-testing both function bodies
+# against this same fake-locale/fake-wc PATH override before writing this
+# fixture.
+FAKE_LOCALE_ALIAS_DIR="$(mktemp -d)"
+register_scratch "$FAKE_LOCALE_ALIAS_DIR"
+cat > "$FAKE_LOCALE_ALIAS_DIR/locale" <<'LOCALE_ALIAS_EOF'
+#!/usr/bin/env bash
+if [ "$1" = "-a" ]; then
+  printf '%s\n' "C.utf8"
+  exit 0
+fi
+exec /usr/bin/locale "$@"
+LOCALE_ALIAS_EOF
+chmod +x "$FAKE_LOCALE_ALIAS_DIR/locale"
+LOCALE_ALIAS_WC_LOG="$(mktemp)"
+register_scratch "$LOCALE_ALIAS_WC_LOG"
+cat > "$FAKE_LOCALE_ALIAS_DIR/wc" <<WC_ALIAS_EOF
+#!/usr/bin/env bash
+printf '%s\n' "\${LC_ALL:-<unset>} \$*" >> "$LOCALE_ALIAS_WC_LOG"
+exec /usr/bin/wc "\$@"
+WC_ALIAS_EOF
+chmod +x "$FAKE_LOCALE_ALIAS_DIR/wc"
+export FAKE_CODEX_SCENARIO=normal
+ITL_ALIAS_FOCUS="$(python3 -c "print('y' * 1000)" 2>/dev/null || perl -e 'print "y" x 1000')"
+: > "$LOCALE_ALIAS_WC_LOG"
+OUT="$(printf '%s' "$ITL_ALIAS_FOCUS" | PATH="$FAKE_LOCALE_ALIAS_DIR:$FAKE_BIN_DIR:$PATH" HOME="$FAKE_HOME" "$WRAPPER" --cwd "$PD_REPO" --uncommitted 2>&1)"
+if grep -q '^C\.utf8 -m' "$LOCALE_ALIAS_WC_LOG" 2>/dev/null; then
+  pass "input_too_large locale-alias: with locale -a reporting only the unhyphenated 'C.utf8' spelling, the wrapper invokes wc -m under LC_ALL=C.utf8 (matcher recognizes the Linux-style alias, not only the hyphenated macOS spelling this host itself would report)"
+else
+  fail "input_too_large locale-alias: expected the wrapper to invoke wc -m under LC_ALL=C.utf8 (the exact unhyphenated string locale -a reported), got these wc invocations instead: $(cat "$LOCALE_ALIAS_WC_LOG" 2>/dev/null || echo '(none)'); full wrapper output: $OUT"
+fi
+unset FAKE_CODEX_SCENARIO ITL_ALIAS_FOCUS
+rm -rf "$FAKE_LOCALE_ALIAS_DIR"
+rm -f "$LOCALE_ALIAS_WC_LOG"
+unset LOCALE_ALIAS_WC_LOG
+
 # --- interrupted: the WRAPPER's own signal trap, not anything fake-codex
 # does -- fake-codex just hangs (FAKE_CODEX_SCENARIO=hang) so there's a
 # real window to send SIGTERM to the wrapper's own process into.

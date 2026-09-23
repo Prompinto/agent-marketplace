@@ -14,11 +14,46 @@
     ROUND overall is not eligible for `✅ CLEAN` — worst-case-wins, the same principle `SKILL.md`
     uses for the `coverage_source`/`codex_review` parallel merges. Retry JUST that failed group — the
     other groups' real, already-collected results are kept, not thrown away and re-dispatched.
+  - **`input_too_large` is handled separately from every other reason in this file, resume-safe or
+    not — it is NEVER retried, fresh or resumed, and this carve-out is stated here, before both of
+    the general rules below, so it is read before either general rule, not discovered as an
+    afterthought.** Every other no-`threadId` reason just below (`bad_args`, `git_error`,
+    `incomplete_collection`, `no_thread_started`) can plausibly succeed on a fresh retry — the
+    failure was transient or argument-shaped, not a property of the content itself. `input_too_large`
+    is different: it is a deterministic backend hard-limit rejection (`SKILL.md`'s "Resume-safety by
+    failure reason" table), so a fresh retry of the same scope flag would resend the exact same
+    oversized diff/focus and fail identically, and a `--resume` retry (on the occurrence that does
+    carry a `threadId`) would do the same with even more accumulated text. On an `input_too_large`
+    failure for any group, stop retrying immediately for that group and report it as failed for this
+    round — contributing to an eventual `⚠️ COULD NOT VERIFY` outcome exactly like any other
+    unretriable group failure elsewhere in this file — with guidance surfaced to the user: narrow the
+    scope (a smaller commit/base range, less pasted focus/context text) and start a genuinely new
+    review rather than resuming.
+    **Round 1 only — capture coverage from this failing attempt BEFORE stopping, exactly like the
+    "Round 1 only — capture coverage from the failing attempt BEFORE retrying" rule below applies
+    to its own listed reasons.** If this `input_too_large` occurrence is for a group's round-1
+    attempt specifically (dispatched with `--uncommitted`/`--base`/`--commit`, never an
+    already-resumed round 2+ attempt) AND that attempt was `--uncommitted` scope with a real diff
+    present (`SKILL.md`'s own "Coverage" section: the fresh-with-diff `input_too_large` branch DOES
+    splice `coverage.source`, unlike the fresh-with-no-diff and `--resume` branches, which never
+    carry it at all), check this failed response for a `coverage.source` object now, before
+    reporting the stop above. If present, capture that value as this group's round-1
+    `coverage_source` determination (per `SKILL.md`'s "Coverage is a Round-1-only property"
+    section) and keep it, exactly as the resume-safe rule below does for its own 7 reasons — there
+    is no later dispatch for this group's round 1 that could ever report it again once this stop
+    is reported, so skipping this capture would discard real, already-collected coverage data for
+    no reason, not merely (as with a resume-safe reason) delay it to a later successful attempt.
+    This does NOT change the no-retry outcome itself — the stop above still happens exactly as
+    described; this only ensures the coverage data from the diff collection that DID complete
+    before the preflight rejected the prompt is not silently lost. *Does not apply to any other
+    reason — see the general rules below
+    for those.*
   - **No `threadId` was ever captured for THIS failure response** (`bad_args`, `git_error`,
     `incomplete_collection`, `no_thread_started`, or `interrupted`/`timeout` on the rare occasion
     either fires before a thread ever started — see `SKILL.md`'s reason table's `threadId` column,
     which is per-OCCURRENCE, not a blanket guarantee for every reason in the "resume-safe" row
-    below). **A missing `threadId` in the failure response is not the same claim as "no thread
+    below; does not apply to `input_too_large`'s own no-`threadId` occurrence — see the carve-out
+    above). **A missing `threadId` in the failure response is not the same claim as "no thread
     exists for this group" — check `GROUP_THREADS` directly, never infer this from the round
     number.** The two only coincide for a group's very first-ever dispatch attempt; they do NOT
     coincide for a no-`threadId` failure encountered *during* one of the bounded resume-retries
@@ -68,8 +103,9 @@
       retry also fails, stop — report **⚠️ COULD NOT VERIFY**.
   - **A `threadId` WAS captured, and the reason is resume-safe** (`interrupted`, `timeout`,
     `nonzero_exit`, `missing_task_complete`, `no_final_answer`, `invalid_json`, `schema_mismatch`
-    — see `SKILL.md`'s "Resume-safety by failure reason" table): prefer a bounded `--resume` retry
-    over abandoning the thread.
+    — see `SKILL.md`'s "Resume-safety by failure reason" table; does not apply to `input_too_large`,
+    which CAN carry a `threadId` on its `--resume` occurrence but is explicitly NOT resume-safe —
+    see the carve-out above): prefer a bounded `--resume` retry over abandoning the thread.
     **Round 1 only — capture coverage from the failing attempt BEFORE retrying.** If this failure
     is for a group's round-1 attempt (the one dispatched with `--uncommitted`/`--base`/`--commit`,
     not an already-resumed round 2+ attempt) and the reason is one of the 7 post-dispatch reasons
@@ -197,11 +233,13 @@
       to fall back to on an already-resumed group — stop directly, report
       **⚠️ COULD NOT VERIFY** for that group. No new threadId was ever created by either
       resume-retry, so nothing is added to `LEAKED_THREAD_IDS` on this path.
-  - There is no "`threadId` was captured but the reason is NOT resume-safe" branch — every
-    ORDINARY reason that can ever carry a `threadId` is resume-safe, now that
-    `resume_thread_not_found`/`rollout_not_found` no longer exist as possible outcomes at all. The
-    two bullets above (no `threadId`, and `threadId` + resume-safe) are exhaustive **for the
-    ordinary `ok:false` failure reasons this section covers** — `no_material_reviewed` is a
+  - Aside from `input_too_large` (handled entirely by its own carve-out at the top of this
+    section, never reaching either bullet below it), there is no "`threadId` was captured but the
+    reason is NOT resume-safe" branch — every OTHER ordinary reason that can ever carry a
+    `threadId` is resume-safe, now that `resume_thread_not_found`/`rollout_not_found` no longer
+    exist as possible outcomes at all. The two bullets above (no `threadId`, and `threadId` +
+    resume-safe) are exhaustive **for the ordinary `ok:false` failure reasons this section
+    covers, minus that one carved-out exception** — `no_material_reviewed` is a separate,
     deliberate, separately-routed exception (see the section immediately below), never reaching
     this decision flow at all since `SKILL.md`'s Phase 2 step 1 intercepts it before ordinary
     Guards processing.
@@ -453,6 +491,22 @@ every rule in this file continues to apply completely unmodified to the round's 
    compaction attempt is not "a group" in this file's own sense; it is an internal sub-step of
    producing that round's one real outcome. This file's own existing rules for a REAL group's
    `ok:false` response (every bullet above) are otherwise entirely unaffected.
+   **`input_too_large` specifically cannot actually occur on a candidate dispatch today, but this
+   exception's wording must not silently contradict that reason's own never-retry rule should that
+   ever change.** `references/compaction.md`'s own "Byte-budget preflight" section rejects any
+   candidate whose rendered prompt would exceed `COMPACT_BYTE_BUDGET = 120,000` BYTES before ever
+   dispatching it — strictly below `CODEX_BACKEND_INPUT_CHAR_LIMIT = 1,048,576` CHARACTERS (byte
+   count is always >= character count for UTF-8 text), so a candidate can never reach the wrapper's
+   own `input_too_large` preflight in the first place; it is caught locally, first, as
+   `byte_budget_exceeded` instead (`references/compaction.md`'s own dedicated latch for that case).
+   Should either constant ever change such that a candidate COULD reach `input_too_large` for
+   real, exception 1 here still does NOT relax `input_too_large`'s own never-retried rule — it
+   would still route to "fall through to the fallback dispatch on the OLD thread" exactly like any
+   other candidate failure, which is fine (the OLD thread is a genuinely DIFFERENT dispatch, not a
+   retry of the SAME oversized candidate content), but the candidate ITSELF must never be retried
+   with the same or larger content on its own account, the same as any other `input_too_large`
+   occurrence — this exception governs what happens to the ROUND (fall through to the old
+   thread), never a license to re-attempt the SAME candidate a second time.
 2. **This file's own no-threadId-fresh-retry and fresh-B escalation rules — scoped above to a
    group's OWN true first-ever attempt, "only possible on round 1" — are keyed on CANDIDATE-level
    thread history for a compaction attempt's candidate A specifically, never on the session's own

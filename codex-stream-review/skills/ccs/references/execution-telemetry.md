@@ -100,8 +100,11 @@ response, all without ever altering the actual review verdict/success-or-failure
 ordering is no longer load-bearing the way it was under the earlier `$CODEX_PID`-only design —
 `$DISPATCH_PID` is unaffected by whichever point `$CODEX_PID` gets reset at.
 
-**Never eligible at all:** the three pre-dispatch failures (`bad_args`, `git_error`,
-`incomplete_collection` — nothing was ever launched, neither PID variable was ever touched), and a
+**Never eligible at all:** the four pre-dispatch failures (`bad_args`, `git_error`,
+`incomplete_collection`, `input_too_large` — nothing was ever launched, neither PID variable was
+ever touched; `input_too_large` fails during the prompt-size preflight, strictly before
+`EVENTLOG`/the background launch/either PID variable is ever reached, exactly like the other
+three), and a
 signal landing before the background launch itself even begins (while INT/TERM were still on their
 normal `on_signal` disposition, i.e. before the masked section starts). No telemetry in that case —
 an honest best-effort omission, never a fabricated or racy record — and the signal handler never
@@ -143,7 +146,7 @@ because `claim_id` is self-disambiguating) — so its placement differs by round
   `investigation_evidence`/`claim_closures[]`'s always-top-level rule).
 
 Omitted entirely — never a placeholder — whenever `$DISPATCH_PID` was never captured for that
-(round, group)'s own dispatch (one of the three pre-dispatch failures, or a signal landing before
+(round, group)'s own dispatch (one of the four pre-dispatch failures, or a signal landing before
 the masked launch section even starts — see section 3 above).
 
 **A NEW, SEPARATE, round-level `round_wall_seconds` field — never confused with `execution`, never
