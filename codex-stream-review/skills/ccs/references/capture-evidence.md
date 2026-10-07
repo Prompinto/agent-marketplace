@@ -58,8 +58,10 @@ trusting the claim at face value.
    - **Fresh dispatch:** `threadId` is only ever set once a real `thread.started` event actually
      fires (confirmed from the wrapper's own fresh-dispatch code path) — its presence in the
      result IS a reliable "a process genuinely started" signal here. Skip extraction only for
-     `bad_args`/`git_error`/`incomplete_collection`/`no_thread_started` (never
-     carry a `threadId` at all on a fresh dispatch) or for `interrupted` specifically WITHOUT a
+     `bad_args`/`git_error`/`incomplete_collection`/`no_thread_started`/`input_too_large` (never
+     carry a `threadId` at all on a fresh dispatch — `input_too_large`'s fresh-dispatch branches
+     fail during the pre-dispatch prompt-size preflight, strictly before the `thread.started` wait
+     loop is ever reached, exactly like the other four) or for `interrupted` specifically WITHOUT a
      `threadId` in the result (the signal
      arrived before `thread.started` ever fired). Every other fresh-dispatch outcome — `ok:true`,
      or `ok:false` with `threadId` present — means extraction is meaningful; run it, even if it
@@ -73,11 +75,22 @@ trusting the claim at face value.
      result a reliable negative: it can only happen before that one assignment, meaning this
      invocation never reached the point of launching `codex exec resume` at all (a `bad_args`
      failure — always before the signal trap is even installed — or a pre-assignment
-     `interrupted`). A PRESENT `threadId`, by contrast, is genuinely ambiguous — merely the echoed
-     input, it is present whether the failure landed microseconds after that echo (nothing
-     launched yet) or well after `codex exec resume` actually ran, so presence alone never confirms
-     a launch. This asymmetry doesn't change any actual extraction decision here, so `threadId` is
-     still never checked: `bad_args` is already skipped by `reason` name alone (always ID-less by
+     `interrupted`). A PRESENT `threadId`, by contrast, is genuinely ambiguous for most
+     reasons — merely the echoed input, present whether the failure landed microseconds after that
+     echo (nothing launched yet) or well after `codex exec resume` actually ran — EXCEPT for
+     `input_too_large`, which is the ONE ID-present reason on a `--resume` dispatch that is a
+     CONFIRMED non-launch, never ambiguous: its preflight check runs on the fully-rendered prompt
+     strictly BEFORE the background `codex exec resume` launch (`mktemp_registered EVENTLOG` and
+     the launch itself both sit textually after it in the wrapper), unconditionally, every time —
+     there is no path from "the resumed thread's follow-up text measured over the character limit"
+     to "codex exec resume ran anyway." Skip extraction for it explicitly, on this same ID-present
+     basis interrupted is skipped for on the ID-present side (reporting a fabricated zero-command
+     object for a launch that provably never happened is worse than the alternative), but for a
+     stronger reason than `interrupted`'s own "unresolvably ambiguous, so treat conservatively"
+     one — `input_too_large` isn't ambiguous here at all, it's a proven negative. This asymmetry
+     doesn't change any other actual extraction decision here, so `threadId` is
+     still never checked for every OTHER reason: `bad_args` is already skipped by `reason` name
+     alone (always ID-less by
      the above, and always pre-launch — argument validation happens before any dispatch is
      attempted). `interrupted` is skipped
      as the conservative choice either way it occurs — an ID-less occurrence is a confirmed
@@ -88,11 +101,12 @@ trusting the claim at face value.
      `ok:true`,
      `timeout`, `nonzero_exit`, `missing_task_complete`, `no_final_answer`,
      `invalid_json`, `schema_mismatch` — can ONLY occur after `codex exec resume` genuinely
-     launched: there is no pre-launch preflight check on `--resume` at all anymore (the
+     launched: `input_too_large` is now the ONE pre-launch preflight check `--resume` has (the
      `resume_thread_not_found` check that used to sit here, and the separate post-launch
-     `rollout_not_found` failure, are both gone — a dead/unknown `--resume` threadId now simply
-     surfaces via whatever the actual dispatch attempt produces); extraction is meaningful and
-     always runs for these.
+     `rollout_not_found` failure, are both still gone — a dead/unknown `--resume` threadId still
+     simply surfaces via whatever the actual dispatch attempt produces; only a genuinely
+     oversized rendered prompt takes the new pre-launch path); extraction is meaningful and
+     always runs for these seven.
    Either skip path means this group's contribution to `investigation_evidence` is simply absent
    (see step 3's merge behavior for what that means in parallel mode) — never a zero-command
    placeholder standing in for "nothing actually happened":

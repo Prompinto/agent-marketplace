@@ -5,6 +5,27 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCHEMA="$SCRIPT_DIR/../schemas/review-verdict.schema.json"
 DEFAULT_TIMEOUT_SECS=1800
 THREAD_WAIT_SECS=10
+# CODEX_BACKEND_INPUT_CHAR_LIMIT: the Azure OpenAI backend's own REAL,
+# CONFIRMED hard limit on total input CHARACTERS (not bytes -- the vendor's
+# own error text is "Input exceeds the maximum length", and 1,048,576 is a
+# character count, not a byte count). Empirically confirmed by a real
+# production failure: a review of base c17c711 -> head 851c43c rendered a
+# 1,069,105-character prompt, and `codex exec`'s own dispatch died in ~2s
+# with `turn/start failed: Input exceeds the maximum length`.
+#
+# This is philosophically the OPPOSITE of the PROMPT_SIZE_LIMIT_BYTES
+# constant commit 04996d2 removed from this file: that one was a GUESSED,
+# self-imposed byte-based "operational policy" threshold (131072 bytes),
+# chosen well below real model context windows -- it was removed because it
+# blocked legitimate large-diff reviews that would have dispatched fine.
+# THIS constant is not a guess: it is a real vendor ceiling that
+# deterministically fails EVERY time it's exceeded, no matter how many times
+# a caller resumes/retries with the same or larger content. Failing closed
+# here, before `codex exec` is ever launched, saves a guaranteed-failing API
+# call rather than guessing at a safety margin -- reintroducing a
+# pre-dispatch preflight is the right call this time specifically because
+# the threshold behind it is confirmed, not assumed.
+CODEX_BACKEND_INPUT_CHAR_LIMIT=1048576
 
 # Provides git_safe() (and resolves GIT_BIN) -- every git invocation that
 # reads a reviewed repo's diff/show content below goes through it, never a
@@ -77,7 +98,9 @@ emit_final_output() {
 # build_execution_json -> prints this dispatch's own `execution` object
 # (or nothing at all) to stdout. Returns immediately with no output when
 # `$DISPATCH_PID` was never actually captured for this dispatch (only the
-# three pre-dispatch failures -- see the DISPATCH_PID declaration above for
+# four pre-dispatch failures -- bad_args/git_error/incomplete_collection, and
+# now also input_too_large, none of which ever reach the background launch
+# that sets $DISPATCH_PID -- see the DISPATCH_PID declaration above for
 # why this is a SEPARATE, never-cleared variable from $CODEX_PID, which
 # on_signal's own kill-targeting instead needs cleared immediately after
 # each reap). This
@@ -945,13 +968,111 @@ BOUNDARY="DIFF_$$_${RANDOM}${RANDOM}"
 mktemp_registered PROMPT_FILE
 build_review_prompt > "$PROMPT_FILE"
 
-# No pre-dispatch size check: a self-imposed byte ceiling here previously
-# rejected the prompt before `codex exec`/`codex exec resume` ever ran. It
-# was well below real model context windows and blocked legitimate reviews
-# on its own guess rather than an actual technical limit. The rendered
-# prompt is now always dispatched as-is; if it is genuinely too large for
-# the model, that surfaces from the real dispatch below (e.g. `timeout`,
-# `nonzero_exit`, `no_final_answer`), not a pre-emptive guess here.
+# There IS a pre-dispatch size check again here -- but it is checking a
+# different, confirmed thing than the one commit 04996d2 removed from this
+# exact point in the file. That removed check (`PROMPT_SIZE_LIMIT_BYTES`,
+# 131072 BYTES) was a self-imposed, GUESSED "operational policy" ceiling,
+# chosen well below real model context windows -- removing it was correct
+# because it blocked legitimate large-diff reviews that would have
+# dispatched fine. `CODEX_BACKEND_INPUT_CHAR_LIMIT` (see its own declaration
+# near the top of this file) is not a guess: it is the Azure OpenAI
+# backend's own empirically-confirmed hard limit on input CHARACTERS, which
+# deterministically fails every single time it's exceeded, no matter how
+# many times a caller resumes/retries with the same or larger content.
+# Reintroducing a preflight for THIS threshold is not the same mistake --
+# failing closed here, before `codex exec` is ever launched, saves a
+# guaranteed-failing API call rather than guessing at a safety margin.
+#
+# Measured in CHARACTERS, not bytes -- the vendor's own limit is stated in
+# characters, and a diff/focus text can contain multibyte characters (e.g.
+# Korean text was literally what triggered discovery of this bug). `wc -m`
+# is run under an explicit UTF-8 locale so the count never depends on this
+# process's own ambient/inherited LC_ALL/LANG -- matching this file's own
+# "never trust ambient state" precedent (see SAFE_GIT_HOME/CODEX_PID's own
+# up-front resets above). Falls back, in order, to en_US.UTF-8 then to a
+# plain byte count (`wc -c`) if `wc -m` is ever unavailable under either
+# locale (rare -- e.g. a future runner genuinely lacking both locales): byte
+# count is always >= character count for UTF-8 text, so substituting it can
+# only ever OVER-trigger this guard on heavily-multibyte content -- failing
+# safely toward the old too-restrictive direction, never UNDER-counting and
+# risking a genuinely-oversized prompt sliding through.
+#
+# Round 1 (real ccs review) finding: `wc -m` does NOT fail (nonzero exit or
+# empty/non-numeric stdout) when handed an LC_ALL value that isn't a real
+# installed locale -- confirmed live (`LC_ALL=definitely_not_a_locale wc -m`
+# exits 0 and silently prints a BYTE count instead, exactly like the plain-C
+# fallback path this function was trying to avoid). The old
+# "was the result present and numeric" check therefore could not actually
+# detect "C.UTF-8 isn't installed here" -- it would accept that silent
+# byte-count result as if it were a genuine character count under C.UTF-8,
+# and never fall through to try en_US.UTF-8 at all, wrongly rejecting a
+# valid multibyte prompt whose real character count is well under the
+# limit. Fixed by checking each locale's actual availability via
+# `locale -a` BEFORE ever invoking `wc -m` under it, rather than trusting
+# `wc -m`'s own (unreliable) exit status/output shape as that signal.
+#
+# Round 1 (second ccs review, on this fix) finding: `locale -a`'s own naming
+# for the same real locale differs by platform -- macOS reports the hyphenated
+# form (`C.UTF-8`/`en_US.UTF-8`, confirmed live on this dev machine), while
+# glibc-based Linux (this project's own `ubuntu-latest` CI runner) reports the
+# UNhyphenated form instead (`C.utf8`/`en_US.utf8`) -- a fixed, hardcoded
+# `grep -qix 'C.UTF-8'` matches only the macOS spelling and silently reports
+# "unavailable" on Linux even when the locale genuinely IS installed, wrongly
+# skipping straight past it (and past en_US.utf8 too, by the same mismatch) to
+# the byte-count fallback -- again wrongly rejecting a valid multibyte prompt,
+# the same failure mode as the original bug, just via a different platform
+# gap. Fixed by matching EITHER spelling in `locale -a`'s own output, and
+# using WHICHEVER exact string `locale -a` itself reported as the `LC_ALL`
+# value passed to `wc -m` -- never a spelling `locale -a` didn't actually use,
+# since a real, confirmed-available locale must be referenced by its own
+# real name to reliably select it.
+_measure_prompt_chars() {
+  local n avail match
+  avail="$(locale -a 2>/dev/null)"
+  match="$(printf '%s\n' "$avail" | grep -ix -m1 'C\.UTF-8\|C\.utf8')"
+  if [ -n "$match" ]; then
+    n="$(LC_ALL="$match" wc -m < "$1" 2>/dev/null | tr -d ' ')"
+    case "$n" in ''|*[!0-9]*) n="" ;; esac
+  fi
+  if [ -z "$n" ]; then
+    match="$(printf '%s\n' "$avail" | grep -ix -m1 'en_US\.UTF-8\|en_US\.utf8')"
+    if [ -n "$match" ]; then
+      n="$(LC_ALL="$match" wc -m < "$1" 2>/dev/null | tr -d ' ')"
+      case "$n" in ''|*[!0-9]*) n="" ;; esac
+    fi
+  fi
+  if [ -z "$n" ]; then
+    n="$(wc -c < "$1" 2>/dev/null | tr -d ' ')"
+  fi
+  printf '%s' "$n"
+}
+PROMPT_SIZE_CHARS="$(_measure_prompt_chars "$PROMPT_FILE")"
+if [ -n "$PROMPT_SIZE_CHARS" ] && [ "$PROMPT_SIZE_CHARS" -gt "$CODEX_BACKEND_INPUT_CHAR_LIMIT" ]; then
+  if [ -n "$RESUME_THREAD_ID" ]; then
+    # Resumed round: the diff is never resent on --resume, so whatever is
+    # oversized here is this round's own accumulated focus/rebuttal text.
+    # The underlying thread is untouched, not abandoned -- same reasoning
+    # the old removed code used for its own analogous branch.
+    DETAIL_JSON="$(printf 'this round'"'"'s follow-up/rebuttal focus text produced a %s-character prompt, exceeding the backend'"'"'s %s-character hard limit -- shorten the follow-up text for this round; the existing thread remains valid for a later --resume with materially shorter text' "$PROMPT_SIZE_CHARS" "$CODEX_BACKEND_INPUT_CHAR_LIMIT" | jq -Rs '.')"
+    rm -f "$PROMPT_FILE"
+    emit_final_output "$(printf '{"ok":false,"reason":"input_too_large","threadId":%s,"detail":%s}\n' "$THREAD_ID_JSON" "$DETAIL_JSON")"
+  elif [ -n "$DIFF_TEXT" ]; then
+    # Fresh --uncommitted/--base/--commit round: --focus is merged into the
+    # SAME rendered prompt as the diff, so a substantial focus/briefing plus
+    # even a moderate diff can combine to exceed the limit too -- never
+    # assert the diff alone is at fault.
+    DETAIL_JSON="$(printf 'the combined rendered prompt (diff plus focus/context text) is %s characters, exceeding the backend'"'"'s %s-character hard limit -- reduce whichever contributed: a substantial pasted focus/briefing, the selected diff scope itself (e.g. a narrower commit/range/subset), or both; --focus is advisory and never filters/shrinks the diff even when reduced' "$PROMPT_SIZE_CHARS" "$CODEX_BACKEND_INPUT_CHAR_LIMIT" | jq -Rs '.')"
+    rm -f "$PROMPT_FILE"
+    emit_final_output "$(printf '{"ok":false,"reason":"input_too_large","detail":%s}\n' "$DETAIL_JSON")"
+  else
+    # Fresh non-repo-artifact round (empty diff, all content in --focus): the
+    # pasted artifact itself is what is oversized.
+    DETAIL_JSON="$(printf 'the pasted artifact/context text alone produced a %s-character prompt, exceeding the backend'"'"'s %s-character hard limit -- split it into smaller pieces reviewed separately' "$PROMPT_SIZE_CHARS" "$CODEX_BACKEND_INPUT_CHAR_LIMIT" | jq -Rs '.')"
+    rm -f "$PROMPT_FILE"
+    emit_final_output "$(printf '{"ok":false,"reason":"input_too_large","detail":%s}\n' "$DETAIL_JSON")"
+  fi
+  exit 1
+fi
 
 mktemp_registered EVENTLOG
 # LAST_MESSAGE_FILE: codex exec's own `-o/--output-last-message` writes the

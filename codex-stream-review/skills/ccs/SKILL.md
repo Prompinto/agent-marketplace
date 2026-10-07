@@ -255,6 +255,15 @@ entirely, so neither can ever fire on a `--resume` round) — so none of these t
 carry `coverage` regardless of scope — see "Coverage is a Round-1-only property" below for what
 this means for `/ccs`'s multi-round convergence check.
 
+`input_too_large` is its own separate case, neither in the unconditional-7 set nor in the
+never-carries set just above: its preflight check runs AFTER diff collection has already
+populated `SOURCE_COVERAGE_JSON` (for a fresh `--uncommitted` dispatch) but BEFORE `codex exec` is
+ever launched, and — unlike `bad_args`/`git_error`/`incomplete_collection` — it always goes through
+the shared `emit_final_output` helper. So a fresh `--uncommitted` dispatch that fails with
+`input_too_large` DOES carry `coverage.source`, same as the unconditional-7; a `--resume` or
+`--base`/`--commit` occurrence of it does not, for the same scope-dependent reasons as everything
+else in this section.
+
 **Failure:** `{"ok":false,"reason":"<reason>","threadId":"<uuid or absent>","detail":"..."}`
 — see "Coverage" just above for the 7 reasons among these that unconditionally can carry a
 spliced-in `coverage.source` object, plus `interrupted`, which can carry one conditionally. Every
@@ -268,6 +277,7 @@ possible even after a failed round):
 | `git_error` | The `git diff`/`git show` call for a scope flag failed, or the untracked-file collector exited with a non-2 nonzero status | No |
 | `incomplete_collection` | The untracked-file collector exited status 2 | No |
 | `no_thread_started` | No `thread.started` event within 10s of a fresh dispatch | No |
+| `input_too_large` | The fully-rendered prompt (diff + focus/context text) exceeds the Codex backend's confirmed 1,048,576-character input limit -- detected before `codex exec` is ever launched | Yes, if this occurred on a `--resume` call (existing thread's follow-up text grew too large); no, on a fresh dispatch (never started) |
 | `interrupted` | The wrapper itself received SIGINT/SIGTERM mid-round | Yes, if a thread had already started |
 | `timeout` | The round exceeded `--timeout` (default 1800s) | Yes |
 | `nonzero_exit` | The underlying `codex exec`/`codex exec resume` process exited nonzero | Yes |
@@ -281,7 +291,9 @@ possible even after a failed round):
 instruction):** both a success response AND a failure response can carry an additional spliced-in
 `"execution":{"elapsed_seconds":<int>,"usage"?:{...}}` object — present whenever this dispatch's own
 `$DISPATCH_PID` was ever actually captured (i.e. every reason above except `bad_args`/
-`git_error`/`incomplete_collection`, which never dispatch at all — see
+`git_error`/`incomplete_collection`/`input_too_large`, none of which ever dispatch at all — the
+last of these fails during the pre-dispatch prompt-size preflight, before `EVENTLOG`/the
+background launch/`$DISPATCH_PID` are ever reached, exactly like the other three; see
 `references/execution-telemetry.md` section 3 for the dual-variable `$CODEX_PID`/`$DISPATCH_PID`
 design and why signal-masking closes every other gap). `usage`
 is present only when
@@ -313,13 +325,16 @@ still has a thread to resume when a specific failure carries none.
 | `reason` | Resume-safe? (when a `threadId` was actually captured for this occurrence) | Basis |
 |---|---|---|
 | `bad_args`, `git_error`, `incomplete_collection`, `no_thread_started` | N/A — never carries a `threadId` at all, nothing to resume | Table above: `threadId` never present |
+| `input_too_large` | **No** — a deterministic backend hard-limit failure, even on the occurrence that DOES carry a `threadId` (the `--resume` case) | Resuming (or any retry with the same or larger content) reproduces the identical failure every time — unlike every other reason in the "Yes" row below, which stems from a transient/wrapper-side extraction failure on a thread whose conversational state is otherwise fine, `input_too_large` means the input itself is provably too big for the backend to ever accept, no matter how many times it's retried. A caller must shrink the input (narrower diff/scope, shorter focus text) before any further attempt — there is nothing to gain from resuming or retrying as-is |
 | `interrupted`, `timeout`, `nonzero_exit`, `missing_task_complete`, `no_final_answer`, `invalid_json`, `schema_mismatch` | **Yes** — the underlying Codex thread's own conversational state survives; only THIS wrapper invocation failed to extract a valid final answer from it | `nonzero_exit` empirically confirmed live (crash simulation + 4 real production occurrences, see above); the other six reasons in this row share the same property (a thread that genuinely started, or exited zero, but the wrapper couldn't confirm/extract a valid final answer from it) and are inferred safe by the identical reasoning, not separately live-tested one by one |
 
-Every `reason` that can ever carry a `threadId` falls in the "Yes"
-row above — there is no longer a `reason` meaning "the thread/rollout itself is confirmed gone"
-(that used to be `resume_thread_not_found`/`rollout_not_found`; see the note at the end of the
-reason table above for why neither exists anymore), so a threadId-carrying failure is
-unconditionally worth a `--resume` retry.
+Every `reason` that can ever carry a `threadId` falls in the "Yes" row above, with exactly ONE
+exception: `input_too_large`, which can also carry a `threadId` (the `--resume` occurrence) while
+being explicitly NOT resume-safe — see its own row above. Aside from that one exception, there is
+no longer a `reason` meaning "the thread/rollout itself is confirmed gone" (that used to be
+`resume_thread_not_found`/`rollout_not_found`; see the note at the end of the reason table above for
+why neither exists anymore), so a threadId-carrying failure is otherwise unconditionally worth a
+`--resume` retry.
 
 **Accepted tradeoff, stated plainly rather than glossed over:** a genuinely dead/unknown
 `--resume` threadId (e.g. one whose thread was already deleted) is no longer distinguishable, by
@@ -362,9 +377,12 @@ never accidentally clean up the very thread it just asked to `--resume`.
 `run-stream-review.sh` leaves a thread's cleanup entirely to the caller because a generic caller
 might still want to `--resume` it later. `/ccs` owns a thread's entire lifecycle itself — it is
 the only thing that ever `--resume`s it — so it calls `--cleanup` on **every** terminal path
-(CLEAN, NOT CONVERGED, COULD NOT VERIFY, PARTIAL COVERAGE, MINOR ISSUES ACKNOWLEDGED, INPUT TOO
-LARGE, SNAPSHOT INTEGRITY
-FAILURE, REVIEW LOG INTEGRITY FAILURE)
+(CLEAN, NOT CONVERGED, COULD NOT VERIFY, PARTIAL COVERAGE, MINOR ISSUES ACKNOWLEDGED, SNAPSHOT
+INTEGRITY
+FAILURE, REVIEW LOG INTEGRITY FAILURE — `input_too_large` is a per-dispatch `reason`, never a
+`/ccs` session's own terminal outcome, so it never appears in this list; a group failing with
+`input_too_large` still routes to one of these seven real terminal outcomes, ordinarily
+`COULD NOT VERIFY`, per the carve-out in `references/retry-guards.md`)
 automatically, with no separate opt-in step a human needs to remember — **except** when
 `--keep-evidence` was ON for this session AND the outcome is non-CLEAN, in which case cleanup is
 deliberately skipped instead (see "Kept evidence on failure" below and Phase 3's own keep-evidence
@@ -2445,10 +2463,17 @@ trustworthy one).
      consistent with how `status`/`omitted` already describe the CURRENT state of knowledge
      rather than a historical total. Never re-derived from the JSONL here.
    - `input_errors`: always `null` — no `exit_state` populates this field. It exists only for
-     result-contract compatibility with older consumers: the one outcome that used to populate it
-     (`"INPUT_TOO_LARGE"`, a self-imposed pre-dispatch prompt byte-size guard) has been removed
-     entirely; a genuinely oversized prompt now simply surfaces as a normal dispatch failure
-     (`timeout`, `nonzero_exit`, `no_final_answer`, etc., per the reason table above).
+     result-contract compatibility with older consumers: the schema's own `"INPUT_TOO_LARGE"`
+     `exit_state` (a self-imposed pre-dispatch prompt BYTE-size guard, `PROMPT_SIZE_LIMIT_BYTES`)
+     was removed entirely by commit 04996d2, and never came back — this final-artifact schema still
+     has no `exit_state` value for that concept, and none of the current seven values populates
+     `input_errors`. The wrapper's own `input_too_large` `reason` (a DIFFERENT, later-reintroduced
+     concept — a real, confirmed backend CHARACTER-limit preflight, not a self-imposed byte guess;
+     see "Guards" above) is a per-dispatch `reason`, never an `exit_state` of this artifact at all —
+     a group failing with it still resolves to one of the seven real `exit_state` values above
+     (ordinarily `"COULD_NOT_VERIFY"`, per `references/retry-guards.md`'s carve-out), which is what
+     actually gets reported here; it was never going to populate `input_errors` either way, old
+     byte-guess or new char-limit alike.
 
    **Write mechanism — hand-replicate `run-ccs-ci.sh`'s `write_result_atomic()`'s own atomic
    shape directly in a Bash call, do NOT claim this "calls" that function** (a bash function
